@@ -22,11 +22,16 @@ import (
 //
 
 const (
-	defaultRegistry   = "registry-1.docker.io"
-	defaultProxy      = "http://127.0.0.1:7890"
-	defaultTargetOS   = "linux"
-	defaultTargetArch = "amd64"
+	defaultRegistry = "registry-1.docker.io"
+	defaultProxy    = "http://127.0.0.1:7890"
 )
+
+type targetPlatform struct {
+	targetOS   string
+	targetArch string
+}
+
+var platform targetPlatform
 
 type ImageInfo struct {
 	Registry   string
@@ -44,6 +49,8 @@ func init() {
 
 func NewPullCommand() *cobra.Command {
 	var imageNameList []string
+	var targetOS string
+	var arch string
 	cmd := &cobra.Command{
 		Use:   "pull <images...>",
 		Short: "无需docker客户端，下载docker镜像",
@@ -56,12 +63,16 @@ func NewPullCommand() *cobra.Command {
 			}
 		},
 	}
+	cmd.Flags().StringVarP(&targetOS, "os", "", "linux", "目标操作系统")
+	cmd.Flags().StringVarP(&arch, "arch", "a", "amd64", "目标架构")
+	platform.targetOS = targetOS
+	platform.targetArch = arch
 	return cmd
 }
 
 func getImage(imageName string) {
 	imageInfo := parseImageInfo(imageName)
-	log.Printf("获取镜像%s:%s", imageInfo.Image, imageInfo.Tag)
+	log.Printf("获取镜像%s:%s,目标平台%s/%s", imageInfo.Image, imageInfo.Tag, platform.targetOS, platform.targetArch)
 
 	token, err := getAuthToken(imageInfo)
 	if err != nil {
@@ -226,15 +237,15 @@ func handleOCIIndex(info *ImageInfo, index *OCIIndex, token string) (*OCIImageMa
 
 	for _, m := range index.Manifests {
 		if m.Platform != nil &&
-			m.Platform.OS == defaultTargetOS &&
-			m.Platform.Architecture == defaultTargetArch {
+			m.Platform.OS == platform.targetOS &&
+			m.Platform.Architecture == platform.targetArch {
 			selectedDigest = m.Digest
 			break
 		}
 	}
 
 	if selectedDigest == "" {
-		return nil, fmt.Errorf("未找到匹配的平台: %s/%s", defaultTargetOS, defaultTargetArch)
+		return nil, fmt.Errorf("未找到匹配的平台: %s/%s", platform.targetOS, platform.targetArch)
 	}
 
 	manifestURL := fmt.Sprintf("https://%s/v2/%s/%s/manifests/%s",
