@@ -55,7 +55,8 @@ func NewPullCommand() *cobra.Command {
 		Use:   "pull <images...>",
 		Short: "无需docker客户端，下载docker镜像",
 		Long: `无需docker客户端，下载docker镜像，从官方镜像源拉取。
-需要环境变量配置代理，默认代理为127.0.0.1:7890（clash）。`,
+需要环境变量配置代理，默认代理为127.0.0.1:7890（clash）。
+默认拉取linux/amd64镜像。`,
 		Run: func(cmd *cobra.Command, args []string) {
 			imageNameList = args
 			for _, imageName := range imageNameList {
