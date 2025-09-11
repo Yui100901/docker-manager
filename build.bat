@@ -12,4 +12,3 @@ set CGO_ENABLED=0
 go build -o ./bin/windows/dm.exe
 
 echo Build completed
-pause
