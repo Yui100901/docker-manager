@@ -3,10 +3,6 @@ package pull
 import (
 	"crypto/sha256"
 	"fmt"
-	"github.com/Yui100901/MyGo/file_utils"
-	"github.com/Yui100901/MyGo/network/http_utils"
-	"github.com/Yui100901/MyGo/struct_utils"
-	"github.com/spf13/cobra"
 	"log"
 	"net/http"
 	"net/url"
@@ -14,6 +10,11 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/Yui100901/MyGo/file_utils"
+	"github.com/Yui100901/MyGo/network/http_utils"
+	"github.com/Yui100901/MyGo/struct_utils"
+	"github.com/spf13/cobra"
 )
 
 //
@@ -131,7 +132,7 @@ func initHTTPClient() {
 	httpClient = &http_utils.HTTPClient{
 		Client: &http.Client{
 			Transport: transport,
-			Timeout:   30 * time.Second,
+			Timeout:   600 * time.Second,
 		},
 	}
 }
