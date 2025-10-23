@@ -59,6 +59,8 @@ func NewPullCommand() *cobra.Command {
 需要环境变量配置代理，默认代理为127.0.0.1:7890（clash）。
 默认拉取linux/amd64镜像。`,
 		Run: func(cmd *cobra.Command, args []string) {
+			platform.targetOS = targetOS
+			platform.targetArch = arch
 			imageNameList = args
 			for _, imageName := range imageNameList {
 				getImage(imageName)
@@ -67,8 +69,6 @@ func NewPullCommand() *cobra.Command {
 	}
 	cmd.Flags().StringVarP(&targetOS, "os", "", "linux", "目标操作系统")
 	cmd.Flags().StringVarP(&arch, "arch", "a", "amd64", "目标架构")
-	platform.targetOS = targetOS
-	platform.targetArch = arch
 	return cmd
 }
 
