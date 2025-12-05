@@ -52,9 +52,8 @@ func NewReverseCommand() *cobra.Command {
 						fmt.Fprintf(file, "# %s\n", name)
 						fmt.Fprintln(file, cmdStr)
 					}
+					log.Println("Save command to docker_commands.sh successfully!")
 				}
-
-				log.Println("Save command to docker_commands.sh successfully!")
 			}
 		},
 	}
