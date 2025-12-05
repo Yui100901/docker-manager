@@ -17,7 +17,7 @@ import (
 
 func newLoadCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "import [path]",
+		Use:   "load [path]",
 		Short: "导入Docker镜像，默认从images，以及所有子目录寻找镜像",
 		Run: func(cmd *cobra.Command, args []string) {
 			path := "images"
@@ -34,8 +34,9 @@ func newLoadCommand() *cobra.Command {
 
 func newSaveCommand() *cobra.Command {
 	var merge bool
+	var all bool
 	cmd := &cobra.Command{
-		Use:   "export [path] [options]",
+		Use:   "save [path] [options]",
 		Short: "导出Docker镜像，默认为当前路径下的images。",
 		Run: func(cmd *cobra.Command, args []string) {
 			path := "images"
@@ -45,12 +46,13 @@ func newSaveCommand() *cobra.Command {
 			if _, err := file_utils.CreateDirectory(path); err != nil {
 				log_utils.Error.Fatalf("Create directory failed: %v", err)
 			}
-			if err := saveImages(path, merge); err != nil {
+			if err := saveImages(path, merge, all); err != nil {
 				log_utils.Error.Fatalf("Export failed: %v", err)
 			}
 		},
 	}
 	cmd.Flags().BoolVarP(&merge, "merge", "m", true, "合并成一个文件images.tar")
+	cmd.Flags().BoolVarP(&merge, "all", "a", false, "导出所有镜像，包括无tag镜像")
 	return cmd
 }
 
@@ -71,7 +73,7 @@ func loadImages(path string) error {
 	return nil
 }
 
-func saveImages(path string, merge bool) error {
+func saveImages(path string, merge bool, all bool) error {
 	images, err := docker.ListImages()
 	if err != nil {
 		log_utils.Error.Println(err)
@@ -79,13 +81,20 @@ func saveImages(path string, merge bool) error {
 	}
 	imageMap := make(map[string]string)
 	for _, image := range images {
+		imageID := image.ID
 		if len(image.RepoTags) > 0 {
-			imageID := image.ID
 			imageName := image.RepoTags[0]
 			imageName = strings.ReplaceAll(imageName, "/", "_")
 			imageName = strings.ReplaceAll(imageName, ":", "-")
 			imageMap[imageID] = imageName
+		} else {
+			if all {
+				imageMap[imageID] = imageID
+			}
 		}
+	}
+	for imageID, imageName := range imageMap {
+		log_utils.Info.Println("Export image", imageID, imageName)
 	}
 	if merge {
 		imageIDList := make([]string, 0, len(imageMap))
@@ -95,7 +104,7 @@ func saveImages(path string, merge bool) error {
 		return docker.SaveImages(imageIDList, "images.tar")
 	} else {
 		for imageID, imageName := range imageMap {
-			err := docker.SaveImages([]string{imageID}, filepath.Join(path, imageName))
+			err := docker.SaveImages([]string{imageID}, filepath.Join(path, imageName+".tar"))
 			if err != nil {
 				log_utils.Error.Println(err)
 			}
