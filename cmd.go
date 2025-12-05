@@ -51,8 +51,8 @@ func newSaveCommand() *cobra.Command {
 			}
 		},
 	}
-	cmd.Flags().BoolVarP(&merge, "merge", "m", true, "合并成一个文件images.tar")
-	cmd.Flags().BoolVarP(&merge, "all", "a", false, "导出所有镜像，包括无tag镜像")
+	cmd.Flags().BoolVarP(&merge, "merge", "m", false, "合并成一个文件images.tar")
+	cmd.Flags().BoolVarP(&all, "all", "a", false, "导出所有镜像，包括无tag镜像")
 	return cmd
 }
 
@@ -89,7 +89,7 @@ func saveImages(path string, merge bool, all bool) error {
 			imageMap[imageID] = imageName
 		} else {
 			if all {
-				imageMap[imageID] = imageID
+				imageMap[imageID] = strings.ReplaceAll(imageID, ":", "_")
 			}
 		}
 	}
