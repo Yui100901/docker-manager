@@ -3,11 +3,11 @@ package reverse
 import (
 	"docker-manager/docker"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 
 	"github.com/Yui100901/MyGo/command"
-	"github.com/Yui100901/MyGo/log_utils"
 	"github.com/docker/docker/api/types/container"
 	"github.com/spf13/cobra"
 )
@@ -26,7 +26,7 @@ func NewReverseCommand() *cobra.Command {
 		Run: func(cmd *cobra.Command, args []string) {
 			containers := args
 			if cmds, err := reverse(containers); err != nil {
-				log_utils.Error.Fatalf("Error to reverse container: %v", err)
+				log.Fatalf("Error to reverse container: %v", err)
 			} else {
 
 				cmdStrMap := make(map[string]string)
@@ -34,7 +34,7 @@ func NewReverseCommand() *cobra.Command {
 
 					cmdStr := strings.Join(cmd, " ")
 					cmdStrMap[name] = cmdStr
-					log_utils.Info.Printf("Generated docker command:\n%s", cmdStr)
+					fmt.Printf("%s", cmdStr)
 					if rerun {
 						docker.ContainerStop(name)
 						docker.ContainerRemove(name, true, true)
@@ -44,7 +44,7 @@ func NewReverseCommand() *cobra.Command {
 				if save {
 					file, err := os.Create("docker_run_command.sh")
 					if err != nil {
-						log_utils.Error.Fatalf("Failed to create file: %v", err)
+						log.Fatalf("Failed to create file: %v", err)
 					}
 					defer file.Close()
 					fmt.Fprintln(file, "#!/bin/bash")
@@ -54,7 +54,7 @@ func NewReverseCommand() *cobra.Command {
 					}
 				}
 
-				log_utils.Info.Println("Save command to docker_commands.sh successfully!")
+				log.Println("Save command to docker_commands.sh successfully!")
 			}
 		},
 	}
@@ -66,10 +66,10 @@ func NewReverseCommand() *cobra.Command {
 func reverse(names []string) (map[string][]string, error) {
 	var containerInfoList []container.InspectResponse
 	for _, name := range names {
-		info, err := docker.ContainerInspect1(name)
+		info, err := docker.ContainerInspect(name)
 		if err != nil {
-			log_utils.Error.Println("Reverse Error", err)
-			return nil, err
+			log.Println("Reverse Error", err)
+			continue
 		}
 		containerInfoList = append(containerInfoList, info)
 	}

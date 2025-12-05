@@ -38,7 +38,8 @@ func ContainerRemove(containerID string, force bool, removeVolumes bool) error {
 	})
 }
 
-func ContainerInspect1(containerID string) (container.InspectResponse, error) {
+// ContainerInspect 获取容器信息
+func ContainerInspect(containerID string) (container.InspectResponse, error) {
 	ctx := context.Background()
 	cli, err := initDockerClient()
 	if err != nil {

@@ -2,11 +2,11 @@ package main
 
 import (
 	"docker-manager/docker"
+	"log"
 	"path/filepath"
 	"strings"
 
 	"github.com/Yui100901/MyGo/file_utils"
-	"github.com/Yui100901/MyGo/log_utils"
 	"github.com/spf13/cobra"
 )
 
@@ -25,7 +25,7 @@ func newLoadCommand() *cobra.Command {
 				path = args[0]
 			}
 			if err := loadImages(path); err != nil {
-				log_utils.Error.Fatalf("Import failed: %v", err)
+				log.Fatalf("Import failed: %v", err)
 			}
 		},
 	}
@@ -44,10 +44,10 @@ func newSaveCommand() *cobra.Command {
 				path = args[0]
 			}
 			if _, err := file_utils.CreateDirectory(path); err != nil {
-				log_utils.Error.Fatalf("Create directory failed: %v", err)
+				log.Fatalf("Create directory failed: %v", err)
 			}
 			if err := saveImages(path, merge, all); err != nil {
-				log_utils.Error.Fatalf("Export failed: %v", err)
+				log.Fatalf("Export failed: %v", err)
 			}
 		},
 	}
@@ -76,7 +76,7 @@ func loadImages(path string) error {
 func saveImages(path string, merge bool, all bool) error {
 	images, err := docker.ImageList()
 	if err != nil {
-		log_utils.Error.Println(err)
+		log.Println(err)
 		return err
 	}
 	imageMap := make(map[string]string)
@@ -94,7 +94,7 @@ func saveImages(path string, merge bool, all bool) error {
 		}
 	}
 	for imageID, imageName := range imageMap {
-		log_utils.Info.Println("Export image", imageID, imageName)
+		log.Println("Export image", imageID, imageName)
 	}
 	if merge {
 		imageIDList := make([]string, 0, len(imageMap))
@@ -106,7 +106,7 @@ func saveImages(path string, merge bool, all bool) error {
 		for imageID, imageName := range imageMap {
 			err := docker.SaveImages([]string{imageID}, filepath.Join(path, imageName+".tar"))
 			if err != nil {
-				log_utils.Error.Println(err)
+				log.Println(err)
 			}
 		}
 	}
