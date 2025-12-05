@@ -39,7 +39,7 @@ func NewReverseCommand() *cobra.Command {
 					log_utils.Info.Printf("Generated docker command:\n%s", strings.Join(cmd, " "))
 					if rerun {
 						docker.ContainerStop(name)
-						docker.ContainerRemove(name)
+						docker.ContainerRemove(name, true, true)
 						command.RunCommand(cmd[0], cmd[1:]...)
 					}
 				}

@@ -5,28 +5,14 @@ import (
 	"io"
 	"os"
 
-	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
 )
 
 //
 // @Author yfy2001
-// @Date 2025/12/5 14 21
+// @Date 2025/12/5 21 20
 //
-
-var dockerClient *client.Client
-
-func initDockerClient() (*client.Client, error) {
-	if dockerClient == nil {
-		cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-		if err != nil {
-			return nil, err
-		}
-		dockerClient = cli
-	}
-	return dockerClient, nil
-}
 
 // ImageList 列出所有docker镜像
 func ImageList() ([]image.Summary, error) {
@@ -39,16 +25,6 @@ func ImageList() ([]image.Summary, error) {
 	// 获取镜像列表
 	images, err := cli.ImageList(ctx, image.ListOptions{All: true})
 	return images, err
-}
-
-func ContainerInspect1(containerID string) (container.InspectResponse, error) {
-	ctx := context.Background()
-	cli, err := initDockerClient()
-	if err != nil {
-		panic(err)
-	}
-	containerInfo, err := cli.ContainerInspect(ctx, containerID)
-	return containerInfo, err
 }
 
 // SaveImages 导出镜像
