@@ -4,8 +4,9 @@ import (
 	"docker-manager/pull"
 	"docker-manager/reverse"
 	"fmt"
-	"github.com/spf13/cobra"
 	"os"
+
+	"github.com/spf13/cobra"
 )
 
 //
@@ -25,10 +26,8 @@ func main() {
 		},
 	}
 
-	rootCmd.AddCommand(newBuildCommand())
-	rootCmd.AddCommand(newCleanCommand())
-	rootCmd.AddCommand(newImportCommand())
-	rootCmd.AddCommand(newExportCommand())
+	rootCmd.AddCommand(newLoadCommand())
+	rootCmd.AddCommand(newSaveCommand())
 	rootCmd.AddCommand(reverse.NewReverseCommand())
 	rootCmd.AddCommand(pull.NewPullCommand())
 	if err := rootCmd.Execute(); err != nil {
