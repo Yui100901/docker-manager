@@ -19,6 +19,7 @@ import (
 
 func NewReverseCommand() *cobra.Command {
 	var rerun bool
+	var save bool
 	cmd := &cobra.Command{
 		Use:   "reverse <name...>",
 		Short: "逆向Docker容器到启动命令",
@@ -27,27 +28,38 @@ func NewReverseCommand() *cobra.Command {
 			if cmds, err := reverse(containers); err != nil {
 				log_utils.Error.Fatalf("Error to reverse container: %v", err)
 			} else {
-				file, err := os.Create("docker_commands.sh")
-				if err != nil {
-					log_utils.Error.Fatalf("Failed to create file: %v", err)
-				}
-				defer file.Close()
-				fmt.Fprintln(file, "#!/bin/bash")
+
+				cmdStrMap := make(map[string]string)
 				for name, cmd := range cmds {
-					fmt.Fprintf(file, "# %s\n", name)
-					fmt.Fprintln(file, strings.Join(cmd, " "))
-					log_utils.Info.Printf("Generated docker command:\n%s", strings.Join(cmd, " "))
+
+					cmdStr := strings.Join(cmd, " ")
+					cmdStrMap[name] = cmdStr
+					log_utils.Info.Printf("Generated docker command:\n%s", cmdStr)
 					if rerun {
 						docker.ContainerStop(name)
 						docker.ContainerRemove(name, true, true)
 						command.RunCommand(cmd[0], cmd[1:]...)
 					}
 				}
+				if save {
+					file, err := os.Create("docker_run_command.sh")
+					if err != nil {
+						log_utils.Error.Fatalf("Failed to create file: %v", err)
+					}
+					defer file.Close()
+					fmt.Fprintln(file, "#!/bin/bash")
+					for name, cmdStr := range cmdStrMap {
+						fmt.Fprintf(file, "# %s\n", name)
+						fmt.Fprintln(file, cmdStr)
+					}
+				}
+
 				log_utils.Info.Println("Save command to docker_commands.sh successfully!")
 			}
 		},
 	}
 	cmd.Flags().BoolVarP(&rerun, "rerun", "r", false, "逆向解析完成后以解析出的命令重新创建容器")
+	cmd.Flags().BoolVarP(&save, "save", "s", false, "逆向解析完成后将命令保存到文件docker_run_command.sh")
 	return cmd
 }
 
