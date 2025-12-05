@@ -34,7 +34,7 @@ func NewReverseCommand() *cobra.Command {
 
 					cmdStr := strings.Join(cmd, " ")
 					cmdStrMap[name] = cmdStr
-					fmt.Printf("%s", cmdStr)
+					fmt.Println(cmdStr)
 					if rerun {
 						docker.ContainerStop(name)
 						docker.ContainerRemove(name, true, true)
