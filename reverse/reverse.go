@@ -2,13 +2,14 @@ package reverse
 
 import (
 	"docker-manager/docker"
-	"encoding/json"
 	"fmt"
-	"github.com/Yui100901/MyGo/command"
-	"github.com/Yui100901/MyGo/log_utils"
-	"github.com/spf13/cobra"
 	"os"
 	"strings"
+
+	"github.com/Yui100901/MyGo/command"
+	"github.com/Yui100901/MyGo/log_utils"
+	"github.com/docker/docker/api/types/container"
+	"github.com/spf13/cobra"
 )
 
 //
@@ -51,16 +52,16 @@ func NewReverseCommand() *cobra.Command {
 }
 
 func reverse(names []string) (map[string][]string, error) {
-	data, err := docker.ContainerInspect(names...)
-	if err != nil {
-		log_utils.Error.Println("Reverse Error", err)
-		return nil, err
+	var containerInfoList []container.InspectResponse
+	for _, name := range names {
+		info, err := docker.ContainerInspect1(name)
+		if err != nil {
+			log_utils.Error.Println("Reverse Error", err)
+			return nil, err
+		}
+		containerInfoList = append(containerInfoList, info)
 	}
-	var containerInfoList []docker.ContainerInfo
-	cleanData := strings.ReplaceAll(data, "\n", "")
-	if err := json.Unmarshal([]byte(cleanData), &containerInfoList); err != nil {
-		return nil, err
-	}
+
 	commandMap := make(map[string][]string)
 	for _, containerInfo := range containerInfoList {
 		name := containerInfo.Name

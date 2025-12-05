@@ -74,7 +74,7 @@ func loadImages(path string) error {
 }
 
 func saveImages(path string, merge bool, all bool) error {
-	images, err := docker.ListImages()
+	images, err := docker.ImageList()
 	if err != nil {
 		log_utils.Error.Println(err)
 		return err

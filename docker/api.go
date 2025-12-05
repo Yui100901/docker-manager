@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
 )
@@ -27,8 +28,8 @@ func initDockerClient() (*client.Client, error) {
 	return dockerClient, nil
 }
 
-// ListImages 列出所有docker镜像
-func ListImages() ([]image.Summary, error) {
+// ImageList 列出所有docker镜像
+func ImageList() ([]image.Summary, error) {
 	ctx := context.Background()
 	cli, err := initDockerClient()
 	if err != nil {
@@ -38,6 +39,16 @@ func ListImages() ([]image.Summary, error) {
 	// 获取镜像列表
 	images, err := cli.ImageList(ctx, image.ListOptions{All: true})
 	return images, err
+}
+
+func ContainerInspect1(containerID string) (container.InspectResponse, error) {
+	ctx := context.Background()
+	cli, err := initDockerClient()
+	if err != nil {
+		panic(err)
+	}
+	containerInfo, err := cli.ContainerInspect(ctx, containerID)
+	return containerInfo, err
 }
 
 // SaveImages 导出镜像
