@@ -133,3 +133,20 @@ func (dc *DockerCommand) ToCommand() []string {
 
 	return cmd
 }
+
+func (dc *DockerCommand) ToComposeService() ComposeService {
+	return ComposeService{
+		Image:         dc.Image,
+		ContainerName: dc.ContainerName,
+		Privileged:    dc.Privileged,
+		Restart:       dc.RestartPolicy,
+		User:          dc.User,
+		Environment:   dc.Envs,
+		Volumes:       dc.Mounts,
+		Ports:         dc.PortBindings,
+		Entrypoint:    dc.Entrypoint,
+		WorkingDir:    dc.WorkingDir,
+		Command:       dc.Cmd,
+		NetworkMode:   dc.NetworkMode,
+	}
+}
