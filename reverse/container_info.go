@@ -1,4 +1,4 @@
-package docker
+package reverse
 
 import (
 	"fmt"
@@ -7,7 +7,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 )
 
-type DockerCommand struct {
+type ContainerSpec struct {
 	Image           string
 	ContainerName   string
 	Privileged      bool
@@ -24,8 +24,8 @@ type DockerCommand struct {
 	NetworkMode     string
 }
 
-func NewDockerCommand(ci *container.InspectResponse) *DockerCommand {
-	return &DockerCommand{
+func NewDockerSpec(ci *container.InspectResponse) *ContainerSpec {
+	return &ContainerSpec{
 		Image:           ci.Config.Image,
 		ContainerName:   strings.TrimPrefix(ci.Name, "/"),
 		Privileged:      ci.HostConfig.Privileged,
@@ -81,7 +81,7 @@ func parsePortBindings(ci *container.InspectResponse) []string {
 	return ports
 }
 
-func (dc *DockerCommand) ToCommand() []string {
+func (dc *ContainerSpec) ToCommand() []string {
 	cmd := []string{"docker", "run", "-d"}
 
 	add := func(args ...string) {
@@ -134,7 +134,7 @@ func (dc *DockerCommand) ToCommand() []string {
 	return cmd
 }
 
-func (dc *DockerCommand) ToComposeService() ComposeService {
+func (dc *ContainerSpec) ToComposeService() ComposeService {
 	return ComposeService{
 		Image:         dc.Image,
 		ContainerName: dc.ContainerName,

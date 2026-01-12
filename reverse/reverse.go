@@ -1,89 +1,60 @@
 package reverse
 
 import (
-	"docker-manager/docker"
 	"fmt"
-	"log"
-	"os"
-	"strings"
 
-	"github.com/Yui100901/MyGo/command"
-	"github.com/docker/docker/api/types/container"
 	"github.com/spf13/cobra"
 )
 
-//
-// @Author yfy2001
-// @Date 2025/7/18 09 48
-//
-
 func NewReverseCommand() *cobra.Command {
-	var rerun bool
-	var save bool
+	var (
+		rerun       bool
+		save        bool
+		reverseType string
+	)
+
 	cmd := &cobra.Command{
 		Use:   "reverse <name...>",
-		Short: "逆向Docker容器到启动命令",
-		Run: func(cmd *cobra.Command, args []string) {
-			containers := args
-			if commandMap, _, err := reverse(containers); err != nil {
-				log.Fatalf("Error to reverse container: %v", err)
-			} else {
+		Short: "逆向 Docker 容器到启动命令",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return fmt.Errorf("必须提供至少一个容器名称")
+			}
 
-				cmdStrMap := make(map[string]string)
-				for name, cmd := range commandMap {
+			results, err := reverse(args)
+			if err != nil {
+				return err
+			}
 
-					cmdStr := strings.Join(cmd, " ")
-					cmdStrMap[name] = cmdStr
-					fmt.Println(cmdStr)
-					if rerun {
-						docker.ContainerStop(name)
-						docker.ContainerRemove(name, true, true)
-						command.RunCommand(cmd[0], cmd[1:]...)
-					}
-				}
-				if save {
-					file, err := os.Create("docker_run_command.sh")
-					if err != nil {
-						log.Fatalf("Failed to create file: %v", err)
-					}
-					defer file.Close()
-					fmt.Fprintln(file, "#!/bin/bash")
-					for name, cmdStr := range cmdStrMap {
-						fmt.Fprintf(file, "# %s\n", name)
-						fmt.Fprintln(file, cmdStr)
-					}
-					log.Println("Save command to docker_commands.sh successfully!")
+			rt := ReverseType(reverseType)
+
+			// 构建输出
+			cmdMap, composeMap := buildOutput(results, rt)
+
+			// 打印输出
+			printOutput(cmdMap, composeMap, rt)
+
+			// rerun
+			if rerun {
+				if err := rerunContainers(cmdMap, composeMap, rt); err != nil {
+					return err
 				}
 			}
+
+			// save
+			if save {
+				if err := saveOutput(cmdMap, composeMap, rt); err != nil {
+					return err
+				}
+			}
+
+			return nil
 		},
 	}
+
 	cmd.Flags().BoolVarP(&rerun, "rerun", "r", false, "逆向解析完成后以解析出的命令重新创建容器")
-	cmd.Flags().BoolVarP(&save, "save", "s", false, "逆向解析完成后将命令保存到文件docker_run_command.sh")
+	cmd.Flags().BoolVarP(&save, "save", "s", false, "保存输出到文件")
+	cmd.Flags().StringVarP(&reverseType, "reverse-type", "t", "cmd", "输出类型: cmd | compose | all")
+
 	return cmd
-}
-
-func reverse(names []string) (map[string][]string, map[string]docker.ComposeService, error) {
-	var containerInfoList []container.InspectResponse
-	for _, name := range names {
-		info, err := docker.ContainerInspect(name)
-		if err != nil {
-			log.Println("Reverse Error", err)
-			continue
-		}
-		containerInfoList = append(containerInfoList, info)
-	}
-
-	composeServiceMap := make(map[string]docker.ComposeService)
-	commandMap := make(map[string][]string)
-	for _, containerInfo := range containerInfoList {
-		name := containerInfo.Name
-		dockerCommand := docker.NewDockerCommand(&containerInfo)
-		commandStr := dockerCommand.ToCommand()
-		commandMap[name] = commandStr
-
-		composeService := dockerCommand.ToComposeService()
-		composeServiceMap[name] = composeService
-	}
-
-	return commandMap, composeServiceMap, nil
 }
