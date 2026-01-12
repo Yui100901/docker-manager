@@ -2,76 +2,11 @@ package docker
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/docker/docker/api/types/container"
 )
 
-func ParseContainerName(ci *container.InspectResponse) string {
-	return strings.TrimPrefix(ci.Name, "/")
-}
-
-func ParsePrivileged(ci *container.InspectResponse) bool {
-	return ci.HostConfig.Privileged
-}
-
-func ParsePublishAllPorts(ci *container.InspectResponse) bool {
-	return ci.HostConfig.PublishAllPorts
-}
-
-func ParseAutoRemove(ci *container.InspectResponse) bool {
-	return ci.HostConfig.AutoRemove
-}
-
-func ParseUser(ci *container.InspectResponse) string {
-	return ci.Config.User
-}
-
-func ParseEnvs(ci *container.InspectResponse) []string {
-	return ci.Config.Env
-}
-
-func ParseMounts(ci *container.InspectResponse) []string {
-	var mounts []string
-	for _, mount := range ci.Mounts {
-		if !filepath.IsAbs(mount.Destination) {
-			// 非绝对路径时挂载匿名卷
-			mounts = append(mounts, mount.Destination)
-		} else {
-			volume := fmt.Sprintf("%s:%s%s", mount.Source, mount.Destination,
-				func() string {
-					if mount.Mode == "" {
-						return ""
-					}
-					return fmt.Sprintf(":%s", mount.Mode)
-				}())
-			mounts = append(mounts, volume)
-		}
-	}
-	return mounts
-}
-
-func ParsePortBindings(ci *container.InspectResponse) []string {
-	var portBindings []string
-	for port, bindings := range ci.HostConfig.PortBindings {
-		for _, binding := range bindings {
-			// port.Port() 提取纯端口号
-			portBindings = append(portBindings, fmt.Sprintf("%s:%s", binding.HostPort, port.Port()))
-		}
-	}
-	return portBindings
-}
-
-func ParseRestartPolicy(ci *container.InspectResponse) string {
-	return string(ci.HostConfig.RestartPolicy.Name)
-}
-
-func ParseImage(ci *container.InspectResponse) string {
-	return ci.Config.Image
-}
-
-// DockerCommand 定义 DockerCommand 结构体
 type DockerCommand struct {
 	ContainerName   string
 	Privileged      bool
@@ -86,66 +21,97 @@ type DockerCommand struct {
 	Cmd             []string
 }
 
-// NewDockerCommand 从 container.InspectResponse 创建 DockerCommand 实例
-func NewDockerCommand(info *container.InspectResponse) *DockerCommand {
+func NewDockerCommand(ci *container.InspectResponse) *DockerCommand {
 	return &DockerCommand{
-		ContainerName:   ParseContainerName(info),
-		Privileged:      ParsePrivileged(info),
-		PublishAllPorts: ParsePublishAllPorts(info),
-		AutoRemove:      ParseAutoRemove(info),
-		RestartPolicy:   ParseRestartPolicy(info),
-		User:            ParseUser(info),
-		Envs:            ParseEnvs(info),
-		Mounts:          ParseMounts(info),
-		PortBindings:    ParsePortBindings(info),
-		Image:           ParseImage(info),
-		Cmd:             info.Config.Cmd, // 新增：容器启动命令
+		ContainerName:   strings.TrimPrefix(ci.Name, "/"),
+		Privileged:      ci.HostConfig.Privileged,
+		PublishAllPorts: ci.HostConfig.PublishAllPorts,
+		AutoRemove:      ci.HostConfig.AutoRemove,
+		RestartPolicy:   parseRestartPolicy(ci),
+		User:            ci.Config.User,
+		Envs:            ci.Config.Env,
+		Mounts:          parseMounts(ci),
+		PortBindings:    parsePortBindings(ci),
+		Image:           ci.Config.Image,
+		Cmd:             ci.Config.Cmd,
 	}
 }
 
-// ToCommand 将 DockerCommand 转换为命令行参数
+func parseRestartPolicy(ci *container.InspectResponse) string {
+	p := ci.HostConfig.RestartPolicy
+	if p.Name == "on-failure" && p.MaximumRetryCount > 0 {
+		return fmt.Sprintf("on-failure:%d", p.MaximumRetryCount)
+	}
+	return string(p.Name)
+}
+
+func parseMounts(ci *container.InspectResponse) []string {
+	var mounts []string
+	for _, m := range ci.Mounts {
+		if m.Type == "volume" {
+			mounts = append(mounts, m.Destination)
+		} else {
+			mode := ""
+			if m.Mode != "" {
+				mode = ":" + m.Mode
+			}
+			mounts = append(mounts, fmt.Sprintf("%s:%s%s", m.Source, m.Destination, mode))
+		}
+	}
+	return mounts
+}
+
+func parsePortBindings(ci *container.InspectResponse) []string {
+	var ports []string
+	for port, bindings := range ci.HostConfig.PortBindings {
+		for _, b := range bindings {
+			host := b.HostIP
+			if host == "" {
+				host = "0.0.0.0"
+			}
+			ports = append(ports, fmt.Sprintf("%s:%s:%s", host, b.HostPort, port.Port()))
+		}
+	}
+	return ports
+}
+
 func (dc *DockerCommand) ToCommand() []string {
-	var command []string
-	command = append(command, "docker", "run", "-d")
-	command = append(command, "--name", dc.ContainerName)
+	cmd := []string{"docker", "run", "-d"}
+
+	add := func(args ...string) {
+		cmd = append(cmd, args...)
+	}
+
+	add("--name", dc.ContainerName)
 
 	if dc.Privileged {
-		command = append(command, "--privileged")
+		add("--privileged")
 	}
 	if dc.PublishAllPorts {
-		command = append(command, "-P")
+		add("-P")
 	}
 	if dc.AutoRemove {
-		command = append(command, "--rm")
+		add("--rm")
 	}
 	if dc.RestartPolicy != "" {
-		command = append(command, "--restart", dc.RestartPolicy)
+		add("--restart", dc.RestartPolicy)
 	}
 	if dc.User != "" {
-		command = append(command, "-u", dc.User)
-	}
-	// 设置环境变量
-	for _, env := range dc.Envs {
-		command = append(command, "-e", env)
-	}
-	// 设置卷挂载
-	for _, mount := range dc.Mounts {
-		command = append(command, "-v", mount)
-	}
-	// 设置端口映射
-	for _, portBinding := range dc.PortBindings {
-		command = append(command, "-p", portBinding)
+		add("-u", dc.User)
 	}
 
-	// 镜像
-	if dc.Image != "" {
-		command = append(command, dc.Image)
+	for _, e := range dc.Envs {
+		add("-e", e)
+	}
+	for _, v := range dc.Mounts {
+		add("-v", v)
+	}
+	for _, p := range dc.PortBindings {
+		add("-p", p)
 	}
 
-	// 容器启动命令
-	if len(dc.Cmd) > 0 {
-		command = append(command, dc.Cmd...)
-	}
+	add(dc.Image)
+	add(dc.Cmd...)
 
-	return command
+	return cmd
 }
