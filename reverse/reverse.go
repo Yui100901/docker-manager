@@ -25,12 +25,12 @@ func NewReverseCommand() *cobra.Command {
 		Short: "逆向Docker容器到启动命令",
 		Run: func(cmd *cobra.Command, args []string) {
 			containers := args
-			if cmds, err := reverse(containers); err != nil {
+			if commandMap, _, err := reverse(containers); err != nil {
 				log.Fatalf("Error to reverse container: %v", err)
 			} else {
 
 				cmdStrMap := make(map[string]string)
-				for name, cmd := range cmds {
+				for name, cmd := range commandMap {
 
 					cmdStr := strings.Join(cmd, " ")
 					cmdStrMap[name] = cmdStr
@@ -62,7 +62,7 @@ func NewReverseCommand() *cobra.Command {
 	return cmd
 }
 
-func reverse(names []string) (map[string][]string, error) {
+func reverse(names []string) (map[string][]string, map[string]docker.ComposeService, error) {
 	var containerInfoList []container.InspectResponse
 	for _, name := range names {
 		info, err := docker.ContainerInspect(name)
@@ -73,12 +73,17 @@ func reverse(names []string) (map[string][]string, error) {
 		containerInfoList = append(containerInfoList, info)
 	}
 
+	composeServiceMap := make(map[string]docker.ComposeService)
 	commandMap := make(map[string][]string)
 	for _, containerInfo := range containerInfoList {
 		name := containerInfo.Name
 		dockerCommand := docker.NewDockerCommand(&containerInfo)
 		commandStr := dockerCommand.ToCommand()
 		commandMap[name] = commandStr
+
+		composeService := dockerCommand.ToComposeService()
+		composeServiceMap[name] = composeService
 	}
-	return commandMap, nil
+
+	return commandMap, composeServiceMap, nil
 }
