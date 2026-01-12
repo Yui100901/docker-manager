@@ -8,6 +8,7 @@ import (
 )
 
 type DockerCommand struct {
+	Image           string
 	ContainerName   string
 	Privileged      bool
 	PublishAllPorts bool
@@ -17,12 +18,15 @@ type DockerCommand struct {
 	Envs            []string
 	Mounts          []string
 	PortBindings    []string
-	Image           string
 	Cmd             []string
+	Entrypoint      []string
+	WorkingDir      string
+	NetworkMode     string
 }
 
 func NewDockerCommand(ci *container.InspectResponse) *DockerCommand {
 	return &DockerCommand{
+		Image:           ci.Config.Image,
 		ContainerName:   strings.TrimPrefix(ci.Name, "/"),
 		Privileged:      ci.HostConfig.Privileged,
 		PublishAllPorts: ci.HostConfig.PublishAllPorts,
@@ -32,8 +36,10 @@ func NewDockerCommand(ci *container.InspectResponse) *DockerCommand {
 		Envs:            ci.Config.Env,
 		Mounts:          parseMounts(ci),
 		PortBindings:    parsePortBindings(ci),
-		Image:           ci.Config.Image,
 		Cmd:             ci.Config.Cmd,
+		Entrypoint:      ci.Config.Entrypoint,
+		WorkingDir:      ci.Config.WorkingDir,
+		NetworkMode:     string(ci.HostConfig.NetworkMode),
 	}
 }
 
@@ -98,6 +104,18 @@ func (dc *DockerCommand) ToCommand() []string {
 	}
 	if dc.User != "" {
 		add("-u", dc.User)
+	}
+
+	if len(dc.Entrypoint) > 0 {
+		add("--entrypoint", strings.Join(dc.Entrypoint, " "))
+	}
+
+	if dc.WorkingDir != "" {
+		add("-w", dc.WorkingDir)
+	}
+
+	if dc.NetworkMode != "" && dc.NetworkMode != "default" {
+		add("--network", dc.NetworkMode)
 	}
 
 	for _, e := range dc.Envs {
