@@ -2,9 +2,12 @@ package reverse
 
 import (
 	"docker-manager/docker"
+	"fmt"
 	"log"
+	"strings"
 
 	"github.com/docker/docker/api/types/container"
+	"gopkg.in/yaml.v3"
 )
 
 //
@@ -12,7 +15,21 @@ import (
 // @Date 2026/1/12 21 06
 //
 
-type Parser struct {
+type ContainerSpec struct {
+	Image           string
+	ContainerName   string
+	Privileged      bool
+	PublishAllPorts bool
+	AutoRemove      bool
+	RestartPolicy   string
+	User            string
+	Envs            []string
+	Mounts          []string
+	PortBindings    []string
+	Cmd             []string
+	Entrypoint      []string
+	WorkingDir      string
+	NetworkMode     string
 }
 
 type ParsedResult struct {
@@ -21,8 +38,204 @@ type ParsedResult struct {
 	Compose ComposeService
 }
 
-func reverse(names []string) ([]ParsedResult, error) {
-	var infos []container.InspectResponse
+// -------------------- Parser --------------------
+
+type Parser struct {
+	ci container.InspectResponse
+}
+
+func NewParser(ci container.InspectResponse) *Parser {
+	return &Parser{ci: ci}
+}
+
+func (p *Parser) ToSpec() *ContainerSpec {
+	return &ContainerSpec{
+		Image:           p.ci.Config.Image,
+		ContainerName:   strings.TrimPrefix(p.ci.Name, "/"),
+		Privileged:      p.ci.HostConfig.Privileged,
+		PublishAllPorts: p.ci.HostConfig.PublishAllPorts,
+		AutoRemove:      p.ci.HostConfig.AutoRemove,
+		RestartPolicy:   p.parseRestartPolicy(),
+		User:            p.ci.Config.User,
+		Envs:            p.ci.Config.Env,
+		Mounts:          p.parseMounts(),
+		PortBindings:    p.parsePortBindings(),
+		Cmd:             p.ci.Config.Cmd,
+		Entrypoint:      p.ci.Config.Entrypoint,
+		WorkingDir:      p.ci.Config.WorkingDir,
+		NetworkMode:     string(p.ci.HostConfig.NetworkMode),
+	}
+}
+
+func (p *Parser) parseRestartPolicy() string {
+	rp := p.ci.HostConfig.RestartPolicy
+	if rp.Name == "on-failure" && rp.MaximumRetryCount > 0 {
+		return fmt.Sprintf("on-failure:%d", rp.MaximumRetryCount)
+	}
+	return string(rp.Name)
+}
+
+func (p *Parser) parseMounts() []string {
+	var mounts []string
+	for _, m := range p.ci.Mounts {
+		if m.Type == "volume" {
+			mounts = append(mounts, m.Destination)
+		} else {
+			mode := ""
+			if m.Mode != "" {
+				mode = ":" + m.Mode
+			}
+			mounts = append(mounts, fmt.Sprintf("%s:%s%s", m.Source, m.Destination, mode))
+		}
+	}
+	return mounts
+}
+
+func (p *Parser) parsePortBindings() []string {
+	var ports []string
+	for port, bindings := range p.ci.HostConfig.PortBindings {
+		for _, b := range bindings {
+			host := b.HostIP
+			if host == "" {
+				host = "0.0.0.0"
+			}
+			ports = append(ports, fmt.Sprintf("%s:%s:%s", host, b.HostPort, port.Port()))
+		}
+	}
+	return ports
+}
+
+// -------------------- Formatter --------------------
+
+type CommandFormatter struct{}
+
+func (f CommandFormatter) Format(spec *ContainerSpec) []string {
+	cmd := []string{"docker", "run", "-d"}
+
+	add := func(args ...string) { cmd = append(cmd, args...) }
+
+	add("--name", spec.ContainerName)
+
+	if spec.Privileged {
+		add("--privileged")
+	}
+	if spec.PublishAllPorts {
+		add("-P")
+	}
+	if spec.AutoRemove {
+		add("--rm")
+	}
+	if spec.RestartPolicy != "" {
+		add("--restart", spec.RestartPolicy)
+	}
+	if spec.User != "" {
+		add("-u", spec.User)
+	}
+	if len(spec.Entrypoint) > 0 {
+		add("--entrypoint", strings.Join(spec.Entrypoint, " "))
+	}
+	if spec.WorkingDir != "" {
+		add("-w", spec.WorkingDir)
+	}
+	if spec.NetworkMode != "" && spec.NetworkMode != "default" {
+		add("--network", spec.NetworkMode)
+	}
+
+	for _, e := range spec.Envs {
+		add("-e", e)
+	}
+	for _, v := range spec.Mounts {
+		add("-v", v)
+	}
+	for _, p := range spec.PortBindings {
+		add("-p", p)
+	}
+
+	add(spec.Image)
+	add(spec.Cmd...)
+
+	return cmd
+}
+
+type ComposeFormatter struct{}
+
+func (f ComposeFormatter) Format(spec *ContainerSpec) ComposeService {
+	return ComposeService{
+		Image:         spec.Image,
+		ContainerName: spec.ContainerName,
+		Privileged:    spec.Privileged,
+		Restart:       spec.RestartPolicy,
+		User:          spec.User,
+		Environment:   spec.Envs,
+		Volumes:       spec.Mounts,
+		Ports:         spec.PortBindings,
+		Entrypoint:    spec.Entrypoint,
+		WorkingDir:    spec.WorkingDir,
+		Command:       spec.Cmd,
+		NetworkMode:   spec.NetworkMode,
+	}
+}
+
+// -------------------- Parser 统一输出 --------------------
+
+func (p *Parser) ToResult() ParsedResult {
+	spec := p.ToSpec()
+	cmdFormatter := CommandFormatter{}
+	composeFormatter := ComposeFormatter{}
+
+	return ParsedResult{
+		Name:    trimContainerName(p.ci.Name),
+		Command: cmdFormatter.Format(spec),
+		Compose: composeFormatter.Format(spec),
+	}
+}
+
+// -------------------- reverse --------------------
+
+type ReverseResult struct {
+	ParsedResults []ParsedResult
+	RunCommands   map[string][]string
+	ComposeMap    map[string]ComposeService
+}
+
+func NewReverseResult(results []ParsedResult) *ReverseResult {
+	rr := &ReverseResult{ParsedResults: results}
+	rr.RunCommands = make(map[string][]string)
+	rr.ComposeMap = make(map[string]ComposeService)
+
+	for _, r := range results {
+		rr.RunCommands[r.Name] = r.Command
+		rr.ComposeMap[r.Name] = r.Compose
+	}
+	return rr
+}
+
+func (rr *ReverseResult) Print(rt ReverseType) {
+	if rt == ReverseCmd || rt == ReverseAll {
+		fmt.Println(rr.DockerRunCommandString())
+
+	}
+
+	if rt == ReverseCompose || rt == ReverseAll {
+		fmt.Println(rr.DockerComposeFileString())
+	}
+}
+
+func (rr *ReverseResult) DockerRunCommandString() string {
+	var sb strings.Builder
+	for name, cmd := range rr.RunCommands {
+		sb.WriteString(fmt.Sprintf("# %s\n%s\n\n", name, strings.Join(cmd, " ")))
+	}
+	return sb.String()
+}
+
+func (rr *ReverseResult) DockerComposeFileString() string {
+	yml, _ := yaml.Marshal(ComposeFile{Services: rr.ComposeMap})
+	return string(yml)
+}
+
+func reverse(names []string) (*ReverseResult, error) {
+	var results []ParsedResult
 
 	for _, name := range names {
 		info, err := docker.ContainerInspect(name)
@@ -30,26 +243,16 @@ func reverse(names []string) ([]ParsedResult, error) {
 			log.Printf("容器 %s 解析失败: %v", name, err)
 			continue
 		}
-		infos = append(infos, info)
+
+		parser := NewParser(info)
+		results = append(results, parser.ToResult())
 	}
 
-	var results []ParsedResult
-	for _, info := range infos {
-		name := trimContainerName(info.Name)
-		spec := NewDockerSpec(&info)
-
-		results = append(results, ParsedResult{
-			Name:    name,
-			Command: spec.ToCommand(),
-			Compose: spec.ToComposeService(),
-		})
-	}
-
-	return results, nil
+	return NewReverseResult(results), nil
 }
 
 func trimContainerName(name string) string {
-	if len(name) > 0 && name[0] == '/' {
+	if strings.HasPrefix(name, "/") {
 		return name[1:]
 	}
 	return name

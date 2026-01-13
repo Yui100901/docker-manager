@@ -3,7 +3,6 @@ package reverse
 import (
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/Yui100901/MyGo/command"
 	"gopkg.in/yaml.v3"
@@ -14,23 +13,22 @@ import (
 // @Date 2026/1/12 22 26
 //
 
-func rerunContainers(cmdMap map[string]string, composeMap map[string]ComposeService, rt ReverseType) error {
+func rerunContainers(reverseResult *ReverseResult, rt ReverseType) error {
 	// rerun docker run
-	for name, cmdStr := range cmdMap {
-		parts := strings.Split(cmdStr, " ")
+	for name, cmdSlice := range reverseResult.RunCommands {
 		command.RunCommand("docker", "stop", name)
 		command.RunCommand("docker", "rm", "-f", name)
 
-		if err := command.RunCommand(parts[0], parts[1:]...); err != nil {
+		if err := command.RunCommand(cmdSlice[0], cmdSlice[1:]...); err != nil {
 			return err
 		}
 	}
 
 	// rerun compose
 	if rt == ReverseCompose || rt == ReverseAll {
-		yml, _ := yaml.Marshal(ComposeFile{Services: composeMap})
+		ymlString := reverseResult.DockerComposeFileString()
 		tmp := "docker-compose.reverse.yml"
-		if err := os.WriteFile(tmp, yml, 0644); err != nil {
+		if err := os.WriteFile(tmp, []byte(ymlString), 0644); err != nil {
 			return err
 		}
 		return command.RunCommand("docker", "compose", "-f", tmp, "up", "-d")
@@ -39,7 +37,7 @@ func rerunContainers(cmdMap map[string]string, composeMap map[string]ComposeServ
 	return nil
 }
 
-func saveOutput(cmdMap map[string]string, composeMap map[string]ComposeService, rt ReverseType) error {
+func saveOutput(reverseResult *ReverseResult, rt ReverseType) error {
 	if rt == ReverseCmd || rt == ReverseAll {
 		f, err := os.Create("docker_run_command.sh")
 		if err != nil {
@@ -48,13 +46,11 @@ func saveOutput(cmdMap map[string]string, composeMap map[string]ComposeService, 
 		defer f.Close()
 
 		fmt.Fprintln(f, "#!/bin/bash")
-		for name, cmd := range cmdMap {
-			fmt.Fprintf(f, "# %s\n%s\n\n", name, cmd)
-		}
+		fmt.Fprint(f, reverseResult.DockerRunCommandString())
 	}
 
 	if rt == ReverseCompose || rt == ReverseAll {
-		yml, _ := yaml.Marshal(ComposeFile{Services: composeMap})
+		yml, _ := yaml.Marshal(ComposeFile{Services: reverseResult.ComposeMap})
 		return os.WriteFile("docker-compose.reverse.yml", yml, 0644)
 	}
 
