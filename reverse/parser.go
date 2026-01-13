@@ -4,6 +4,7 @@ import (
 	"docker-manager/docker"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 
 	"github.com/docker/docker/api/types/container"
@@ -329,4 +330,24 @@ func trimContainerName(name string) string {
 		return name[1:]
 	}
 	return name
+}
+
+func (rr *ReverseResult) saveOutput(rt ReverseType) error {
+	if rt == ReverseCmd || rt == ReverseAll {
+		f, err := os.Create("docker_run_command.sh")
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+
+		fmt.Fprintln(f, "#!/bin/bash")
+		fmt.Fprint(f, rr.DockerRunCommandString(rr.options.PrettyFormat))
+	}
+
+	if rt == ReverseCompose || rt == ReverseAll {
+		yml, _ := yaml.Marshal(ComposeFile{Services: rr.ComposeMap})
+		return os.WriteFile("docker-compose.reverse.yml", yml, 0644)
+	}
+
+	return nil
 }

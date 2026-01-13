@@ -57,7 +57,7 @@ func NewReverseCommand() *cobra.Command {
 
 			// 保存输出
 			if save {
-				if err := saveOutput(reverseResult, rt); err != nil {
+				if err := reverseResult.saveOutput(rt); err != nil {
 					return fmt.Errorf("保存输出失败: %w", err)
 				}
 			}
