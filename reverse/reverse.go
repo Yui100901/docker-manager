@@ -16,10 +16,11 @@ const (
 
 func NewReverseCommand() *cobra.Command {
 	var (
-		rerun           bool
-		save            bool
-		reverseType     string
-		preserveVolumes bool
+		rerun             bool
+		save              bool
+		reverseType       string
+		preserveVolumes   bool
+		filterDefaultEnvs bool
 	)
 
 	cmd := &cobra.Command{
@@ -39,8 +40,11 @@ func NewReverseCommand() *cobra.Command {
 				return fmt.Errorf("无效的输出类型: %s (必须是 cmd | compose | all)", reverseType)
 			}
 
-			// 传递 preserveVolumes 参数
-			opts := ParserOptions{PreserveVolumes: preserveVolumes}
+			// 传递选项
+			opts := ParserOptions{
+				PreserveVolumes:   preserveVolumes,
+				FilterDefaultEnvs: filterDefaultEnvs,
+			}
 
 			reverseResult, err := reverseWithOptions(args, opts)
 			if err != nil {
@@ -72,6 +76,7 @@ func NewReverseCommand() *cobra.Command {
 	cmd.Flags().BoolVarP(&save, "save", "s", false, "保存输出到文件")
 	cmd.Flags().StringVarP(&reverseType, "reverse-type", "t", "cmd", "输出类型: cmd | compose | all")
 	cmd.Flags().BoolVar(&preserveVolumes, "preserve-volumes", false, "是否保留匿名卷名称（默认关闭）")
+	cmd.Flags().BoolVar(&filterDefaultEnvs, "filter-default-envs", true, "是否过滤掉 Docker 默认环境变量（默认开启）")
 
 	return cmd
 }

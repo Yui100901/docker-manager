@@ -41,7 +41,8 @@ type ParsedResult struct {
 // -------------------- Parser --------------------
 
 type ParserOptions struct {
-	PreserveVolumes bool // true: 保留匿名卷名字，false: 简化为容器路径
+	PreserveVolumes   bool // true: 保留匿名卷名字，false: 简化为容器路径
+	FilterDefaultEnvs bool // true: 过滤掉 Docker 固有默认 env，false: 保留全部
 }
 
 type Parser struct {
@@ -62,7 +63,7 @@ func (p *Parser) ToSpec() *ContainerSpec {
 		AutoRemove:      p.ci.HostConfig.AutoRemove,
 		RestartPolicy:   p.parseRestartPolicy(),
 		User:            p.ci.Config.User,
-		Envs:            p.ci.Config.Env,
+		Envs:            p.parseEnvs(),
 		Mounts:          p.parseMounts(),
 		PortBindings:    p.parsePortBindings(),
 		Cmd:             p.ci.Config.Cmd,
@@ -78,6 +79,33 @@ func (p *Parser) parseRestartPolicy() string {
 		return fmt.Sprintf("on-failure:%d", rp.MaximumRetryCount)
 	}
 	return string(rp.Name)
+}
+
+var defaultEnvKeys = map[string]bool{
+	"PATH":      true,
+	"HOSTNAME":  true,
+	"HOME":      true,
+	"TERM":      true,
+	"container": true,
+}
+
+func (p *Parser) parseEnvs() []string {
+	envs := p.ci.Config.Env
+	if !p.options.FilterDefaultEnvs {
+		return envs
+	}
+	var result []string
+	for _, e := range envs {
+		kv := strings.SplitN(e, "=", 2)
+		if len(kv) == 2 {
+			key := kv[0]
+			if defaultEnvKeys[key] {
+				continue // 跳过默认变量
+			}
+		}
+		result = append(result, e)
+	}
+	return result
 }
 
 func (p *Parser) parseMounts() []string {
