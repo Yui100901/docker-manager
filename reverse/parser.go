@@ -109,11 +109,11 @@ func (p *Parser) parsePortBindings() []string {
 	var ports []string
 	for port, bindings := range p.ci.HostConfig.PortBindings {
 		for _, b := range bindings {
-			host := b.HostIP
-			if host == "" {
-				host = "0.0.0.0"
+			if b.HostIP == "" || b.HostIP == "0.0.0.0" {
+				ports = append(ports, fmt.Sprintf("%s:%s", b.HostPort, port.Port()))
+			} else {
+				ports = append(ports, fmt.Sprintf("%s:%s:%s", b.HostIP, b.HostPort, port.Port()))
 			}
-			ports = append(ports, fmt.Sprintf("%s:%s:%s", host, b.HostPort, port.Port()))
 		}
 	}
 	return ports
