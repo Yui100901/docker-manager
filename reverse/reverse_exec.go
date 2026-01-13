@@ -1,6 +1,7 @@
 package reverse
 
 import (
+	"docker-manager/docker"
 	"fmt"
 	"os"
 
@@ -16,8 +17,8 @@ import (
 func rerunContainers(reverseResult *ReverseResult, rt ReverseType) error {
 	// rerun docker run
 	for name, cmdSlice := range reverseResult.RunCommands {
-		command.RunCommand("docker", "stop", name)
-		command.RunCommand("docker", "rm", "-f", name)
+		docker.ContainerStop(name)
+		docker.ContainerRemove(name, true, false)
 
 		if err := command.RunCommand(cmdSlice[0], cmdSlice[1:]...); err != nil {
 			return err
