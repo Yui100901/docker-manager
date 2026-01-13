@@ -146,13 +146,14 @@ func (f CommandFormatter) Format(spec *ContainerSpec) []string {
 		add("-u", spec.User)
 	}
 
-	// 改进 Entrypoint 处理
+	// 改进 Entrypoint 处理，不修改 spec.Cmd
+	finalCmd := spec.Cmd
 	if len(spec.Entrypoint) > 0 {
 		// 第一个元素作为 entrypoint
 		add("--entrypoint", spec.Entrypoint[0])
 		// 剩余元素拼接到 Cmd 前面
 		if len(spec.Entrypoint) > 1 {
-			spec.Cmd = append(spec.Entrypoint[1:], spec.Cmd...)
+			finalCmd = append(spec.Entrypoint[1:], finalCmd...)
 		}
 	}
 
@@ -174,7 +175,7 @@ func (f CommandFormatter) Format(spec *ContainerSpec) []string {
 	}
 
 	add(spec.Image)
-	add(spec.Cmd...)
+	add(finalCmd...)
 
 	return cmd
 }
