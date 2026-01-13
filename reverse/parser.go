@@ -174,11 +174,17 @@ func (f CommandFormatter) Format(spec *ContainerSpec) []string {
 type ComposeFormatter struct{}
 
 func (f ComposeFormatter) Format(spec *ContainerSpec) ComposeService {
+	restart := spec.RestartPolicy
+	// 处理 on-failure:N
+	if strings.HasPrefix(restart, "on-failure:") {
+		restart = "on-failure"
+	}
+
 	return ComposeService{
 		Image:         spec.Image,
 		ContainerName: spec.ContainerName,
 		Privileged:    spec.Privileged,
-		Restart:       spec.RestartPolicy,
+		Restart:       restart,
 		User:          spec.User,
 		Environment:   spec.Envs,
 		Volumes:       spec.Mounts,
