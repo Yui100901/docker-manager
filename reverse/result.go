@@ -40,7 +40,11 @@ func NewReverseResult(results []ParsedResult, options ReverseOptions) *ReverseRe
 
 func (rr *ReverseResult) Print() {
 	if rr.options.ReverseType == ReverseCmd || rr.options.ReverseType == ReverseAll {
-		fmt.Println(rr.DockerRunCommandString())
+		if rr.options.PrettyFormat {
+			fmt.Println(rr.DockerRunCommandStringPretty())
+		} else {
+			fmt.Println(rr.DockerRunCommandStringRaw())
+		}
 	}
 
 	if rr.options.ReverseType == ReverseCompose || rr.options.ReverseType == ReverseAll {
@@ -48,26 +52,94 @@ func (rr *ReverseResult) Print() {
 	}
 }
 
-func (rr *ReverseResult) DockerRunCommandString() string {
+// 原始单行输出
+func (rr *ReverseResult) DockerRunCommandStringRaw() string {
+	var sb strings.Builder
+	for name, cmd := range rr.RunCommands {
+		sb.WriteString(fmt.Sprintf("# %s\n%s\n\n", name, strings.Join(cmd, " ")))
+	}
+	return sb.String()
+}
+
+func (rr *ReverseResult) DockerRunCommandStringPretty() string {
 	var sb strings.Builder
 	for name, cmd := range rr.RunCommands {
 		sb.WriteString(fmt.Sprintf("# %s\n", name))
-		if rr.options.PrettyFormat {
-			sb.WriteString(cmd[0]) // docker
-			sb.WriteString(" ")
-			sb.WriteString(cmd[1]) // run
-			sb.WriteString("\n")
-			for _, arg := range cmd[2:] {
-				sb.WriteString("  ")
-				sb.WriteString(arg)
-				sb.WriteString("\n")
+		sb.WriteString("docker run \\\n")
+
+		foundSplit := false
+		for i := 2; i < len(cmd); {
+			arg := cmd[i]
+
+			if arg == CommandSplitMarker {
+				foundSplit = true
+				i++
+				continue
 			}
-		} else {
-			sb.WriteString(strings.Join(cmd, " "))
-			sb.WriteString("\n\n")
+
+			if foundSplit {
+				// 镜像及后续命令在同一行
+				sb.WriteString("    " + strings.Join(cmd[i:], " ") + "\n\n")
+				break
+			}
+
+			// 参数处理
+			if i+1 < len(cmd) && !strings.HasPrefix(cmd[i+1], "-") {
+				switch arg {
+				case "--name", "-u", "-w", "--network", "--restart", "--entrypoint":
+					sb.WriteString(fmt.Sprintf("    %s=%s \\\n", arg, cmd[i+1]))
+					i += 2
+				case "-e", "-v", "-p":
+					sb.WriteString(fmt.Sprintf("    %s %s \\\n", arg, cmd[i+1]))
+					i += 2
+				case "-d":
+					sb.WriteString("    --detach=true \\\n")
+					i++
+				default:
+					sb.WriteString(fmt.Sprintf("    %s %s \\\n", arg, cmd[i+1]))
+					i += 2
+				}
+			} else {
+				// 单独布尔参数
+				switch arg {
+				case "-d":
+					sb.WriteString("    --detach=true \\\n")
+				case "--rm":
+					sb.WriteString("    --rm=true \\\n")
+				case "--privileged":
+					sb.WriteString("    --privileged=true \\\n")
+				default:
+					sb.WriteString("    " + arg + " \\\n")
+				}
+				i++
+			}
 		}
 	}
 	return sb.String()
+}
+
+func (rr *ReverseResult) saveOutput() error {
+	if rr.options.ReverseType == ReverseCmd || rr.options.ReverseType == ReverseAll {
+		f, err := os.Create("docker_run_command.sh")
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+
+		fmt.Fprintln(f, "#!/bin/bash")
+		if rr.options.PrettyFormat {
+			fmt.Fprint(f, rr.DockerRunCommandStringPretty())
+		} else {
+			fmt.Fprint(f, rr.DockerRunCommandStringRaw())
+		}
+	}
+
+	if rr.options.ReverseType == ReverseCompose || rr.options.ReverseType == ReverseAll {
+		yml, _ := yaml.Marshal(ComposeFile{Services: rr.ComposeMap})
+		return os.WriteFile("docker-compose.reverse.yml", yml, 0644)
+	}
+
+	return nil
 }
 
 func (rr *ReverseResult) DockerComposeFileString() string {
@@ -90,26 +162,6 @@ func reverseWithOptions(names []string, options ReverseOptions) (*ReverseResult,
 	}
 
 	return NewReverseResult(results, options), nil
-}
-
-func (rr *ReverseResult) saveOutput() error {
-	if rr.options.ReverseType == ReverseCmd || rr.options.ReverseType == ReverseAll {
-		f, err := os.Create("docker_run_command.sh")
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-
-		fmt.Fprintln(f, "#!/bin/bash")
-		fmt.Fprint(f, rr.DockerRunCommandString())
-	}
-
-	if rr.options.ReverseType == ReverseCompose || rr.options.ReverseType == ReverseAll {
-		yml, _ := yaml.Marshal(ComposeFile{Services: rr.ComposeMap})
-		return os.WriteFile("docker-compose.reverse.yml", yml, 0644)
-	}
-
-	return nil
 }
 
 func (rr *ReverseResult) rerunContainers() error {

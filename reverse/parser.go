@@ -143,13 +143,14 @@ func (p *Parser) parsePortBindings() []string {
 
 type CommandFormatter struct{}
 
+const CommandSplitMarker = "--__SPLIT__"
+
 func (f CommandFormatter) Format(spec *ContainerSpec) []string {
 	cmd := []string{"docker", "run", "-d"}
-
 	add := func(args ...string) { cmd = append(cmd, args...) }
 
+	// 公共选项
 	add("--name", spec.ContainerName)
-
 	if spec.Privileged {
 		add("--privileged")
 	}
@@ -165,25 +166,15 @@ func (f CommandFormatter) Format(spec *ContainerSpec) []string {
 	if spec.User != "" {
 		add("-u", spec.User)
 	}
-
-	// 改进 Entrypoint 处理，不修改 spec.Cmd
-	finalCmd := spec.Cmd
 	if len(spec.Entrypoint) > 0 {
-		// 第一个元素作为 entrypoint
 		add("--entrypoint", spec.Entrypoint[0])
-		// 剩余元素拼接到 Cmd 前面
-		if len(spec.Entrypoint) > 1 {
-			finalCmd = append(spec.Entrypoint[1:], finalCmd...)
-		}
 	}
-
 	if spec.WorkingDir != "" {
 		add("-w", spec.WorkingDir)
 	}
 	if spec.NetworkMode != "" && spec.NetworkMode != "default" {
 		add("--network", spec.NetworkMode)
 	}
-
 	for _, e := range spec.Envs {
 		add("-e", e)
 	}
@@ -194,8 +185,16 @@ func (f CommandFormatter) Format(spec *ContainerSpec) []string {
 		add("-p", p)
 	}
 
-	add(spec.Image)
-	add(finalCmd...)
+	// 插入分隔符
+	cmd = append(cmd, CommandSplitMarker)
+
+	// 镜像 + 命令部分
+	finalCmd := spec.Cmd
+	if len(spec.Entrypoint) > 1 {
+		finalCmd = append(spec.Entrypoint[1:], finalCmd...)
+	}
+	cmd = append(cmd, spec.Image)
+	cmd = append(cmd, finalCmd...)
 
 	return cmd
 }
