@@ -52,11 +52,18 @@ func (rr *ReverseResult) Print() {
 	}
 }
 
-// 原始单行输出
 func (rr *ReverseResult) DockerRunCommandStringRaw() string {
 	var sb strings.Builder
 	for name, cmd := range rr.RunCommands {
-		sb.WriteString(fmt.Sprintf("# %s\n%s\n\n", name, strings.Join(cmd, " ")))
+		// 过滤掉分隔符
+		var filtered []string
+		for _, c := range cmd {
+			if c == CommandSplitMarker {
+				continue
+			}
+			filtered = append(filtered, c)
+		}
+		sb.WriteString(fmt.Sprintf("# %s\n%s\n\n", name, strings.Join(filtered, " ")))
 	}
 	return sb.String()
 }
@@ -92,22 +99,19 @@ func (rr *ReverseResult) DockerRunCommandStringPretty() string {
 				case "-e", "-v", "-p":
 					sb.WriteString(fmt.Sprintf("    %s %s \\\n", arg, cmd[i+1]))
 					i += 2
-				case "-d":
-					sb.WriteString("    --detach=true \\\n")
-					i++
 				default:
 					sb.WriteString(fmt.Sprintf("    %s %s \\\n", arg, cmd[i+1]))
 					i += 2
 				}
 			} else {
-				// 单独布尔参数
+				// 单独布尔参数，使用更常见的写法
 				switch arg {
 				case "-d":
-					sb.WriteString("    --detach=true \\\n")
+					sb.WriteString("    -d \\\n")
 				case "--rm":
-					sb.WriteString("    --rm=true \\\n")
+					sb.WriteString("    --rm \\\n")
 				case "--privileged":
-					sb.WriteString("    --privileged=true \\\n")
+					sb.WriteString("    --privileged \\\n")
 				default:
 					sb.WriteString("    " + arg + " \\\n")
 				}
