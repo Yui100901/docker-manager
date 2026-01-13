@@ -6,14 +6,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-type ReverseType string
-
-const (
-	ReverseCmd     ReverseType = "cmd"
-	ReverseCompose ReverseType = "compose"
-	ReverseAll     ReverseType = "all"
-)
-
 func NewReverseCommand() *cobra.Command {
 	var (
 		rerun             bool
@@ -42,9 +34,13 @@ func NewReverseCommand() *cobra.Command {
 			}
 
 			// 传递选项
-			opts := ParserOptions{
+			opts := ReverseOptions{
 				PreserveVolumes:   preserveVolumes,
 				FilterDefaultEnvs: filterDefaultEnvs,
+				PrettyFormat:      prettyFormat,
+				Rerun:             rerun,
+				Save:              save,
+				ReverseType:       rt,
 			}
 
 			reverseResult, err := reverseWithOptions(args, opts)
@@ -53,18 +49,18 @@ func NewReverseCommand() *cobra.Command {
 			}
 
 			// 打印输出
-			reverseResult.Print(rt)
+			reverseResult.Print()
 
 			// 保存输出
 			if save {
-				if err := reverseResult.saveOutput(rt); err != nil {
+				if err := reverseResult.saveOutput(); err != nil {
 					return fmt.Errorf("保存输出失败: %w", err)
 				}
 			}
 
 			// 重新运行容器
 			if rerun {
-				if err := rerunContainers(reverseResult, rt); err != nil {
+				if err := reverseResult.rerunContainers(); err != nil {
 					return fmt.Errorf("重新运行容器失败: %w", err)
 				}
 			}

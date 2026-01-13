@@ -1,14 +1,10 @@
 package reverse
 
 import (
-	"docker-manager/docker"
 	"fmt"
-	"log"
-	"os"
 	"strings"
 
 	"github.com/docker/docker/api/types/container"
-	"gopkg.in/yaml.v3"
 )
 
 //
@@ -41,18 +37,12 @@ type ParsedResult struct {
 
 // -------------------- Parser --------------------
 
-type ParserOptions struct {
-	PreserveVolumes   bool // true: 保留匿名卷名字，false: 简化为容器路径
-	FilterDefaultEnvs bool // true: 过滤掉 Docker 固有默认 env，false: 保留全部
-	PrettyFormat      bool // true: 格式化输出 docker run 命令
-}
-
 type Parser struct {
 	ci      container.InspectResponse
-	options ParserOptions
+	options ReverseOptions
 }
 
-func NewParser(ci container.InspectResponse, opts ParserOptions) *Parser {
+func NewParser(ci container.InspectResponse, opts ReverseOptions) *Parser {
 	return &Parser{ci: ci, options: opts}
 }
 
@@ -249,105 +239,9 @@ func (p *Parser) ToResult() ParsedResult {
 	}
 }
 
-// -------------------- reverse --------------------
-
-type ReverseResult struct {
-	ParsedResults []ParsedResult
-	RunCommands   map[string][]string
-	ComposeMap    map[string]ComposeService
-	options       ParserOptions
-}
-
-func NewReverseResult(results []ParsedResult, options ParserOptions) *ReverseResult {
-	rr := &ReverseResult{ParsedResults: results}
-	rr.RunCommands = make(map[string][]string)
-	rr.ComposeMap = make(map[string]ComposeService)
-
-	for _, r := range results {
-		rr.RunCommands[r.Name] = r.Command
-		rr.ComposeMap[r.Name] = r.Compose
-	}
-	return rr
-}
-
-func (rr *ReverseResult) Print(rt ReverseType) {
-	if rt == ReverseCmd || rt == ReverseAll {
-		fmt.Println(rr.DockerRunCommandString(rr.options.PrettyFormat))
-
-	}
-
-	if rt == ReverseCompose || rt == ReverseAll {
-		fmt.Println(rr.DockerComposeFileString())
-	}
-}
-
-func (rr *ReverseResult) DockerRunCommandString(pretty bool) string {
-	var sb strings.Builder
-	for name, cmd := range rr.RunCommands {
-		sb.WriteString(fmt.Sprintf("# %s\n", name))
-		if pretty {
-			sb.WriteString(cmd[0]) // docker
-			sb.WriteString(" ")
-			sb.WriteString(cmd[1]) // run
-			sb.WriteString("\n")
-			for _, arg := range cmd[2:] {
-				sb.WriteString("  ")
-				sb.WriteString(arg)
-				sb.WriteString("\n")
-			}
-		} else {
-			sb.WriteString(strings.Join(cmd, " "))
-			sb.WriteString("\n\n")
-		}
-	}
-	return sb.String()
-}
-
-func (rr *ReverseResult) DockerComposeFileString() string {
-	yml, _ := yaml.Marshal(ComposeFile{Services: rr.ComposeMap})
-	return string(yml)
-}
-
-func reverseWithOptions(names []string, options ParserOptions) (*ReverseResult, error) {
-	var results []ParsedResult
-
-	for _, name := range names {
-		info, err := docker.ContainerInspect(name)
-		if err != nil {
-			log.Printf("容器 %s 解析失败: %v", name, err)
-			continue
-		}
-
-		parser := NewParser(info, options)
-		results = append(results, parser.ToResult())
-	}
-
-	return NewReverseResult(results, options), nil
-}
-
 func trimContainerName(name string) string {
 	if strings.HasPrefix(name, "/") {
 		return name[1:]
 	}
 	return name
-}
-
-func (rr *ReverseResult) saveOutput(rt ReverseType) error {
-	if rt == ReverseCmd || rt == ReverseAll {
-		f, err := os.Create("docker_run_command.sh")
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-
-		fmt.Fprintln(f, "#!/bin/bash")
-		fmt.Fprint(f, rr.DockerRunCommandString(rr.options.PrettyFormat))
-	}
-
-	if rt == ReverseCompose || rt == ReverseAll {
-		yml, _ := yaml.Marshal(ComposeFile{Services: rr.ComposeMap})
-		return os.WriteFile("docker-compose.reverse.yml", yml, 0644)
-	}
-
-	return nil
 }
