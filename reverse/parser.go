@@ -145,9 +145,17 @@ func (f CommandFormatter) Format(spec *ContainerSpec) []string {
 	if spec.User != "" {
 		add("-u", spec.User)
 	}
+
+	// 改进 Entrypoint 处理
 	if len(spec.Entrypoint) > 0 {
-		add("--entrypoint", strings.Join(spec.Entrypoint, " "))
+		// 第一个元素作为 entrypoint
+		add("--entrypoint", spec.Entrypoint[0])
+		// 剩余元素拼接到 Cmd 前面
+		if len(spec.Entrypoint) > 1 {
+			spec.Cmd = append(spec.Entrypoint[1:], spec.Cmd...)
+		}
 	}
+
 	if spec.WorkingDir != "" {
 		add("-w", spec.WorkingDir)
 	}
