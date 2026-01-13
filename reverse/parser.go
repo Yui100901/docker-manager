@@ -43,6 +43,7 @@ type ParsedResult struct {
 type ParserOptions struct {
 	PreserveVolumes   bool // true: 保留匿名卷名字，false: 简化为容器路径
 	FilterDefaultEnvs bool // true: 过滤掉 Docker 固有默认 env，false: 保留全部
+	PrettyFormat      bool // true: 格式化输出 docker run 命令
 }
 
 type Parser struct {
@@ -253,9 +254,10 @@ type ReverseResult struct {
 	ParsedResults []ParsedResult
 	RunCommands   map[string][]string
 	ComposeMap    map[string]ComposeService
+	options       ParserOptions
 }
 
-func NewReverseResult(results []ParsedResult) *ReverseResult {
+func NewReverseResult(results []ParsedResult, options ParserOptions) *ReverseResult {
 	rr := &ReverseResult{ParsedResults: results}
 	rr.RunCommands = make(map[string][]string)
 	rr.ComposeMap = make(map[string]ComposeService)
@@ -269,7 +271,7 @@ func NewReverseResult(results []ParsedResult) *ReverseResult {
 
 func (rr *ReverseResult) Print(rt ReverseType) {
 	if rt == ReverseCmd || rt == ReverseAll {
-		fmt.Println(rr.DockerRunCommandString())
+		fmt.Println(rr.DockerRunCommandString(rr.options.PrettyFormat))
 
 	}
 
@@ -278,10 +280,24 @@ func (rr *ReverseResult) Print(rt ReverseType) {
 	}
 }
 
-func (rr *ReverseResult) DockerRunCommandString() string {
+func (rr *ReverseResult) DockerRunCommandString(pretty bool) string {
 	var sb strings.Builder
 	for name, cmd := range rr.RunCommands {
-		sb.WriteString(fmt.Sprintf("# %s\n%s\n\n", name, strings.Join(cmd, " ")))
+		sb.WriteString(fmt.Sprintf("# %s\n", name))
+		if pretty {
+			sb.WriteString(cmd[0]) // docker
+			sb.WriteString(" ")
+			sb.WriteString(cmd[1]) // run
+			sb.WriteString("\n")
+			for _, arg := range cmd[2:] {
+				sb.WriteString("  ")
+				sb.WriteString(arg)
+				sb.WriteString("\n")
+			}
+		} else {
+			sb.WriteString(strings.Join(cmd, " "))
+			sb.WriteString("\n\n")
+		}
 	}
 	return sb.String()
 }
@@ -305,7 +321,7 @@ func reverseWithOptions(names []string, options ParserOptions) (*ReverseResult, 
 		results = append(results, parser.ToResult())
 	}
 
-	return NewReverseResult(results), nil
+	return NewReverseResult(results, options), nil
 }
 
 func trimContainerName(name string) string {

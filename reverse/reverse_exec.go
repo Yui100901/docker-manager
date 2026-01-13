@@ -47,7 +47,7 @@ func saveOutput(reverseResult *ReverseResult, rt ReverseType) error {
 		defer f.Close()
 
 		fmt.Fprintln(f, "#!/bin/bash")
-		fmt.Fprint(f, reverseResult.DockerRunCommandString())
+		fmt.Fprint(f, reverseResult.DockerRunCommandString(reverseResult.options.PrettyFormat))
 	}
 
 	if rt == ReverseCompose || rt == ReverseAll {
