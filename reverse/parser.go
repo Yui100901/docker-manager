@@ -40,12 +40,17 @@ type ParsedResult struct {
 
 // -------------------- Parser --------------------
 
-type Parser struct {
-	ci container.InspectResponse
+type ParserOptions struct {
+	PreserveVolumes bool // true: 保留匿名卷名字，false: 简化为容器路径
 }
 
-func NewParser(ci container.InspectResponse) *Parser {
-	return &Parser{ci: ci}
+type Parser struct {
+	ci      container.InspectResponse
+	options ParserOptions
+}
+
+func NewParser(ci container.InspectResponse, opts ParserOptions) *Parser {
+	return &Parser{ci: ci, options: opts}
 }
 
 func (p *Parser) ToSpec() *ContainerSpec {
@@ -78,14 +83,23 @@ func (p *Parser) parseRestartPolicy() string {
 func (p *Parser) parseMounts() []string {
 	var mounts []string
 	for _, m := range p.ci.Mounts {
-		if m.Type == "volume" {
-			mounts = append(mounts, m.Destination)
-		} else {
+		switch m.Type {
+		case "volume":
+			if p.options.PreserveVolumes && m.Name != "" {
+				// 保留卷名，保证复现
+				mounts = append(mounts, fmt.Sprintf("%s:%s", m.Name, m.Destination))
+			} else {
+				// 简化为容器路径，生成干净的 Compose
+				mounts = append(mounts, m.Destination)
+			}
+		case "bind":
 			mode := ""
 			if m.Mode != "" {
 				mode = ":" + m.Mode
 			}
 			mounts = append(mounts, fmt.Sprintf("%s:%s%s", m.Source, m.Destination, mode))
+		default:
+			mounts = append(mounts, fmt.Sprintf("%s:%s", m.Source, m.Destination))
 		}
 	}
 	return mounts
@@ -234,7 +248,7 @@ func (rr *ReverseResult) DockerComposeFileString() string {
 	return string(yml)
 }
 
-func reverse(names []string) (*ReverseResult, error) {
+func reverseWithOptions(names []string, options ParserOptions) (*ReverseResult, error) {
 	var results []ParsedResult
 
 	for _, name := range names {
@@ -244,7 +258,7 @@ func reverse(names []string) (*ReverseResult, error) {
 			continue
 		}
 
-		parser := NewParser(info)
+		parser := NewParser(info, options)
 		results = append(results, parser.ToResult())
 	}
 

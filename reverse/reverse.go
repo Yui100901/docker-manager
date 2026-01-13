@@ -16,9 +16,10 @@ const (
 
 func NewReverseCommand() *cobra.Command {
 	var (
-		rerun       bool
-		save        bool
-		reverseType string
+		rerun           bool
+		save            bool
+		reverseType     string
+		preserveVolumes bool
 	)
 
 	cmd := &cobra.Command{
@@ -29,29 +30,37 @@ func NewReverseCommand() *cobra.Command {
 				return fmt.Errorf("必须提供至少一个容器名称")
 			}
 
-			reverseResult, err := reverse(args)
+			// 校验输出类型
+			rt := ReverseType(reverseType)
+			switch rt {
+			case ReverseCmd, ReverseCompose, ReverseAll:
+				// ok
+			default:
+				return fmt.Errorf("无效的输出类型: %s (必须是 cmd | compose | all)", reverseType)
+			}
+
+			// 传递 preserveVolumes 参数
+			opts := ParserOptions{PreserveVolumes: preserveVolumes}
+
+			reverseResult, err := reverseWithOptions(args, opts)
 			if err != nil {
 				return err
 			}
 
-			rt := ReverseType(reverseType)
-
-			// 构建输出
-
 			// 打印输出
 			reverseResult.Print(rt)
 
-			// rerun
-			if rerun {
-				if err := rerunContainers(reverseResult, rt); err != nil {
-					return err
+			// 保存输出
+			if save {
+				if err := saveOutput(reverseResult, rt); err != nil {
+					return fmt.Errorf("保存输出失败: %w", err)
 				}
 			}
 
-			// save
-			if save {
-				if err := saveOutput(reverseResult, rt); err != nil {
-					return err
+			// 重新运行容器
+			if rerun {
+				if err := rerunContainers(reverseResult, rt); err != nil {
+					return fmt.Errorf("重新运行容器失败: %w", err)
 				}
 			}
 
@@ -62,6 +71,7 @@ func NewReverseCommand() *cobra.Command {
 	cmd.Flags().BoolVarP(&rerun, "rerun", "r", false, "逆向解析完成后以解析出的命令重新创建容器")
 	cmd.Flags().BoolVarP(&save, "save", "s", false, "保存输出到文件")
 	cmd.Flags().StringVarP(&reverseType, "reverse-type", "t", "cmd", "输出类型: cmd | compose | all")
+	cmd.Flags().BoolVar(&preserveVolumes, "preserve-volumes", false, "是否保留匿名卷名称（默认关闭）")
 
 	return cmd
 }
