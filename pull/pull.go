@@ -8,6 +8,8 @@ import (
 	"github.com/Yui100901/MyGo/struct_utils"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
+
 	"log"
 	"net/http"
 	"net/url"
@@ -276,21 +278,21 @@ func prepareWorkspace(info *ImageInfo) (string, error) {
 	return os.MkdirTemp(".", pattern)
 }
 
+// 改进版：使用 errgroup 管理并发下载
 func downloadLayers(info *ImageInfo, manifest *ocispec.Manifest, token, tempDir string) error {
+	var g errgroup.Group
 
-	errChan := make(chan error, len(manifest.Layers))
 	for _, layer := range manifest.Layers {
-		go func(l ocispec.Descriptor) {
-			errChan <- downloadLayer(info, l, token, tempDir)
-		}(layer)
+		l := layer // 避免闭包引用同一个变量
+		g.Go(func() error {
+			return downloadLayer(info, l, token, tempDir)
+		})
 	}
 
-	for range manifest.Layers {
-		if err := <-errChan; err != nil {
-			return fmt.Errorf("层下载失败: %w", err)
-		}
+	// 等待所有 goroutine 完成，如果有错误会返回第一个错误
+	if err := g.Wait(); err != nil {
+		return fmt.Errorf("层下载失败: %w", err)
 	}
-
 	return nil
 }
 
