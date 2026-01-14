@@ -7,6 +7,8 @@ A simple cmd util to manager docker.
 
 使用介绍dm -h
 
+可以用于调试，管理容器
+
 ```
 Docker小工具，可用于管理容器.
 Author:Yui
@@ -28,3 +30,7 @@ Flags:
 
 Use "dm [command] --help" for more information about a command.
 ```
+
+### 由于容器的复杂以及解析的不确定性
+
+### 请避免将该工具用于生产环境或构建流水线中
