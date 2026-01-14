@@ -3,6 +3,11 @@ package pull
 import (
 	"crypto/sha256"
 	"fmt"
+	"github.com/Yui100901/MyGo/file_utils"
+	"github.com/Yui100901/MyGo/network/http_utils"
+	"github.com/Yui100901/MyGo/struct_utils"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/spf13/cobra"
 	"log"
 	"net/http"
 	"net/url"
@@ -10,11 +15,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/Yui100901/MyGo/file_utils"
-	"github.com/Yui100901/MyGo/network/http_utils"
-	"github.com/Yui100901/MyGo/struct_utils"
-	"github.com/spf13/cobra"
 )
 
 //
@@ -90,6 +90,7 @@ func getImage(imageName string) {
 	defer os.RemoveAll(tempDir)
 
 	manifest, err := fetchManifest(imageInfo, token)
+	log.Println(manifest)
 	if err != nil {
 		log.Printf("%s\n获取清单失败: %v", imageName, err)
 		return
@@ -200,7 +201,7 @@ func getAuthToken(info *ImageInfo) (string, error) {
 	return token.Token, nil
 }
 
-func fetchManifest(info *ImageInfo, token string) (*OCIImageManifest, error) {
+func fetchManifest(info *ImageInfo, token string) (*ocispec.Manifest, error) {
 	manifestURL := fmt.Sprintf("https://%s/v2/%s/%s/manifests/%s",
 		info.Registry,
 		info.Repository,
@@ -218,12 +219,12 @@ func fetchManifest(info *ImageInfo, token string) (*OCIImageManifest, error) {
 		return nil, fmt.Errorf("获取清单失败: %w", err)
 	}
 
-	index, err := struct_utils.UnmarshalData[OCIIndex](resp, struct_utils.JSON)
+	index, err := struct_utils.UnmarshalData[ocispec.Index](resp, struct_utils.JSON)
 	if err == nil && index.SchemaVersion == 2 {
 		return handleOCIIndex(info, index, token)
 	}
 
-	return struct_utils.UnmarshalData[OCIImageManifest](resp, struct_utils.JSON)
+	return struct_utils.UnmarshalData[ocispec.Manifest](resp, struct_utils.JSON)
 }
 
 func getReference(info *ImageInfo) string {
@@ -233,7 +234,7 @@ func getReference(info *ImageInfo) string {
 	return info.Tag
 }
 
-func handleOCIIndex(info *ImageInfo, index *OCIIndex, token string) (*OCIImageManifest, error) {
+func handleOCIIndex(info *ImageInfo, index *ocispec.Index, token string) (*ocispec.Manifest, error) {
 	log.Println("[+] 检测到多架构镜像索引")
 	var selectedDigest string
 
@@ -241,7 +242,7 @@ func handleOCIIndex(info *ImageInfo, index *OCIIndex, token string) (*OCIImageMa
 		if m.Platform != nil &&
 			m.Platform.OS == platform.targetOS &&
 			m.Platform.Architecture == platform.targetArch {
-			selectedDigest = m.Digest
+			selectedDigest = string(m.Digest)
 			break
 		}
 	}
@@ -267,7 +268,7 @@ func handleOCIIndex(info *ImageInfo, index *OCIIndex, token string) (*OCIImageMa
 		return nil, fmt.Errorf("获取架构清单失败: %w", err)
 	}
 
-	return struct_utils.UnmarshalData[OCIImageManifest](resp, struct_utils.JSON)
+	return struct_utils.UnmarshalData[ocispec.Manifest](resp, struct_utils.JSON)
 }
 
 func prepareWorkspace(info *ImageInfo) (string, error) {
@@ -275,11 +276,11 @@ func prepareWorkspace(info *ImageInfo) (string, error) {
 	return os.MkdirTemp(".", pattern)
 }
 
-func downloadLayers(info *ImageInfo, manifest *OCIImageManifest, token, tempDir string) error {
+func downloadLayers(info *ImageInfo, manifest *ocispec.Manifest, token, tempDir string) error {
 
 	errChan := make(chan error, len(manifest.Layers))
 	for _, layer := range manifest.Layers {
-		go func(l Layer) {
+		go func(l ocispec.Descriptor) {
 			errChan <- downloadLayer(info, l, token, tempDir)
 		}(layer)
 	}
@@ -293,7 +294,7 @@ func downloadLayers(info *ImageInfo, manifest *OCIImageManifest, token, tempDir 
 	return nil
 }
 
-func downloadConfig(info *ImageInfo, manifest *OCIImageManifest, token, tempDir string) error {
+func downloadConfig(info *ImageInfo, manifest *ocispec.Manifest, token, tempDir string) error {
 	configURL := fmt.Sprintf("https://%s/v2/%s/%s/blobs/%s",
 		info.Registry,
 		info.Repository,
@@ -301,13 +302,13 @@ func downloadConfig(info *ImageInfo, manifest *OCIImageManifest, token, tempDir 
 		manifest.Config.Digest,
 	)
 
-	configPath := filepath.Join(tempDir, manifest.Config.Digest[7:]+".json")
+	configPath := filepath.Join(tempDir, string(manifest.Config.Digest[7:]+".json"))
 	headers := map[string]string{"Authorization": "Bearer " + token}
 
 	return httpClient.Get(configURL, headers, nil).SaveToFile(configPath)
 }
 
-func downloadLayer(info *ImageInfo, layer Layer, token, tempDir string) error {
+func downloadLayer(info *ImageInfo, layer ocispec.Descriptor, token, tempDir string) error {
 	layerURL := fmt.Sprintf("https://%s/v2/%s/%s/blobs/%s",
 		info.Registry,
 		info.Repository,
@@ -315,7 +316,7 @@ func downloadLayer(info *ImageInfo, layer Layer, token, tempDir string) error {
 		layer.Digest,
 	)
 
-	layerID := sha256Hash(layer.Digest)
+	layerID := sha256Hash(string(layer.Digest))
 	layerDir := filepath.Join(tempDir, layerID)
 	if err := os.Mkdir(layerDir, 0755); err != nil {
 		return fmt.Errorf("创建层目录失败: %w", err)
@@ -337,10 +338,10 @@ func downloadLayer(info *ImageInfo, layer Layer, token, tempDir string) error {
 	return os.Remove(gzPath)
 }
 
-func createManifestFile(info *ImageInfo, manifest *OCIImageManifest, tempDir string) error {
+func createManifestFile(info *ImageInfo, manifest *ocispec.Manifest, tempDir string) error {
 	manifestContent := []*ImageManifest{
 		{
-			Config:   manifest.Config.Digest[7:] + ".json",
+			Config:   string(manifest.Config.Digest[7:] + ".json"),
 			Layers:   getLayerPaths(manifest.Layers),
 			RepoTags: []string{fmt.Sprintf("%s/%s:%s", info.Repository, info.Image, info.Tag)},
 		},
@@ -354,12 +355,12 @@ func createManifestFile(info *ImageInfo, manifest *OCIImageManifest, tempDir str
 	return os.WriteFile(filepath.Join(tempDir, "manifest.json"), data, 0644)
 }
 
-func getLayerPaths(layers []Layer) []string {
+func getLayerPaths(layers []ocispec.Descriptor) []string {
 	paths := make([]string, 0, len(layers))
 	for _, layer := range layers {
 		//这里不用filepath.Join
 		//filepath.Join会导致在windows下的反斜杠在docker导入时无法识别
-		paths = append(paths, fmt.Sprintf("%s/layer.tar", sha256Hash(layer.Digest)))
+		paths = append(paths, fmt.Sprintf("%s/layer.tar", sha256Hash(string(layer.Digest))))
 	}
 	return paths
 }
