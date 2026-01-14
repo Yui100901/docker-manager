@@ -14,28 +14,27 @@ import (
 // @Date 2025/12/5 21 20
 //
 
-// ImageList 列出所有docker镜像
-func ImageList() ([]image.Summary, error) {
-	ctx := context.Background()
-	cli, err := initDockerClient()
-	if err != nil {
-		panic(err)
-	}
-
-	// 获取镜像列表
-	images, err := cli.ImageList(ctx, image.ListOptions{All: true})
-	return images, err
+type ImageManager struct {
+	cli *client.Client
 }
 
-// SaveImages 导出镜像
-func SaveImages(images []string, outputFile string) error {
-	ctx := context.Background()
-	cli, err := initDockerClient()
-	if err != nil {
-		panic(err)
-	}
+// NewImageManager 构造函数
+func NewImageManager() *ImageManager {
+	cli, _ := initDockerClient()
 
-	reader, err := cli.ImageSave(ctx, images)
+	return &ImageManager{cli: cli}
+}
+
+// List 列出所有镜像
+func (im *ImageManager) List(all bool) ([]image.Summary, error) {
+	ctx := context.Background()
+	return im.cli.ImageList(ctx, image.ListOptions{All: all})
+}
+
+// Save 导出镜像
+func (im *ImageManager) Save(images []string, outputFile string) error {
+	ctx := context.Background()
+	reader, err := im.cli.ImageSave(ctx, images)
 	if err != nil {
 		return err
 	}
@@ -51,27 +50,21 @@ func SaveImages(images []string, outputFile string) error {
 	return err
 }
 
-// LoadImage 导入镜像
-func LoadImage(inputFile string) error {
+// Load 导入镜像
+func (im *ImageManager) Load(inputFile string) error {
 	ctx := context.Background()
-	cli, err := initDockerClient()
-	if err != nil {
-		panic(err)
-	}
-
 	file, err := os.Open(inputFile)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
 
-	resp, err := cli.ImageLoad(ctx, file, client.ImageLoadWithQuiet(false))
+	resp, err := im.cli.ImageLoad(ctx, file, client.ImageLoadWithQuiet(false))
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 
-	// 打印导入结果（比如镜像名）
 	_, err = io.Copy(os.Stdout, resp.Body)
 	return err
 }

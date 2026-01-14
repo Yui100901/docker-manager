@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/client"
 )
 
 //
@@ -11,40 +12,34 @@ import (
 // @Date 2025/12/5 21 20
 //
 
-// ContainerStop 停止指定容器
-func ContainerStop(containerID string) error {
-	ctx := context.Background()
-	cli, err := initDockerClient()
-	if err != nil {
-		return err
-	}
-
-	// 停止容器，StopOptions 可以设置超时时间
-	return cli.ContainerStop(ctx, containerID, container.StopOptions{})
+// ContainerManager 封装容器相关操作
+type ContainerManager struct {
+	cli *client.Client
 }
 
-// ContainerRemove 删除指定容器
-func ContainerRemove(containerID string, force bool, removeVolumes bool) error {
-	ctx := context.Background()
-	cli, err := initDockerClient()
-	if err != nil {
-		return err
-	}
+// NewContainerManager 构造函数，初始化 DockerClient
+func NewContainerManager() *ContainerManager {
+	cli, _ := initDockerClient()
+	return &ContainerManager{cli: cli}
+}
 
-	// 删除容器
-	return cli.ContainerRemove(ctx, containerID, container.RemoveOptions{
+// Stop 停止指定容器
+func (cm *ContainerManager) Stop(containerID string) error {
+	ctx := context.Background()
+	return cm.cli.ContainerStop(ctx, containerID, container.StopOptions{})
+}
+
+// Remove 删除指定容器
+func (cm *ContainerManager) Remove(containerID string, force, removeVolumes bool) error {
+	ctx := context.Background()
+	return cm.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{
 		Force:         force,
 		RemoveVolumes: removeVolumes,
 	})
 }
 
-// ContainerInspect 获取容器信息
-func ContainerInspect(containerID string) (container.InspectResponse, error) {
+// Inspect 获取容器信息
+func (cm *ContainerManager) Inspect(containerID string) (container.InspectResponse, error) {
 	ctx := context.Background()
-	cli, err := initDockerClient()
-	if err != nil {
-		panic(err)
-	}
-	containerInfo, err := cli.ContainerInspect(ctx, containerID)
-	return containerInfo, err
+	return cm.cli.ContainerInspect(ctx, containerID)
 }

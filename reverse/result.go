@@ -16,6 +16,12 @@ import (
 // @Date 2026/1/13 15 21
 //
 
+var containerManager *docker.ContainerManager
+
+func init() {
+	containerManager = docker.NewContainerManager()
+}
+
 type ReverseResult struct {
 	ParsedResults []ParsedResult
 	RunCommands   map[string][]string
@@ -155,7 +161,7 @@ func reverseWithOptions(names []string, options ReverseOptions) (*ReverseResult,
 	var results []ParsedResult
 
 	for _, name := range names {
-		info, err := docker.ContainerInspect(name)
+		info, err := containerManager.Inspect(name)
 		if err != nil {
 			log.Printf("容器 %s 解析失败: %v", name, err)
 			continue
@@ -171,8 +177,8 @@ func reverseWithOptions(names []string, options ReverseOptions) (*ReverseResult,
 func (rr *ReverseResult) rerunContainers() error {
 	// rerun docker run
 	for name, cmdSlice := range rr.RunCommands {
-		docker.ContainerStop(name)
-		docker.ContainerRemove(name, true, false)
+		containerManager.Stop(name)
+		containerManager.Remove(name, true, false)
 
 		if err := command.RunCommand(cmdSlice[0], cmdSlice[1:]...); err != nil {
 			return err

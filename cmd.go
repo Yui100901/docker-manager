@@ -15,6 +15,12 @@ import (
 // @Date 2025/7/18 09 50
 //
 
+var imageManager *docker.ImageManager
+
+func init() {
+	imageManager = docker.NewImageManager()
+}
+
 func newLoadCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "load [path]",
@@ -66,7 +72,7 @@ func loadImages(path string) error {
 		return err
 	}
 	for _, file := range files {
-		if err := docker.LoadImage(file.Path); err != nil {
+		if err := imageManager.Load(file.Path); err != nil {
 			return err
 		}
 	}
@@ -74,7 +80,7 @@ func loadImages(path string) error {
 }
 
 func saveImages(path string, merge bool, all bool) error {
-	images, err := docker.ImageList()
+	images, err := imageManager.List(all)
 	if err != nil {
 		log.Println(err)
 		return err
@@ -101,10 +107,10 @@ func saveImages(path string, merge bool, all bool) error {
 		for imageID := range imageMap {
 			imageIDList = append(imageIDList, imageID)
 		}
-		return docker.SaveImages(imageIDList, "images.tar")
+		return imageManager.Save(imageIDList, "images.tar")
 	} else {
 		for imageID, imageName := range imageMap {
-			err := docker.SaveImages([]string{imageID}, filepath.Join(path, imageName+".tar"))
+			err := imageManager.Save([]string{imageID}, filepath.Join(path, imageName+".tar"))
 			if err != nil {
 				log.Println(err)
 			}
