@@ -69,7 +69,7 @@ func NewReverseCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().BoolVarP(&rerun, "rerun", "r", false, "逆向解析完成后以解析出的命令重新创建容器")
+	cmd.Flags().BoolVarP(&rerun, "rerun", "r", false, "逆向解析完成后重新创建容器，cmd模式下会调用docker api而不是运行命令行")
 	cmd.Flags().BoolVarP(&save, "save", "s", false, "保存输出到文件")
 	cmd.Flags().StringVarP(&reverseType, "reverse-type", "t", "cmd", "输出类型: cmd | compose | all")
 	cmd.Flags().BoolVar(&preserveVolumes, "preserve-volumes", false, "是否保留匿名卷名称（默认关闭）")
