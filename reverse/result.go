@@ -176,13 +176,9 @@ func reverseWithOptions(names []string, options ReverseOptions) (*ReverseResult,
 
 func (rr *ReverseResult) rerunContainers() error {
 	// rerun docker run
-	for name, cmdSlice := range rr.RunCommands {
-		containerManager.Stop(name)
-		containerManager.Remove(name, true, false)
-
-		if err := command.RunCommand(cmdSlice[0], cmdSlice[1:]...); err != nil {
-			return err
-		}
+	for name, _ := range rr.RunCommands {
+		containerID, _ := containerManager.RecreateContainer(name, name)
+		fmt.Println("Recreate container", name, "id", containerID)
 	}
 
 	// rerun compose
