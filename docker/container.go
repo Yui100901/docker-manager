@@ -26,6 +26,12 @@ func NewContainerManager() *ContainerManager {
 	return &ContainerManager{cli: cli}
 }
 
+// ListAll 列出所有容器
+func (cm *ContainerManager) ListAll() ([]container.Summary, error) {
+	ctx := context.Background()
+	return cm.cli.ContainerList(ctx, container.ListOptions{All: true})
+}
+
 // Stop 停止指定容器
 func (cm *ContainerManager) Stop(containerID string) error {
 	ctx := context.Background()

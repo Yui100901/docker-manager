@@ -2,6 +2,7 @@ package reverse
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -66,6 +67,24 @@ func NewReverseCommand() *cobra.Command {
 			}
 
 			return nil
+		},
+		ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+			containers, err := containerManager.ListAll()
+			if err != nil {
+				return nil, cobra.ShellCompDirectiveError
+			}
+
+			var suggestions []string
+			for _, c := range containers {
+				if len(c.Names) > 0 {
+					name := strings.TrimPrefix(c.Names[0], "/")
+					if strings.HasPrefix(name, toComplete) {
+						suggestions = append(suggestions, name)
+					}
+				}
+			}
+
+			return suggestions, cobra.ShellCompDirectiveNoFileComp
 		},
 	}
 
