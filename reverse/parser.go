@@ -127,6 +127,14 @@ func (p *Parser) parseMounts() []string {
 	return mounts
 }
 
+// 统一归一化 IP
+func normalizeIP(ip string) string {
+	if ip == "" || ip == "0.0.0.0" || ip == "::" || ip == "[::]" {
+		return ""
+	}
+	return ip
+}
+
 // 解析端口绑定为结构体
 func (p *Parser) parsePortBindings() []PortBindingSpec {
 	var result []PortBindingSpec
@@ -136,7 +144,7 @@ func (p *Parser) parsePortBindings() []PortBindingSpec {
 		for _, b := range bindings {
 			hp, _ := strconv.Atoi(b.HostPort)
 			result = append(result, PortBindingSpec{
-				HostIP:   b.HostIP,
+				HostIP:   normalizeIP(b.HostIP),
 				HostPort: hp,
 				ContPort: contPort,
 				Proto:    proto,
@@ -196,14 +204,10 @@ func (f CommandFormatter) Format(spec *ContainerSpec, opts ReverseOptions) []str
 		}
 	} else {
 		for _, b := range spec.PortBindings {
-			ip := b.HostIP
-			if ip == "" || ip == "0.0.0.0" {
-				ip = ""
-			}
-			if ip == "" {
+			if b.HostIP == "" {
 				add("-p", fmt.Sprintf("%d:%d/%s", b.HostPort, b.ContPort, b.Proto))
 			} else {
-				add("-p", fmt.Sprintf("%s:%d:%d/%s", ip, b.HostPort, b.ContPort, b.Proto))
+				add("-p", fmt.Sprintf("%s:%d:%d/%s", b.HostIP, b.HostPort, b.ContPort, b.Proto))
 			}
 		}
 	}
@@ -231,11 +235,7 @@ func mergePortRanges(bindings []PortBindingSpec) []string {
 	// 按 HostIP+Proto 分组
 	groups := make(map[string][]PortBindingSpec)
 	for _, b := range bindings {
-		ip := b.HostIP
-		if ip == "" || ip == "0.0.0.0" {
-			ip = ""
-		}
-		key := fmt.Sprintf("%s/%s", ip, b.Proto)
+		key := fmt.Sprintf("%s/%s", b.HostIP, b.Proto)
 		groups[key] = append(groups[key], b)
 	}
 
@@ -268,20 +268,16 @@ func mergePortRanges(bindings []PortBindingSpec) []string {
 }
 
 func formatRange(start, end PortBindingSpec) string {
-	ip := start.HostIP
-	if ip == "" || ip == "0.0.0.0" {
-		ip = ""
-	}
 	if start.HostPort == end.HostPort && start.ContPort == end.ContPort {
-		if ip == "" {
+		if start.HostIP == "" {
 			return fmt.Sprintf("%d:%d/%s", start.HostPort, start.ContPort, start.Proto)
 		}
-		return fmt.Sprintf("%s:%d:%d/%s", ip, start.HostPort, start.ContPort, start.Proto)
+		return fmt.Sprintf("%s:%d:%d/%s", start.HostIP, start.HostPort, start.ContPort, start.Proto)
 	}
-	if ip == "" {
+	if start.HostIP == "" {
 		return fmt.Sprintf("%d-%d:%d-%d/%s", start.HostPort, end.HostPort, start.ContPort, end.ContPort, start.Proto)
 	}
-	return fmt.Sprintf("%s:%d-%d:%d-%d/%s", ip, start.HostPort, end.HostPort, start.ContPort, end.ContPort, start.Proto)
+	return fmt.Sprintf("%s:%d-%d:%d-%d/%s", start.HostIP, start.HostPort, end.HostPort, start.ContPort, end.ContPort, start.Proto)
 }
 
 // -------------------- ComposeFormatter --------------------
@@ -297,14 +293,10 @@ func (f ComposeFormatter) Format(spec *ContainerSpec) ComposeService {
 	// Compose 不支持连续范围，逐个展开
 	var ports []string
 	for _, b := range spec.PortBindings {
-		ip := b.HostIP
-		if ip == "" || ip == "0.0.0.0" {
-			ip = ""
-		}
-		if ip == "" {
+		if b.HostIP == "" {
 			ports = append(ports, fmt.Sprintf("%d:%d/%s", b.HostPort, b.ContPort, b.Proto))
 		} else {
-			ports = append(ports, fmt.Sprintf("%s:%d:%d/%s", ip, b.HostPort, b.ContPort, b.Proto))
+			ports = append(ports, fmt.Sprintf("%s:%d:%d/%s", b.HostIP, b.HostPort, b.ContPort, b.Proto))
 		}
 	}
 
