@@ -13,6 +13,7 @@ func NewReverseCommand() *cobra.Command {
 		save              bool
 		reverseType       string
 		preserveVolumes   bool
+		mergePorts        bool
 		filterDefaultEnvs bool
 		prettyFormat      bool
 	)
@@ -39,6 +40,7 @@ func NewReverseCommand() *cobra.Command {
 				PreserveVolumes:   preserveVolumes,
 				FilterDefaultEnvs: filterDefaultEnvs,
 				PrettyFormat:      prettyFormat,
+				MergePorts:        mergePorts,
 				Rerun:             rerun,
 				Save:              save,
 				ReverseType:       rt,
@@ -93,6 +95,7 @@ func NewReverseCommand() *cobra.Command {
 	cmd.Flags().StringVarP(&reverseType, "reverse-type", "t", "cmd", "输出类型: cmd | compose | all")
 	cmd.Flags().BoolVar(&preserveVolumes, "preserve-volumes", false, "是否保留匿名卷名称（默认关闭）")
 	cmd.Flags().BoolVar(&filterDefaultEnvs, "filter-default-envs", true, "是否过滤掉 Docker 默认环境变量（默认开启）")
+	cmd.Flags().BoolVar(&mergePorts, "merge-ports", true, "命令是否合并连续端口，compose无法合并（默认开启）")
 	cmd.Flags().BoolVar(&prettyFormat, "pretty", false, "是否格式化输出 docker run 命令（默认关闭）")
 
 	return cmd

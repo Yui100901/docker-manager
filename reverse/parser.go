@@ -2,15 +2,12 @@ package reverse
 
 import (
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/docker/docker/api/types/container"
 )
-
-//
-// @Author yfy2001
-// @Date 2026/1/12 21 06
-//
 
 type ContainerSpec struct {
 	Image           string
@@ -22,11 +19,18 @@ type ContainerSpec struct {
 	User            string
 	Envs            []string
 	Mounts          []string
-	PortBindings    []string
+	PortBindings    []PortBindingSpec
 	Cmd             []string
 	Entrypoint      []string
 	WorkingDir      string
 	NetworkMode     string
+}
+
+type PortBindingSpec struct {
+	HostIP   string
+	HostPort int
+	ContPort int
+	Proto    string
 }
 
 type ParsedResult struct {
@@ -92,7 +96,7 @@ func (p *Parser) parseEnvs() []string {
 		if len(kv) == 2 {
 			key := kv[0]
 			if defaultEnvKeys[key] {
-				continue // 跳过默认变量
+				continue
 			}
 		}
 		result = append(result, e)
@@ -106,10 +110,8 @@ func (p *Parser) parseMounts() []string {
 		switch m.Type {
 		case "volume":
 			if p.options.PreserveVolumes && m.Name != "" {
-				// 保留卷名，保证复现
 				mounts = append(mounts, fmt.Sprintf("%s:%s", m.Name, m.Destination))
 			} else {
-				// 简化为容器路径，生成干净的 Compose
 				mounts = append(mounts, m.Destination)
 			}
 		case "bind":
@@ -125,18 +127,23 @@ func (p *Parser) parseMounts() []string {
 	return mounts
 }
 
-func (p *Parser) parsePortBindings() []string {
-	var ports []string
+// 解析端口绑定为结构体
+func (p *Parser) parsePortBindings() []PortBindingSpec {
+	var result []PortBindingSpec
 	for port, bindings := range p.ci.HostConfig.PortBindings {
+		proto := port.Proto()
+		contPort, _ := strconv.Atoi(port.Port())
 		for _, b := range bindings {
-			if b.HostIP == "" || b.HostIP == "0.0.0.0" {
-				ports = append(ports, fmt.Sprintf("%s:%s", b.HostPort, string(port)))
-			} else {
-				ports = append(ports, fmt.Sprintf("%s:%s:%s", b.HostIP, b.HostPort, string(port)))
-			}
+			hp, _ := strconv.Atoi(b.HostPort)
+			result = append(result, PortBindingSpec{
+				HostIP:   b.HostIP,
+				HostPort: hp,
+				ContPort: contPort,
+				Proto:    proto,
+			})
 		}
 	}
-	return ports
+	return result
 }
 
 // -------------------- Formatter --------------------
@@ -145,7 +152,7 @@ type CommandFormatter struct{}
 
 const CommandSplitMarker = "--__SPLIT__"
 
-func (f CommandFormatter) Format(spec *ContainerSpec) []string {
+func (f CommandFormatter) Format(spec *ContainerSpec, opts ReverseOptions) []string {
 	cmd := []string{"docker", "run", "-d"}
 	add := func(args ...string) { cmd = append(cmd, args...) }
 
@@ -181,8 +188,24 @@ func (f CommandFormatter) Format(spec *ContainerSpec) []string {
 	for _, v := range spec.Mounts {
 		add("-v", v)
 	}
-	for _, p := range spec.PortBindings {
-		add("-p", p)
+
+	// 端口绑定
+	if opts.MergePorts {
+		for _, p := range mergePortRanges(spec.PortBindings) {
+			add("-p", p)
+		}
+	} else {
+		for _, b := range spec.PortBindings {
+			ip := b.HostIP
+			if ip == "" || ip == "0.0.0.0" {
+				ip = ""
+			}
+			if ip == "" {
+				add("-p", fmt.Sprintf("%d:%d/%s", b.HostPort, b.ContPort, b.Proto))
+			} else {
+				add("-p", fmt.Sprintf("%s:%d:%d/%s", ip, b.HostPort, b.ContPort, b.Proto))
+			}
+		}
 	}
 
 	// 插入分隔符
@@ -199,13 +222,90 @@ func (f CommandFormatter) Format(spec *ContainerSpec) []string {
 	return cmd
 }
 
+// 合并连续端口范围
+func mergePortRanges(bindings []PortBindingSpec) []string {
+	if len(bindings) == 0 {
+		return nil
+	}
+
+	// 按 HostIP+Proto 分组
+	groups := make(map[string][]PortBindingSpec)
+	for _, b := range bindings {
+		ip := b.HostIP
+		if ip == "" || ip == "0.0.0.0" {
+			ip = ""
+		}
+		key := fmt.Sprintf("%s/%s", ip, b.Proto)
+		groups[key] = append(groups[key], b)
+	}
+
+	var result []string
+	for _, list := range groups {
+		// 按 HostPort 和 ContPort 排序
+		sort.Slice(list, func(i, j int) bool {
+			if list[i].HostPort == list[j].HostPort {
+				return list[i].ContPort < list[j].ContPort
+			}
+			return list[i].HostPort < list[j].HostPort
+		})
+
+		start := list[0]
+		prev := start
+		for i := 1; i < len(list); i++ {
+			cur := list[i]
+			// 判断是否连续
+			if cur.HostPort == prev.HostPort+1 && cur.ContPort == prev.ContPort+1 {
+				prev = cur
+			} else {
+				result = append(result, formatRange(start, prev))
+				start = cur
+				prev = cur
+			}
+		}
+		result = append(result, formatRange(start, prev))
+	}
+	return result
+}
+
+func formatRange(start, end PortBindingSpec) string {
+	ip := start.HostIP
+	if ip == "" || ip == "0.0.0.0" {
+		ip = ""
+	}
+	if start.HostPort == end.HostPort && start.ContPort == end.ContPort {
+		if ip == "" {
+			return fmt.Sprintf("%d:%d/%s", start.HostPort, start.ContPort, start.Proto)
+		}
+		return fmt.Sprintf("%s:%d:%d/%s", ip, start.HostPort, start.ContPort, start.Proto)
+	}
+	if ip == "" {
+		return fmt.Sprintf("%d-%d:%d-%d/%s", start.HostPort, end.HostPort, start.ContPort, end.ContPort, start.Proto)
+	}
+	return fmt.Sprintf("%s:%d-%d:%d-%d/%s", ip, start.HostPort, end.HostPort, start.ContPort, end.ContPort, start.Proto)
+}
+
+// -------------------- ComposeFormatter --------------------
+
 type ComposeFormatter struct{}
 
 func (f ComposeFormatter) Format(spec *ContainerSpec) ComposeService {
 	restart := spec.RestartPolicy
-	// 处理 on-failure:N
 	if strings.HasPrefix(restart, "on-failure:") {
 		restart = "on-failure"
+	}
+
+	// Compose 不支持连续范围，逐个展开
+	var ports []string
+	for _, b := range spec.PortBindings {
+		ip := b.HostIP
+		if ip == "" || ip == "0.0.0.0" {
+			ip = ""
+		}
+		if ip == "" {
+			ports = append(ports, fmt.Sprintf("%d:%d/%s", b.HostPort, b.ContPort, b.Proto))
+		} else {
+			ports = append(ports, fmt.Sprintf("%s:%d:%d/%s", ip, b.HostPort, b.ContPort, b.Proto))
+		}
 	}
 
 	return ComposeService{
@@ -216,7 +316,7 @@ func (f ComposeFormatter) Format(spec *ContainerSpec) ComposeService {
 		User:          spec.User,
 		Environment:   spec.Envs,
 		Volumes:       spec.Mounts,
-		Ports:         spec.PortBindings,
+		Ports:         ports,
 		Entrypoint:    spec.Entrypoint,
 		WorkingDir:    spec.WorkingDir,
 		Command:       spec.Cmd,
@@ -233,7 +333,7 @@ func (p *Parser) ToResult() ParsedResult {
 
 	return ParsedResult{
 		Name:    trimContainerName(p.ci.Name),
-		Command: cmdFormatter.Format(spec),
+		Command: cmdFormatter.Format(spec, p.options),
 		Compose: composeFormatter.Format(spec),
 	}
 }
