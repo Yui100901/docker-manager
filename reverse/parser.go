@@ -2,6 +2,7 @@ package reverse
 
 import (
 	"fmt"
+	"log"
 	"sort"
 	"strconv"
 	"strings"
@@ -140,9 +141,17 @@ func (p *Parser) parsePortBindings() []PortBindingSpec {
 	var result []PortBindingSpec
 	for port, bindings := range p.ci.HostConfig.PortBindings {
 		proto := port.Proto()
-		contPort, _ := strconv.Atoi(port.Port())
+		contPort, err := strconv.Atoi(port.Port())
+		if err != nil {
+			log.Printf("警告: 解析容器端口失败 %s: %v", port.Port(), err)
+			continue
+		}
 		for _, b := range bindings {
-			hp, _ := strconv.Atoi(b.HostPort)
+			hp, err := strconv.Atoi(b.HostPort)
+			if err != nil {
+				log.Printf("警告: 解析主机端口失败 %s: %v", b.HostPort, err)
+				continue
+			}
 			result = append(result, PortBindingSpec{
 				HostIP:   normalizeIP(b.HostIP),
 				HostPort: hp,

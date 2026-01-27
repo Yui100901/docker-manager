@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"docker-manager/docker"
+
 	"github.com/Yui100901/MyGo/command"
 	"gopkg.in/yaml.v3"
 )
@@ -161,7 +162,8 @@ func (rr *ReverseResult) saveOutput() error {
 	}
 
 	if rr.options.ReverseType == ReverseCompose || rr.options.ReverseType == ReverseAll {
-		yml, _ := yaml.Marshal(ComposeFile{Services: rr.ComposeMap})
+		vols, nets := rr.buildTopLevelComposeMeta()
+		yml, _ := yaml.Marshal(ComposeFile{Services: rr.ComposeMap, Volumes: vols, Networks: nets})
 		return os.WriteFile("docker-compose.reverse.yml", yml, 0644)
 	}
 
@@ -169,8 +171,43 @@ func (rr *ReverseResult) saveOutput() error {
 }
 
 func (rr *ReverseResult) DockerComposeFileString() string {
-	yml, _ := yaml.Marshal(ComposeFile{Services: rr.ComposeMap})
+	vols, nets := rr.buildTopLevelComposeMeta()
+	yml, _ := yaml.Marshal(ComposeFile{Services: rr.ComposeMap, Volumes: vols, Networks: nets})
 	return string(yml)
+}
+
+func (rr *ReverseResult) buildTopLevelComposeMeta() (map[string]interface{}, map[string]interface{}) {
+	volumes := make(map[string]interface{})
+	networks := make(map[string]interface{})
+
+	for _, svc := range rr.ComposeMap {
+		// volumes: look for named volumes like "name:dest" where name has no path separators
+		for _, v := range svc.Volumes {
+			parts := strings.SplitN(v, ":", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			name := parts[0]
+			// heuristics: treat as named volume if name does not contain path separators
+			if !strings.Contains(name, "/") && !strings.Contains(name, "\\") {
+				volumes[name] = map[string]interface{}{}
+			}
+		}
+
+		// networks: include network_mode if it's a custom network name
+		nm := svc.NetworkMode
+		if nm != "" && nm != "default" && nm != "bridge" && nm != "host" && nm != "none" {
+			networks[nm] = map[string]interface{}{}
+		}
+	}
+
+	if len(volumes) == 0 {
+		volumes = nil
+	}
+	if len(networks) == 0 {
+		networks = nil
+	}
+	return volumes, networks
 }
 
 func reverseWithOptions(names []string, options ReverseOptions) (*ReverseResult, error) {
@@ -194,15 +231,19 @@ func (rr *ReverseResult) rerunContainers() error {
 	// rerun docker run
 	var firstErr error
 	for name := range rr.RunCommands {
-		containerID, err := containerManager.RecreateContainer(name, name)
-		if err != nil {
-			if firstErr == nil {
-				firstErr = fmt.Errorf("重建容器 %s 失败: %w", name, err)
+		if rr.options.DryRun {
+			fmt.Printf("Dry run: recreate container %s\n", name)
+		} else {
+			containerID, err := containerManager.RecreateContainer(name, name)
+			if err != nil {
+				if firstErr == nil {
+					firstErr = fmt.Errorf("重建容器 %s 失败: %w", name, err)
+				}
+				log.Printf("重建容器 %s 失败: %v", name, err)
+				continue
 			}
-			log.Printf("重建容器 %s 失败: %v", name, err)
-			continue
+			fmt.Println("Recreate container", name, "id", containerID)
 		}
-		fmt.Println("Recreate container", name, "id", containerID)
 	}
 
 	// rerun compose
@@ -215,11 +256,15 @@ func (rr *ReverseResult) rerunContainers() error {
 			}
 			return err
 		}
-		if err := command.RunCommand("docker", "compose", "-f", tmp, "up", "-d"); err != nil {
-			if firstErr == nil {
-				firstErr = err
+		if rr.options.DryRun {
+			fmt.Printf("Dry run: docker compose -f %s up -d\n", tmp)
+		} else {
+			if err := command.RunCommand("docker", "compose", "-f", tmp, "up", "-d"); err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				return err
 			}
-			return err
 		}
 	}
 

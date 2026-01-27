@@ -7,6 +7,8 @@ package reverse
 
 type ComposeFile struct {
 	Services map[string]ComposeService `yaml:"services"`
+	Volumes  map[string]interface{}    `yaml:"volumes,omitempty"`
+	Networks map[string]interface{}    `yaml:"networks,omitempty"`
 }
 
 type ComposeService struct {

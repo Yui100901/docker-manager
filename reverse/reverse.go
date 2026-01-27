@@ -16,6 +16,7 @@ func NewReverseCommand() *cobra.Command {
 		mergePorts        bool
 		filterDefaultEnvs bool
 		prettyFormat      bool
+		dryRun            bool
 	)
 
 	cmd := &cobra.Command{
@@ -44,6 +45,7 @@ func NewReverseCommand() *cobra.Command {
 				Rerun:             rerun,
 				Save:              save,
 				ReverseType:       rt,
+				DryRun:            dryRun,
 			}
 
 			reverseResult, err := reverseWithOptions(args, opts)
@@ -97,6 +99,7 @@ func NewReverseCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&filterDefaultEnvs, "filter-default-envs", true, "是否过滤掉 Docker 默认环境变量（默认开启）")
 	cmd.Flags().BoolVar(&mergePorts, "merge-ports", true, "命令是否合并连续端口，compose无法合并（默认开启）")
 	cmd.Flags().BoolVar(&prettyFormat, "pretty", false, "是否格式化输出 docker run 命令（默认关闭）")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "仅打印将要执行的操作，不实际重新运行容器（用于审计/确认）")
 
 	return cmd
 }

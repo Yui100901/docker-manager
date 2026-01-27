@@ -21,4 +21,5 @@ type ReverseOptions struct {
 	Rerun             bool        // 是否重新运行容器
 	Save              bool        // 是否保存输出到文件
 	ReverseType       ReverseType // 输出类型: cmd | compose | all
+	DryRun            bool        // 是否以干运行模式，仅打印将要执行的操作而不实际执行
 }

@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
@@ -89,13 +90,18 @@ func (cm *ContainerManager) buildNetworkingConfig(inspect container.InspectRespo
 	// 获取当前存在的网络列表
 	nets, err := cm.cli.NetworkList(ctx, network.ListOptions{})
 	if err != nil {
-		fmt.Printf("警告: 获取网络列表失败: %v\n", err)
+		log.Printf("警告: 获取网络列表失败: %v", err)
 		return nc
 	}
 
 	existing := make(map[string]bool)
 	for _, n := range nets {
 		existing[n.Name] = true
+	}
+
+	// 防御性检查：避免 nil 引用
+	if inspect.NetworkSettings == nil || inspect.NetworkSettings.Networks == nil {
+		return nc
 	}
 
 	// 遍历原容器网络配置
@@ -105,7 +111,7 @@ func (cm *ContainerManager) buildNetworkingConfig(inspect container.InspectRespo
 				Aliases: netSettings.Aliases,
 			}
 		} else {
-			fmt.Printf("警告: 网络 %s 已不存在，跳过\n", netName)
+			log.Printf("警告: 网络 %s 已不存在，跳过", netName)
 		}
 	}
 
@@ -126,7 +132,7 @@ func (cm *ContainerManager) RecreateContainer(containerID, newName string) (stri
 
 	// 2. 停止容器（忽略错误）
 	if stopErr := cm.cli.ContainerStop(ctx, containerID, container.StopOptions{}); stopErr != nil {
-		fmt.Printf("警告: 停止容器 %s 失败: %v\n", containerID, stopErr)
+		log.Printf("警告: 停止容器 %s 失败: %v", containerID, stopErr)
 	}
 
 	// 3. 删除容器（不删除挂载卷，忽略错误）
@@ -134,7 +140,7 @@ func (cm *ContainerManager) RecreateContainer(containerID, newName string) (stri
 		Force:         true,
 		RemoveVolumes: false,
 	}); rmErr != nil {
-		fmt.Printf("警告: 删除容器 %s 失败: %v\n", containerID, rmErr)
+		log.Printf("警告: 删除容器 %s 失败: %v", containerID, rmErr)
 	}
 
 	// 4. 构造 NetworkingConfig
