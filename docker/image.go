@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 
@@ -19,10 +20,13 @@ type ImageManager struct {
 }
 
 // NewImageManager 构造函数
-func NewImageManager() *ImageManager {
-	cli, _ := initDockerClient()
+func NewImageManager() (*ImageManager, error) {
+	cli, err := initDockerClient()
+	if err != nil {
+		return nil, err
+	}
 
-	return &ImageManager{cli: cli}
+	return &ImageManager{cli: cli}, nil
 }
 
 // List 列出所有镜像
@@ -38,13 +42,21 @@ func (im *ImageManager) Save(images []string, outputFile string) error {
 	if err != nil {
 		return err
 	}
-	defer reader.Close()
+	defer func() {
+		if cerr := reader.Close(); cerr != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "警告: 关闭 reader 失败: %v\n", cerr)
+		}
+	}()
 
 	file, err := os.Create(outputFile)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() {
+		if cerr := file.Close(); cerr != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "警告: 关闭文件 %s 失败: %v\n", outputFile, cerr)
+		}
+	}()
 
 	_, err = io.Copy(file, reader)
 	return err
@@ -57,13 +69,23 @@ func (im *ImageManager) Load(inputFile string) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() {
+		if cerr := file.Close(); cerr != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "警告: 关闭文件 %s 失败: %v\n", inputFile, cerr)
+		}
+	}()
 
 	resp, err := im.cli.ImageLoad(ctx, file, client.ImageLoadWithQuiet(false))
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if resp.Body != nil {
+			if cerr := resp.Body.Close(); cerr != nil {
+				_, _ = fmt.Fprintf(os.Stderr, "警告: 关闭 resp.Body 失败: %v\n", cerr)
+			}
+		}
+	}()
 
 	_, err = io.Copy(os.Stdout, resp.Body)
 	return err

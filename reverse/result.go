@@ -1,12 +1,12 @@
 package reverse
 
 import (
-	"docker-manager/docker"
 	"fmt"
 	"log"
 	"os"
 	"strings"
 
+	"docker-manager/docker"
 	"github.com/Yui100901/MyGo/command"
 	"gopkg.in/yaml.v3"
 )
@@ -18,8 +18,9 @@ import (
 
 var containerManager *docker.ContainerManager
 
-func init() {
-	containerManager = docker.NewContainerManager()
+// SetContainerManager allows main to inject a ContainerManager instead of using package init
+func SetContainerManager(cm *docker.ContainerManager) {
+	containerManager = cm
 }
 
 type ReverseResult struct {
@@ -134,13 +135,28 @@ func (rr *ReverseResult) saveOutput() error {
 		if err != nil {
 			return err
 		}
-		defer f.Close()
+		// ensure close & capture error
+		var closeErr error
+		defer func() {
+			if cerr := f.Close(); cerr != nil && closeErr == nil {
+				closeErr = cerr
+			}
+		}()
 
-		fmt.Fprintln(f, "#!/bin/bash")
+		if _, err := fmt.Fprintln(f, "#!/bin/bash"); err != nil {
+			return err
+		}
 		if rr.options.PrettyFormat {
-			fmt.Fprint(f, rr.DockerRunCommandStringPretty())
+			if _, err := fmt.Fprint(f, rr.DockerRunCommandStringPretty()); err != nil {
+				return err
+			}
 		} else {
-			fmt.Fprint(f, rr.DockerRunCommandStringRaw())
+			if _, err := fmt.Fprint(f, rr.DockerRunCommandStringRaw()); err != nil {
+				return err
+			}
+		}
+		if closeErr != nil {
+			return closeErr
 		}
 	}
 
@@ -176,8 +192,16 @@ func reverseWithOptions(names []string, options ReverseOptions) (*ReverseResult,
 
 func (rr *ReverseResult) rerunContainers() error {
 	// rerun docker run
-	for name, _ := range rr.RunCommands {
-		containerID, _ := containerManager.RecreateContainer(name, name)
+	var firstErr error
+	for name := range rr.RunCommands {
+		containerID, err := containerManager.RecreateContainer(name, name)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("重建容器 %s 失败: %w", name, err)
+			}
+			log.Printf("重建容器 %s 失败: %v", name, err)
+			continue
+		}
 		fmt.Println("Recreate container", name, "id", containerID)
 	}
 
@@ -186,10 +210,18 @@ func (rr *ReverseResult) rerunContainers() error {
 		ymlString := rr.DockerComposeFileString()
 		tmp := "docker-compose.reverse.yml"
 		if err := os.WriteFile(tmp, []byte(ymlString), 0644); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
 			return err
 		}
-		return command.RunCommand("docker", "compose", "-f", tmp, "up", "-d")
+		if err := command.RunCommand("docker", "compose", "-f", tmp, "up", "-d"); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			return err
+		}
 	}
 
-	return nil
+	return firstErr
 }

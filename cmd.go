@@ -17,10 +17,6 @@ import (
 
 var imageManager *docker.ImageManager
 
-func init() {
-	imageManager = docker.NewImageManager()
-}
-
 func newLoadCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "load [path]",

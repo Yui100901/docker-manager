@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
@@ -21,26 +22,32 @@ type ContainerManager struct {
 }
 
 // NewContainerManager 构造函数，初始化 DockerClient
-func NewContainerManager() *ContainerManager {
-	cli, _ := initDockerClient()
-	return &ContainerManager{cli: cli}
+func NewContainerManager() (*ContainerManager, error) {
+	cli, err := initDockerClient()
+	if err != nil {
+		return nil, err
+	}
+	return &ContainerManager{cli: cli}, nil
 }
 
 // ListAll 列出所有容器
 func (cm *ContainerManager) ListAll() ([]container.Summary, error) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
 	return cm.cli.ContainerList(ctx, container.ListOptions{All: true})
 }
 
 // Stop 停止指定容器
 func (cm *ContainerManager) Stop(containerID string) error {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
 	return cm.cli.ContainerStop(ctx, containerID, container.StopOptions{})
 }
 
 // Remove 删除指定容器
 func (cm *ContainerManager) Remove(containerID string, force, removeVolumes bool) error {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
 	return cm.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{
 		Force:         force,
 		RemoveVolumes: removeVolumes,
@@ -49,7 +56,8 @@ func (cm *ContainerManager) Remove(containerID string, force, removeVolumes bool
 
 // Inspect 获取容器信息
 func (cm *ContainerManager) Inspect(containerID string) (container.InspectResponse, error) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
 	return cm.cli.ContainerInspect(ctx, containerID)
 }
 
@@ -59,18 +67,21 @@ func (cm *ContainerManager) Create(config *container.Config,
 	networkingConfig *network.NetworkingConfig,
 	platform *ocispec.Platform,
 	containerName string) (container.CreateResponse, error) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 	return cm.cli.ContainerCreate(ctx, config, hostConfig, networkingConfig, platform, containerName)
 }
 
 func (cm *ContainerManager) Start(containerID string) error {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	return cm.cli.ContainerStart(ctx, containerID, container.StartOptions{})
 }
 
 // buildNetworkingConfig 从 Inspect.NetworkSettings 构造 NetworkingConfig
 func (cm *ContainerManager) buildNetworkingConfig(inspect container.InspectResponse) *network.NetworkingConfig {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
 	nc := &network.NetworkingConfig{
 		EndpointsConfig: make(map[string]*network.EndpointSettings),
 	}
@@ -103,7 +114,9 @@ func (cm *ContainerManager) buildNetworkingConfig(inspect container.InspectRespo
 
 // RecreateContainer 根据现有容器配置删除并重新创建运行
 func (cm *ContainerManager) RecreateContainer(containerID, newName string) (string, error) {
-	ctx := context.Background()
+	// 使用较长的整体超时
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
 
 	// 1. Inspect 原容器
 	inspect, err := cm.cli.ContainerInspect(ctx, containerID)

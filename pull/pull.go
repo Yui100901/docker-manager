@@ -3,6 +3,7 @@ package pull
 import (
 	"crypto/sha256"
 	"fmt"
+
 	"github.com/Yui100901/MyGo/file_utils"
 	"github.com/Yui100901/MyGo/network/http_utils"
 	"github.com/Yui100901/MyGo/struct_utils"
@@ -27,6 +28,11 @@ import (
 const (
 	defaultRegistry = "registry-1.docker.io"
 	defaultProxy    = "http://127.0.0.1:7890"
+	// 并发下载层的最大并发数
+	maxLayerConcurrency = 4
+	// HTTP retry/backoff config
+	maxHTTPRetries = 3
+	initialBackoff = 1 * time.Second
 )
 
 type targetPlatform struct {
@@ -89,7 +95,11 @@ func getImage(imageName string) {
 		log.Printf("准备临时目录失败: %v", err)
 		return
 	}
-	defer os.RemoveAll(tempDir)
+	defer func() {
+		if err := os.RemoveAll(tempDir); err != nil {
+			log.Printf("警告: 清理临时目录 %s 失败: %v", tempDir, err)
+		}
+	}()
 
 	manifest, err := fetchManifest(imageInfo, token)
 	log.Println(manifest)
@@ -187,7 +197,7 @@ func getAuthToken(info *ImageInfo) (string, error) {
 		"scope":   fmt.Sprintf("repository:%s/%s:pull", info.Repository, info.Image),
 	}
 
-	resp, err := httpClient.Get(authURL, nil, query).ReadBodyBytes()
+	respBytes, err := fetchWithRetry(authURL, nil, query)
 	if err != nil {
 		return "", fmt.Errorf("认证请求失败: %w", err)
 	}
@@ -195,7 +205,7 @@ func getAuthToken(info *ImageInfo) (string, error) {
 	type tokenResponse struct {
 		Token string `json:"token"`
 	}
-	token, err := struct_utils.UnmarshalData[tokenResponse](resp, struct_utils.JSON)
+	token, err := struct_utils.UnmarshalData[tokenResponse](respBytes, struct_utils.JSON)
 	if err != nil {
 		return "", fmt.Errorf("解析Token失败: %w", err)
 	}
@@ -216,17 +226,17 @@ func fetchManifest(info *ImageInfo, token string) (*ocispec.Manifest, error) {
 		"Accept":        "application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.index.v1+json",
 	}
 
-	resp, err := httpClient.Get(manifestURL, headers, nil).ReadBodyBytes()
+	respBytes, err := fetchWithRetry(manifestURL, headers, nil)
 	if err != nil {
 		return nil, fmt.Errorf("获取清单失败: %w", err)
 	}
 
-	index, err := struct_utils.UnmarshalData[ocispec.Index](resp, struct_utils.JSON)
+	index, err := struct_utils.UnmarshalData[ocispec.Index](respBytes, struct_utils.JSON)
 	if err == nil && index.SchemaVersion == 2 {
 		return handleOCIIndex(info, index, token)
 	}
 
-	return struct_utils.UnmarshalData[ocispec.Manifest](resp, struct_utils.JSON)
+	return struct_utils.UnmarshalData[ocispec.Manifest](respBytes, struct_utils.JSON)
 }
 
 func getReference(info *ImageInfo) string {
@@ -278,13 +288,17 @@ func prepareWorkspace(info *ImageInfo) (string, error) {
 	return os.MkdirTemp(".", pattern)
 }
 
-// 改进版：使用 errgroup 管理并发下载
+// 改进版：使用 errgroup 管理并发下载，加入并发上限
 func downloadLayers(info *ImageInfo, manifest *ocispec.Manifest, token, tempDir string) error {
 	var g errgroup.Group
+	sem := make(chan struct{}, maxLayerConcurrency)
 
 	for _, layer := range manifest.Layers {
 		l := layer // 避免闭包引用同一个变量
+		// acquire
+		sem <- struct{}{}
 		g.Go(func() error {
+			defer func() { <-sem }()
 			return downloadLayer(info, l, token, tempDir)
 		})
 	}
@@ -304,10 +318,15 @@ func downloadConfig(info *ImageInfo, manifest *ocispec.Manifest, token, tempDir 
 		manifest.Config.Digest,
 	)
 
-	configPath := filepath.Join(tempDir, string(manifest.Config.Digest[7:]+".json"))
+	digest := strings.TrimPrefix(string(manifest.Config.Digest), "sha256:")
+	if digest == string(manifest.Config.Digest) {
+		// 没有前缀，尝试再替换常见前缀
+		digest = strings.TrimPrefix(digest, "sha:")
+	}
+	configPath := filepath.Join(tempDir, digest+".json")
 	headers := map[string]string{"Authorization": "Bearer " + token}
 
-	return httpClient.Get(configURL, headers, nil).SaveToFile(configPath)
+	return saveWithRetry(configURL, headers, nil, configPath)
 }
 
 func downloadLayer(info *ImageInfo, layer ocispec.Descriptor, token, tempDir string) error {
@@ -320,7 +339,7 @@ func downloadLayer(info *ImageInfo, layer ocispec.Descriptor, token, tempDir str
 
 	layerID := sha256Hash(string(layer.Digest))
 	layerDir := filepath.Join(tempDir, layerID)
-	if err := os.Mkdir(layerDir, 0755); err != nil {
+	if err := os.MkdirAll(layerDir, 0755); err != nil {
 		return fmt.Errorf("创建层目录失败: %w", err)
 	}
 
@@ -328,7 +347,7 @@ func downloadLayer(info *ImageInfo, layer ocispec.Descriptor, token, tempDir str
 	gzPath := filepath.Join(layerDir, "layer.tar.gz")
 	headers := map[string]string{"Authorization": "Bearer " + token}
 
-	if err := httpClient.Get(layerURL, headers, nil).SaveToFile(gzPath); err != nil {
+	if err := saveWithRetry(layerURL, headers, nil, gzPath); err != nil {
 		return fmt.Errorf("下载层失败: %w", err)
 	}
 
@@ -340,10 +359,44 @@ func downloadLayer(info *ImageInfo, layer ocispec.Descriptor, token, tempDir str
 	return os.Remove(gzPath)
 }
 
+// fetchWithRetry 会带简单的重试和指数退避，返回 body bytes
+func fetchWithRetry(url string, headers map[string]string, query map[string]string) ([]byte, error) {
+	var lastErr error
+	backoff := initialBackoff
+	for i := 0; i < maxHTTPRetries; i++ {
+		resp, err := httpClient.Get(url, headers, query).ReadBodyBytes()
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		log.Printf("请求 %s 失败（尝试 %d/%d）: %v，稍后重试...", url, i+1, maxHTTPRetries, err)
+		time.Sleep(backoff)
+		backoff *= 2
+	}
+	return nil, lastErr
+}
+
+// saveWithRetry 将 GET 请求的响应直接保存到文件，带重试
+func saveWithRetry(url string, headers map[string]string, query map[string]string, outputPath string) error {
+	var lastErr error
+	backoff := initialBackoff
+	for i := 0; i < maxHTTPRetries; i++ {
+		if err := httpClient.Get(url, headers, query).SaveToFile(outputPath); err == nil {
+			return nil
+		} else {
+			lastErr = err
+			log.Printf("保存 %s 到 %s 失败（尝试 %d/%d）: %v，稍后重试...", url, outputPath, i+1, maxHTTPRetries, err)
+			time.Sleep(backoff)
+			backoff *= 2
+		}
+	}
+	return lastErr
+}
+
 func createManifestFile(info *ImageInfo, manifest *ocispec.Manifest, tempDir string) error {
 	manifestContent := []*ImageManifest{
 		{
-			Config:   string(manifest.Config.Digest[7:] + ".json"),
+			Config:   strings.TrimPrefix(string(manifest.Config.Digest), "sha256:") + ".json",
 			Layers:   getLayerPaths(manifest.Layers),
 			RepoTags: []string{fmt.Sprintf("%s/%s:%s", info.Repository, info.Image, info.Tag)},
 		},
