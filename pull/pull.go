@@ -2,11 +2,13 @@ package pull
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 
 	"github.com/Yui100901/MyGo/file_utils"
 	"github.com/Yui100901/MyGo/network/http_utils"
 	"github.com/Yui100901/MyGo/struct_utils"
+	"github.com/distribution/reference"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
@@ -28,6 +30,10 @@ import (
 const (
 	defaultRegistry = "registry-1.docker.io"
 	defaultProxy    = "http://127.0.0.1:7890"
+	dockerHubDomain = "docker.io"
+	// Docker schema v2 media types. OCI media types are provided by ocispec.
+	dockerManifestV2     = "application/vnd.docker.distribution.manifest.v2+json"
+	dockerManifestListV2 = "application/vnd.docker.distribution.manifest.list.v2+json"
 	// 并发下载层的最大并发数
 	maxLayerConcurrency = 4
 	// HTTP retry/backoff config
@@ -81,7 +87,11 @@ func NewPullCommand() *cobra.Command {
 }
 
 func getImage(imageName string) {
-	imageInfo := parseImageInfo(imageName)
+	imageInfo, err := parseImageInfo(imageName)
+	if err != nil {
+		log.Printf("镜像名称解析失败 %s: %v", imageName, err)
+		return
+	}
 	log.Printf("获取镜像%s:%s,目标平台%s/%s", imageInfo.Image, imageInfo.Tag, platform.targetOS, platform.targetArch)
 
 	token, err := getAuthToken(imageInfo)
@@ -150,51 +160,40 @@ func initHTTPClient() {
 	}
 }
 
-func parseImageInfo(imageName string) *ImageInfo {
+func parseImageInfo(imageName string) (*ImageInfo, error) {
 	spec := &ImageInfo{
 		Registry: defaultRegistry,
 		Tag:      "latest",
 	}
 
-	// 处理digest
-	if parts := strings.SplitN(imageName, "@", 2); len(parts) == 2 {
-		imageName = parts[0]
-		spec.Digest = parts[1]
+	named, err := reference.ParseNormalizedNamed(imageName)
+	if err != nil {
+		return nil, err
 	}
 
-	// 处理tag
-	if parts := strings.SplitN(imageName, ":", 2); len(parts) == 2 {
-		imageName = parts[0]
-		spec.Tag = parts[1]
+	domain := reference.Domain(named)
+	if domain != "" && domain != dockerHubDomain {
+		spec.Registry = domain
 	}
 
-	// 解析registry和repository
-	parts := strings.Split(imageName, "/")
-	switch {
-	case len(parts) == 1:
-		spec.Repository = "library"
-		spec.Image = parts[0]
-	case isRegistry(parts[0]):
-		spec.Registry = parts[0]
-		spec.Repository = strings.Join(parts[1:len(parts)-1], "/")
-		spec.Image = parts[len(parts)-1]
-	default:
-		spec.Repository = strings.Join(parts[:len(parts)-1], "/")
-		spec.Image = parts[len(parts)-1]
+	path := reference.Path(named)
+	spec.Repository, spec.Image = splitRepositoryImage(path)
+
+	if tagged, ok := named.(reference.Tagged); ok {
+		spec.Tag = tagged.Tag()
+	}
+	if digested, ok := named.(reference.Digested); ok {
+		spec.Digest = digested.Digest().String()
 	}
 
-	return spec
-}
-
-func isRegistry(part string) bool {
-	return strings.Contains(part, ".") || strings.Contains(part, ":")
+	return spec, nil
 }
 
 func getAuthToken(info *ImageInfo) (string, error) {
 	authURL := "https://auth.docker.io/token"
 	query := map[string]string{
 		"service": "registry.docker.io",
-		"scope":   fmt.Sprintf("repository:%s/%s:pull", info.Repository, info.Image),
+		"scope":   fmt.Sprintf("repository:%s:pull", imagePath(info)),
 	}
 
 	respBytes, err := fetchWithRetry(authURL, nil, query)
@@ -214,16 +213,20 @@ func getAuthToken(info *ImageInfo) (string, error) {
 }
 
 func fetchManifest(info *ImageInfo, token string) (*ocispec.Manifest, error) {
-	manifestURL := fmt.Sprintf("https://%s/v2/%s/%s/manifests/%s",
+	manifestURL := fmt.Sprintf("https://%s/v2/%s/manifests/%s",
 		info.Registry,
-		info.Repository,
-		info.Image,
+		imagePath(info),
 		getReference(info),
 	)
 
 	headers := map[string]string{
 		"Authorization": fmt.Sprintf("Bearer %s", token),
-		"Accept":        "application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.index.v1+json",
+		"Accept": strings.Join([]string{
+			dockerManifestV2,
+			dockerManifestListV2,
+			ocispec.MediaTypeImageManifest,
+			ocispec.MediaTypeImageIndex,
+		}, ", "),
 	}
 
 	respBytes, err := fetchWithRetry(manifestURL, headers, nil)
@@ -231,8 +234,15 @@ func fetchManifest(info *ImageInfo, token string) (*ocispec.Manifest, error) {
 		return nil, fmt.Errorf("获取清单失败: %w", err)
 	}
 
-	index, err := struct_utils.UnmarshalData[ocispec.Index](respBytes, struct_utils.JSON)
-	if err == nil && index.SchemaVersion == 2 {
+	isIndex, err := isManifestIndex(respBytes)
+	if err != nil {
+		return nil, fmt.Errorf("解析清单类型失败: %w", err)
+	}
+	if isIndex {
+		index, err := struct_utils.UnmarshalData[ocispec.Index](respBytes, struct_utils.JSON)
+		if err != nil {
+			return nil, fmt.Errorf("解析多架构清单失败: %w", err)
+		}
 		return handleOCIIndex(info, index, token)
 	}
 
@@ -263,19 +273,21 @@ func handleOCIIndex(info *ImageInfo, index *ocispec.Index, token string) (*ocisp
 		return nil, fmt.Errorf("未找到匹配的平台: %s/%s", platform.targetOS, platform.targetArch)
 	}
 
-	manifestURL := fmt.Sprintf("https://%s/v2/%s/%s/manifests/%s",
+	manifestURL := fmt.Sprintf("https://%s/v2/%s/manifests/%s",
 		info.Registry,
-		info.Repository,
-		info.Image,
+		imagePath(info),
 		selectedDigest,
 	)
 
 	headers := map[string]string{
 		"Authorization": fmt.Sprintf("Bearer %s", token),
-		"Accept":        "application/vnd.docker.distribution.manifest.v2+json",
+		"Accept": strings.Join([]string{
+			dockerManifestV2,
+			ocispec.MediaTypeImageManifest,
+		}, ", "),
 	}
 
-	resp, err := httpClient.Get(manifestURL, headers, nil).ReadBodyBytes()
+	resp, err := fetchWithRetry(manifestURL, headers, nil)
 	if err != nil {
 		return nil, fmt.Errorf("获取架构清单失败: %w", err)
 	}
@@ -311,10 +323,9 @@ func downloadLayers(info *ImageInfo, manifest *ocispec.Manifest, token, tempDir 
 }
 
 func downloadConfig(info *ImageInfo, manifest *ocispec.Manifest, token, tempDir string) error {
-	configURL := fmt.Sprintf("https://%s/v2/%s/%s/blobs/%s",
+	configURL := fmt.Sprintf("https://%s/v2/%s/blobs/%s",
 		info.Registry,
-		info.Repository,
-		info.Image,
+		imagePath(info),
 		manifest.Config.Digest,
 	)
 
@@ -330,10 +341,9 @@ func downloadConfig(info *ImageInfo, manifest *ocispec.Manifest, token, tempDir 
 }
 
 func downloadLayer(info *ImageInfo, layer ocispec.Descriptor, token, tempDir string) error {
-	layerURL := fmt.Sprintf("https://%s/v2/%s/%s/blobs/%s",
+	layerURL := fmt.Sprintf("https://%s/v2/%s/blobs/%s",
 		info.Registry,
-		info.Repository,
-		info.Image,
+		imagePath(info),
 		layer.Digest,
 	)
 
@@ -398,7 +408,7 @@ func createManifestFile(info *ImageInfo, manifest *ocispec.Manifest, tempDir str
 		{
 			Config:   strings.TrimPrefix(string(manifest.Config.Digest), "sha256:") + ".json",
 			Layers:   getLayerPaths(manifest.Layers),
-			RepoTags: []string{fmt.Sprintf("%s/%s:%s", info.Repository, info.Image, info.Tag)},
+			RepoTags: []string{fmt.Sprintf("%s:%s", imagePath(info), info.Tag)},
 		},
 	}
 
@@ -421,11 +431,8 @@ func getLayerPaths(layers []ocispec.Descriptor) []string {
 }
 
 func packageImage(tempDir string, info *ImageInfo) (string, error) {
-	outputFile := fmt.Sprintf("%s_%s_%s.tar",
-		strings.ReplaceAll(info.Repository, "/", "_"),
-		info.Image,
-		info.Tag,
-	)
+	name := strings.ReplaceAll(imagePath(info), "/", "_")
+	outputFile := fmt.Sprintf("%s_%s.tar", name, info.Tag)
 	return outputFile, file_utils.CreateTarArchive(tempDir, outputFile)
 }
 
@@ -438,4 +445,46 @@ func getProxyURL() string {
 		return proxy
 	}
 	return defaultProxy
+}
+
+func splitRepositoryImage(path string) (string, string) {
+	parts := strings.Split(path, "/")
+	if len(parts) == 1 {
+		return "", parts[0]
+	}
+	return strings.Join(parts[:len(parts)-1], "/"), parts[len(parts)-1]
+}
+
+func imagePath(info *ImageInfo) string {
+	if info.Repository == "" {
+		return info.Image
+	}
+	return info.Repository + "/" + info.Image
+}
+
+func isManifestIndex(data []byte) (bool, error) {
+	var probe struct {
+		MediaType string            `json:"mediaType"`
+		Manifests []json.RawMessage `json:"manifests"`
+		Config    *json.RawMessage  `json:"config"`
+		Layers    []json.RawMessage `json:"layers"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return false, err
+	}
+
+	switch probe.MediaType {
+	case ocispec.MediaTypeImageIndex, dockerManifestListV2:
+		return true, nil
+	case ocispec.MediaTypeImageManifest, dockerManifestV2:
+		return false, nil
+	}
+
+	if len(probe.Manifests) > 0 {
+		return true, nil
+	}
+	if probe.Config != nil || len(probe.Layers) > 0 {
+		return false, nil
+	}
+	return false, nil
 }
