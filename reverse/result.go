@@ -71,7 +71,7 @@ func (rr *ReverseResult) DockerRunCommandStringRaw() string {
 			}
 			filtered = append(filtered, c)
 		}
-		sb.WriteString(fmt.Sprintf("# %s\n%s\n\n", name, strings.Join(filtered, " ")))
+		sb.WriteString(fmt.Sprintf("# %s\n%s\n\n", name, shellJoin(filtered)))
 	}
 	return sb.String()
 }
@@ -94,7 +94,7 @@ func (rr *ReverseResult) DockerRunCommandStringPretty() string {
 
 			if foundSplit {
 				// 镜像及后续命令在同一行
-				sb.WriteString("    " + strings.Join(cmd[i:], " ") + "\n\n")
+				sb.WriteString("    " + shellJoin(cmd[i:]) + "\n\n")
 				break
 			}
 
@@ -102,13 +102,13 @@ func (rr *ReverseResult) DockerRunCommandStringPretty() string {
 			if i+1 < len(cmd) && !strings.HasPrefix(cmd[i+1], "-") {
 				switch arg {
 				case "--name", "-u", "-w", "--network", "--restart", "--entrypoint":
-					sb.WriteString(fmt.Sprintf("    %s=%s \\\n", arg, cmd[i+1]))
+					sb.WriteString(fmt.Sprintf("    %s=%s \\\n", arg, shellQuote(cmd[i+1])))
 					i += 2
 				case "-e", "-v", "-p":
-					sb.WriteString(fmt.Sprintf("    %s %s \\\n", arg, cmd[i+1]))
+					sb.WriteString(fmt.Sprintf("    %s %s \\\n", arg, shellQuote(cmd[i+1])))
 					i += 2
 				default:
-					sb.WriteString(fmt.Sprintf("    %s %s \\\n", arg, cmd[i+1]))
+					sb.WriteString(fmt.Sprintf("    %s %s \\\n", shellQuote(arg), shellQuote(cmd[i+1])))
 					i += 2
 				}
 			} else {
@@ -121,13 +121,51 @@ func (rr *ReverseResult) DockerRunCommandStringPretty() string {
 				case "--privileged":
 					sb.WriteString("    --privileged \\\n")
 				default:
-					sb.WriteString("    " + arg + " \\\n")
+					sb.WriteString("    " + shellQuote(arg) + " \\\n")
 				}
 				i++
 			}
 		}
 	}
 	return sb.String()
+}
+
+func shellJoin(args []string) string {
+	quoted := make([]string, 0, len(args))
+	for _, arg := range args {
+		quoted = append(quoted, shellQuote(arg))
+	}
+	return strings.Join(quoted, " ")
+}
+
+func shellQuote(arg string) string {
+	if arg == "" {
+		return "''"
+	}
+	if isShellSafe(arg) {
+		return arg
+	}
+	return "'" + strings.ReplaceAll(arg, "'", "'\\''") + "'"
+}
+
+func isShellSafe(arg string) bool {
+	for _, r := range arg {
+		if r >= 'a' && r <= 'z' {
+			continue
+		}
+		if r >= 'A' && r <= 'Z' {
+			continue
+		}
+		if r >= '0' && r <= '9' {
+			continue
+		}
+		switch r {
+		case '_', '@', '%', '+', '=', ':', ',', '.', '/', '-':
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func (rr *ReverseResult) saveOutput() error {
