@@ -1,6 +1,8 @@
 package pull
 
 import (
+	"archive/tar"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -22,6 +24,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"time"
@@ -61,6 +64,7 @@ type ImageInfo struct {
 }
 
 type PullOptions struct {
+	Context   context.Context
 	Output    string
 	OutputDir string
 	Load      bool
@@ -92,6 +96,9 @@ func NewPullCommand() *cobra.Command {
 默认使用 HTTP_PROXY/HTTPS_PROXY 环境变量代理；未设置则直连。可通过 --proxy 强制指定代理。
 默认拉取linux/amd64镜像。`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
+			defer stop()
+
 			platform.targetOS = targetOS
 			platform.targetArch = arch
 			configureHTTPLogging(verboseHTTP)
@@ -103,6 +110,7 @@ func NewPullCommand() *cobra.Command {
 			}
 			imageNameList = args
 			opts := PullOptions{
+				Context:   ctx,
 				Output:    output,
 				OutputDir: outputDir,
 				Load:      load,
@@ -135,15 +143,27 @@ func NewPullCommand() *cobra.Command {
 }
 
 func getImage(imageName string, opts PullOptions) error {
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	imageInfo, err := parseImageInfo(imageName)
 	if err != nil {
 		return fmt.Errorf("镜像名称解析失败: %w", err)
 	}
 	log.Printf("获取镜像%s:%s,目标平台%s/%s", imageInfo.Image, imageInfo.Tag, platform.targetOS, platform.targetArch)
 
-	token, err := getAuthToken(imageInfo)
+	token, err := getAuthToken(ctx, imageInfo)
 	if err != nil {
 		return fmt.Errorf("认证失败: %w", err)
+	}
+
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	tempDir, err := prepareWorkspace(imageInfo)
@@ -156,10 +176,14 @@ func getImage(imageName string, opts PullOptions) error {
 		}
 	}()
 
-	manifest, err := fetchManifest(imageInfo, token)
+	manifest, err := fetchManifest(ctx, imageInfo, token)
 	log.Println(manifest)
 	if err != nil {
 		return fmt.Errorf("获取清单失败: %w", err)
+	}
+
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	err = createManifestFile(imageInfo, manifest, tempDir)
@@ -167,23 +191,31 @@ func getImage(imageName string, opts PullOptions) error {
 		return fmt.Errorf("创建清单文件失败: %w", err)
 	}
 
-	err = downloadConfig(imageInfo, manifest, token, tempDir)
+	err = downloadConfig(ctx, imageInfo, manifest, token, tempDir)
 	if err != nil {
 		return fmt.Errorf("下载配置文件失败: %w", err)
 	}
 
-	err = downloadLayers(imageInfo, manifest, token, tempDir)
+	err = downloadLayers(ctx, imageInfo, manifest, token, tempDir)
 	if err != nil {
 		return fmt.Errorf("下载镜像层失败: %w", err)
+	}
+
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	outputFile, err := resolveOutputFile(imageInfo, opts)
 	if err != nil {
 		return fmt.Errorf("解析输出路径失败: %w", err)
 	}
-	err = packageImage(tempDir, outputFile)
+	err = packageImage(ctx, tempDir, outputFile)
 	if err != nil {
 		return fmt.Errorf("打包镜像失败: %w", err)
+	}
+
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	return completePulledImage(outputFile, opts)
@@ -256,14 +288,14 @@ func parseImageInfo(imageName string) (*ImageInfo, error) {
 	return spec, nil
 }
 
-func getAuthToken(info *ImageInfo) (string, error) {
+func getAuthToken(ctx context.Context, info *ImageInfo) (string, error) {
 	authURL := "https://auth.docker.io/token"
 	query := map[string]string{
 		"service": "registry.docker.io",
 		"scope":   fmt.Sprintf("repository:%s:pull", imagePath(info)),
 	}
 
-	respBytes, err := fetchWithRetry(authURL, nil, query)
+	respBytes, err := fetchWithRetry(ctx, authURL, nil, query)
 	if err != nil {
 		return "", fmt.Errorf("认证请求失败: %w", err)
 	}
@@ -279,7 +311,7 @@ func getAuthToken(info *ImageInfo) (string, error) {
 	return token.Token, nil
 }
 
-func fetchManifest(info *ImageInfo, token string) (*ocispec.Manifest, error) {
+func fetchManifest(ctx context.Context, info *ImageInfo, token string) (*ocispec.Manifest, error) {
 	manifestURL := fmt.Sprintf("https://%s/v2/%s/manifests/%s",
 		info.Registry,
 		imagePath(info),
@@ -296,7 +328,7 @@ func fetchManifest(info *ImageInfo, token string) (*ocispec.Manifest, error) {
 		}, ", "),
 	}
 
-	respBytes, err := fetchWithRetry(manifestURL, headers, nil)
+	respBytes, err := fetchWithRetry(ctx, manifestURL, headers, nil)
 	if err != nil {
 		return nil, fmt.Errorf("获取清单失败: %w", err)
 	}
@@ -310,7 +342,7 @@ func fetchManifest(info *ImageInfo, token string) (*ocispec.Manifest, error) {
 		if err != nil {
 			return nil, fmt.Errorf("解析多架构清单失败: %w", err)
 		}
-		return handleOCIIndex(info, index, token)
+		return handleOCIIndex(ctx, info, index, token)
 	}
 
 	return struct_utils.UnmarshalData[ocispec.Manifest](respBytes, struct_utils.JSON)
@@ -323,7 +355,7 @@ func getReference(info *ImageInfo) string {
 	return info.Tag
 }
 
-func handleOCIIndex(info *ImageInfo, index *ocispec.Index, token string) (*ocispec.Manifest, error) {
+func handleOCIIndex(ctx context.Context, info *ImageInfo, index *ocispec.Index, token string) (*ocispec.Manifest, error) {
 	log.Println("[+] 检测到多架构镜像索引")
 	var selectedDigest string
 
@@ -354,7 +386,7 @@ func handleOCIIndex(info *ImageInfo, index *ocispec.Index, token string) (*ocisp
 		}, ", "),
 	}
 
-	resp, err := fetchWithRetry(manifestURL, headers, nil)
+	resp, err := fetchWithRetry(ctx, manifestURL, headers, nil)
 	if err != nil {
 		return nil, fmt.Errorf("获取架构清单失败: %w", err)
 	}
@@ -368,17 +400,21 @@ func prepareWorkspace(info *ImageInfo) (string, error) {
 }
 
 // 改进版：使用 errgroup 管理并发下载，加入并发上限
-func downloadLayers(info *ImageInfo, manifest *ocispec.Manifest, token, tempDir string) error {
-	var g errgroup.Group
+func downloadLayers(ctx context.Context, info *ImageInfo, manifest *ocispec.Manifest, token, tempDir string) error {
+	g, ctx := errgroup.WithContext(ctx)
 	sem := make(chan struct{}, maxLayerConcurrency)
 
 	for _, layer := range manifest.Layers {
 		l := layer // 避免闭包引用同一个变量
 		// acquire
-		sem <- struct{}{}
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 		g.Go(func() error {
 			defer func() { <-sem }()
-			return downloadLayer(info, l, token, tempDir)
+			return downloadLayer(ctx, info, l, token, tempDir)
 		})
 	}
 
@@ -389,7 +425,7 @@ func downloadLayers(info *ImageInfo, manifest *ocispec.Manifest, token, tempDir 
 	return nil
 }
 
-func downloadConfig(info *ImageInfo, manifest *ocispec.Manifest, token, tempDir string) error {
+func downloadConfig(ctx context.Context, info *ImageInfo, manifest *ocispec.Manifest, token, tempDir string) error {
 	configURL := fmt.Sprintf("https://%s/v2/%s/blobs/%s",
 		info.Registry,
 		imagePath(info),
@@ -404,10 +440,10 @@ func downloadConfig(info *ImageInfo, manifest *ocispec.Manifest, token, tempDir 
 	configPath := filepath.Join(tempDir, digest+".json")
 	headers := map[string]string{"Authorization": "Bearer " + token}
 
-	return saveWithRetry(configURL, headers, nil, configPath)
+	return saveWithRetry(ctx, configURL, headers, nil, configPath)
 }
 
-func downloadLayer(info *ImageInfo, layer ocispec.Descriptor, token, tempDir string) error {
+func downloadLayer(ctx context.Context, info *ImageInfo, layer ocispec.Descriptor, token, tempDir string) error {
 	layerURL := fmt.Sprintf("https://%s/v2/%s/blobs/%s",
 		info.Registry,
 		imagePath(info),
@@ -424,14 +460,20 @@ func downloadLayer(info *ImageInfo, layer ocispec.Descriptor, token, tempDir str
 	gzPath := filepath.Join(layerDir, "layer.tar.gz")
 	headers := map[string]string{"Authorization": "Bearer " + token}
 
-	if err := saveWithRetry(layerURL, headers, nil, gzPath); err != nil {
+	if err := saveWithRetry(ctx, layerURL, headers, nil, gzPath); err != nil {
 		return fmt.Errorf("下载层失败: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if err := verifyFileDigest(gzPath, layer.Digest); err != nil {
 		return fmt.Errorf("校验层 digest 失败: %w", err)
 	}
 
 	// 解压文件
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := file_utils.DecompressGzip(gzPath, filepath.Join(layerDir, "layer.tar")); err != nil {
 		return fmt.Errorf("解压失败: %w", err)
 	}
@@ -440,45 +482,165 @@ func downloadLayer(info *ImageInfo, layer ocispec.Descriptor, token, tempDir str
 }
 
 // fetchWithRetry 会带简单的重试和指数退避，返回 body bytes
-func fetchWithRetry(url string, headers map[string]string, query map[string]string) ([]byte, error) {
+func fetchWithRetry(ctx context.Context, url string, headers map[string]string, query map[string]string) ([]byte, error) {
+	return fetchWithRetryContext(ctx, url, headers, query)
+}
+
+// saveWithRetry 将 GET 请求的响应直接保存到文件，带重试
+func saveWithRetry(ctx context.Context, url string, headers map[string]string, query map[string]string, outputPath string) error {
+	return saveWithRetryContext(ctx, url, headers, query, outputPath)
+}
+
+func fetchWithRetryContext(ctx context.Context, url string, headers map[string]string, query map[string]string) ([]byte, error) {
 	var lastErr error
 	backoff := initialBackoff
 	for i := 0; i < maxHTTPRetries; i++ {
-		result := httpClient.Get(url, headers, query)
-		if _, err := result.Response(); err != nil {
-			lastErr = err
-			log.Printf("请求 %s 失败（尝试 %d/%d）: %v，稍后重试...", url, i+1, maxHTTPRetries, err)
-			time.Sleep(backoff)
-			backoff *= 2
-			continue
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
-		resp, err := result.ReadBodyBytes()
+		resp, err := httpGetBytes(ctx, url, headers, query)
 		if err == nil {
 			return resp, nil
 		}
 		lastErr = err
 		log.Printf("请求 %s 失败（尝试 %d/%d）: %v，稍后重试...", url, i+1, maxHTTPRetries, err)
-		time.Sleep(backoff)
+		if err := sleepWithContext(ctx, backoff); err != nil {
+			return nil, err
+		}
 		backoff *= 2
 	}
 	return nil, lastErr
 }
 
-// saveWithRetry 将 GET 请求的响应直接保存到文件，带重试
-func saveWithRetry(url string, headers map[string]string, query map[string]string, outputPath string) error {
+func saveWithRetryContext(ctx context.Context, url string, headers map[string]string, query map[string]string, outputPath string) error {
 	var lastErr error
 	backoff := initialBackoff
 	for i := 0; i < maxHTTPRetries; i++ {
-		if err := httpClient.Get(url, headers, query).SaveToFile(outputPath); err == nil {
+		if err := ctx.Err(); err != nil {
+			_ = removePartialDownload(outputPath)
+			return err
+		}
+		if err := httpSaveToFile(ctx, url, headers, query, outputPath); err == nil {
 			return nil
 		} else {
+			_ = removePartialDownload(outputPath)
 			lastErr = err
 			log.Printf("保存 %s 到 %s 失败（尝试 %d/%d）: %v，稍后重试...", url, outputPath, i+1, maxHTTPRetries, err)
-			time.Sleep(backoff)
+			if err := sleepWithContext(ctx, backoff); err != nil {
+				_ = removePartialDownload(outputPath)
+				return err
+			}
 			backoff *= 2
 		}
 	}
 	return lastErr
+}
+
+func httpGetBytes(ctx context.Context, rawURL string, headers map[string]string, query map[string]string) ([]byte, error) {
+	req, err := buildGETRequest(ctx, rawURL, headers, query)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := httpClient.Client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if cerr := resp.Body.Close(); cerr != nil {
+			log.Printf("警告: 关闭 HTTP response body 失败: %v", cerr)
+		}
+	}()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("HTTP %d %s", resp.StatusCode, resp.Status)
+	}
+	return io.ReadAll(resp.Body)
+}
+
+func httpSaveToFile(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, outputPath string) error {
+	req, err := buildGETRequest(ctx, rawURL, headers, query)
+	if err != nil {
+		return err
+	}
+	resp, err := httpClient.Client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if cerr := resp.Body.Close(); cerr != nil {
+			log.Printf("警告: 关闭 HTTP response body 失败: %v", cerr)
+		}
+	}()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("HTTP %d %s", resp.StatusCode, resp.Status)
+	}
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
+		return err
+	}
+
+	partPath := partialDownloadPath(outputPath)
+	file, err := os.Create(partPath)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(file, resp.Body)
+	closeErr := file.Close()
+	if copyErr != nil {
+		_ = os.Remove(partPath)
+		return copyErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(partPath)
+		return closeErr
+	}
+	if err := ctx.Err(); err != nil {
+		_ = os.Remove(partPath)
+		return err
+	}
+	_ = os.Remove(outputPath)
+	return os.Rename(partPath, outputPath)
+}
+
+func buildGETRequest(ctx context.Context, rawURL string, headers map[string]string, query map[string]string) (*http.Request, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	values := parsedURL.Query()
+	for key, value := range query {
+		values.Set(key, value)
+	}
+	parsedURL.RawQuery = values.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsedURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+	return req, nil
+}
+
+func sleepWithContext(ctx context.Context, duration time.Duration) error {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func removePartialDownload(outputPath string) error {
+	return os.Remove(partialDownloadPath(outputPath))
+}
+
+func partialDownloadPath(outputPath string) string {
+	return outputPath + ".part"
 }
 
 func createManifestFile(info *ImageInfo, manifest *ocispec.Manifest, tempDir string) error {
@@ -508,11 +670,118 @@ func getLayerPaths(layers []ocispec.Descriptor) []string {
 	return paths
 }
 
-func packageImage(tempDir, outputFile string) error {
+func packageImage(ctx context.Context, tempDir, outputFile string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if err := os.MkdirAll(filepath.Dir(outputFile), 0755); err != nil {
 		return fmt.Errorf("创建输出目录失败: %w", err)
 	}
-	return file_utils.CreateTarArchive(tempDir, outputFile)
+	return createTarArchiveWithContext(ctx, tempDir, outputFile)
+}
+
+func createTarArchiveWithContext(ctx context.Context, sourceDir, outputFile string) error {
+	partPath := partialDownloadPath(outputFile)
+	_ = os.Remove(partPath)
+
+	file, err := os.Create(partPath)
+	if err != nil {
+		return err
+	}
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(partPath)
+		}
+	}()
+
+	tw := tar.NewWriter(file)
+	walkErr := filepath.WalkDir(sourceDir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if path == sourceDir {
+			return nil
+		}
+
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		header, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(sourceDir, path)
+		if err != nil {
+			return err
+		}
+		header.Name = filepath.ToSlash(rel)
+		if entry.IsDir() && !strings.HasSuffix(header.Name, "/") {
+			header.Name += "/"
+		}
+		if err := tw.WriteHeader(header); err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+
+		src, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			if cerr := src.Close(); cerr != nil {
+				log.Printf("璀﹀憡: 鍏抽棴鏂囦欢 %s 澶辫触: %v", path, cerr)
+			}
+		}()
+		return copyWithContext(ctx, tw, src)
+	})
+	closeTarErr := tw.Close()
+	closeFileErr := file.Close()
+	if walkErr != nil {
+		return walkErr
+	}
+	if closeTarErr != nil {
+		return closeTarErr
+	}
+	if closeFileErr != nil {
+		return closeFileErr
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	_ = os.Remove(outputFile)
+	if err := os.Rename(partPath, outputFile); err != nil {
+		return err
+	}
+	cleanup = false
+	return nil
+}
+
+func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader) error {
+	buf := make([]byte, 32*1024)
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		n, readErr := src.Read(buf)
+		if n > 0 {
+			if _, writeErr := dst.Write(buf[:n]); writeErr != nil {
+				return writeErr
+			}
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				return nil
+			}
+			return readErr
+		}
+	}
 }
 
 func loadImageTar(path string) error {

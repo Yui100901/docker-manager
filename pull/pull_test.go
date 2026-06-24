@@ -2,6 +2,7 @@ package pull
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Yui100901/MyGo/network/http_utils"
 	digest "github.com/opencontainers/go-digest"
@@ -404,5 +406,68 @@ func TestConfigureHTTPLogging(t *testing.T) {
 	http_utils.Logger.Print("hidden")
 	if buf.Len() != 0 {
 		t.Fatalf("buffer length = %d, want 0 after quiet logging", buf.Len())
+	}
+}
+
+func TestSleepWithContextReturnsOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	start := time.Now()
+	err := sleepWithContext(ctx, time.Second)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("sleepWithContext() error = %v, want context.Canceled", err)
+	}
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Fatalf("sleepWithContext() took %s, want immediate cancel", elapsed)
+	}
+}
+
+func TestFetchWithRetryReturnsCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := fetchWithRetry(ctx, "http://127.0.0.1/not-called", nil, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("fetchWithRetry() error = %v, want context.Canceled", err)
+	}
+}
+
+func TestBuildGETRequestAppliesHeadersAndQuery(t *testing.T) {
+	req, err := buildGETRequest(
+		context.Background(),
+		"https://example.com/v2/token?service=registry",
+		map[string]string{"Authorization": "Bearer token"},
+		map[string]string{"scope": "repository:library/busybox:pull"},
+	)
+	if err != nil {
+		t.Fatalf("buildGETRequest() error = %v", err)
+	}
+	if got := req.Header.Get("Authorization"); got != "Bearer token" {
+		t.Fatalf("Authorization = %q, want Bearer token", got)
+	}
+	if got := req.URL.Query().Get("service"); got != "registry" {
+		t.Fatalf("service query = %q, want registry", got)
+	}
+	if got := req.URL.Query().Get("scope"); got != "repository:library/busybox:pull" {
+		t.Fatalf("scope query = %q, want repository:library/busybox:pull", got)
+	}
+}
+
+func TestCreateTarArchiveWithContextRemovesPartialOnCancel(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte("[]"), 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	output := filepath.Join(t.TempDir(), "image.tar")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := createTarArchiveWithContext(ctx, dir, output)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("createTarArchiveWithContext() error = %v, want context.Canceled", err)
+	}
+	if _, err := os.Stat(partialDownloadPath(output)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("partial file stat error = %v, want not exist", err)
 	}
 }
