@@ -2,8 +2,10 @@ package reverse
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
+	"github.com/docker/docker/api/types/container"
 	"github.com/spf13/cobra"
 )
 
@@ -18,17 +20,24 @@ func NewReverseCommand() *cobra.Command {
 		prettyFormat      bool
 		dryRun            bool
 		confirm           bool
+		running           bool
 	)
 
 	cmd := &cobra.Command{
-		Use:   "reverse <name...>",
+		Use:   "reverse [name...]",
 		Short: "逆向 Docker 容器到启动命令",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
+			if running && len(args) > 0 {
+				return fmt.Errorf("不能同时指定容器名称和 --running")
+			}
+			if len(args) == 0 && !running {
 				return fmt.Errorf("必须提供至少一个容器名称")
 			}
 			if rerun && !dryRun && !confirm {
 				return fmt.Errorf("reverse --rerun 会停止、删除并重建容器；如确认执行，请添加 --confirm；如仅审计，请使用 --dry-run")
+			}
+			if running && !cmd.Flags().Changed("reverse-type") {
+				reverseType = string(ReverseCompose)
 			}
 
 			// 校验输出类型
@@ -51,6 +60,17 @@ func NewReverseCommand() *cobra.Command {
 				ReverseType:       rt,
 				DryRun:            dryRun,
 				Confirm:           confirm,
+			}
+
+			if running {
+				names, err := listRunningContainerNames()
+				if err != nil {
+					return err
+				}
+				if len(names) == 0 {
+					return fmt.Errorf("没有正在运行的容器")
+				}
+				args = names
 			}
 
 			reverseResult, err := reverseWithOptions(args, opts)
@@ -109,6 +129,39 @@ func NewReverseCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&prettyFormat, "pretty", false, "是否格式化输出 docker run 命令（默认关闭）")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "仅打印将要执行的操作，不实际重新运行容器（用于审计/确认）")
 	cmd.Flags().BoolVar(&confirm, "confirm", false, "确认执行 --rerun 的停止、删除并重建容器操作")
+	cmd.Flags().BoolVar(&running, "running", false, "反向解析当前正在运行的所有容器；未指定 --reverse-type 时默认输出 compose")
 
 	return cmd
+}
+
+func listRunningContainerNames() ([]string, error) {
+	if err := ensureContainerManager(); err != nil {
+		return nil, err
+	}
+	containers, err := containerManager.ListAll()
+	if err != nil {
+		return nil, err
+	}
+	return runningContainerNames(containers), nil
+}
+
+func runningContainerNames(containers []container.Summary) []string {
+	names := make([]string, 0, len(containers))
+	for _, c := range containers {
+		if c.State != "running" {
+			continue
+		}
+		name := ""
+		if len(c.Names) > 0 {
+			name = strings.TrimPrefix(c.Names[0], "/")
+		}
+		if name == "" {
+			name = c.ID
+		}
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }

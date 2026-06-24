@@ -3,6 +3,8 @@ package reverse
 import (
 	"strings"
 	"testing"
+
+	"github.com/docker/docker/api/types/container"
 )
 
 func TestReverseRerunRequiresConfirm(t *testing.T) {
@@ -47,5 +49,31 @@ func TestReverseRerunConfirmPassesConfirmGate(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "无效的输出类型") {
 		t.Fatalf("Execute() error = %q, want invalid type error", err.Error())
+	}
+}
+
+func TestReverseRunningCannotCombineWithExplicitNames(t *testing.T) {
+	cmd := NewReverseCommand()
+	cmd.SetArgs([]string{"demo", "--running"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want --running conflict")
+	}
+	if !strings.Contains(err.Error(), "--running") {
+		t.Fatalf("Execute() error = %q, want --running conflict", err.Error())
+	}
+}
+
+func TestRunningContainerNamesFiltersAndSortsRunningContainers(t *testing.T) {
+	got := runningContainerNames([]container.Summary{
+		{ID: "id-c", Names: []string{"/worker"}, State: "running"},
+		{ID: "id-b", Names: []string{"/stopped"}, State: "exited"},
+		{ID: "id-a", State: "running"},
+		{ID: "id-d", Names: []string{"/api"}, State: "running"},
+	})
+	want := []string{"api", "id-a", "worker"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("runningContainerNames() = %#v, want %#v", got, want)
 	}
 }
