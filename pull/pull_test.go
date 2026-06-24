@@ -1,6 +1,7 @@
 package pull
 
 import (
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -301,5 +302,50 @@ func TestDefaultOutputFileNameSanitizesTag(t *testing.T) {
 	want := "team_app_feature_test.tar"
 	if got != want {
 		t.Fatalf("defaultOutputFileName() = %q, want %q", got, want)
+	}
+}
+
+func TestPullCommandReturnsInvalidProxyError(t *testing.T) {
+	cmd := NewPullCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--proxy", "127.0.0.1:7890", "busybox:latest"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want invalid proxy error")
+	}
+	if !strings.Contains(err.Error(), "配置代理失败") {
+		t.Fatalf("Execute() error = %q, want proxy error", err.Error())
+	}
+}
+
+func TestPullCommandRejectsOutputWithMultipleImages(t *testing.T) {
+	cmd := NewPullCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--output", "busybox.tar", "busybox:latest", "alpine:latest"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want --output multi-image error")
+	}
+	if !strings.Contains(err.Error(), "--output") {
+		t.Fatalf("Execute() error = %q, want --output error", err.Error())
+	}
+}
+
+func TestPullCommandReturnsImageParseError(t *testing.T) {
+	cmd := NewPullCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"UPPERCASE_IMAGE_NAME"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want image parse error")
+	}
+	if !strings.Contains(err.Error(), "镜像名称解析失败") {
+		t.Fatalf("Execute() error = %q, want image parse error", err.Error())
 	}
 }

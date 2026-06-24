@@ -3,6 +3,7 @@ package pull
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 
@@ -83,25 +84,28 @@ func NewPullCommand() *cobra.Command {
 		Long: `无需docker客户端，下载docker镜像，从官方镜像源拉取。
 默认使用 HTTP_PROXY/HTTPS_PROXY 环境变量代理；未设置则直连。可通过 --proxy 强制指定代理。
 默认拉取linux/amd64镜像。`,
-		Run: func(cmd *cobra.Command, args []string) {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			platform.targetOS = targetOS
 			platform.targetArch = arch
 			if err := initHTTPClient(proxy); err != nil {
-				log.Printf("配置代理失败: %v", err)
-				return
+				return fmt.Errorf("配置代理失败: %w", err)
 			}
 			if output != "" && len(args) > 1 {
-				log.Printf("--output 只能在拉取单个镜像时使用，请改用 --output-dir")
-				return
+				return fmt.Errorf("--output 只能在拉取单个镜像时使用，请改用 --output-dir")
 			}
 			imageNameList = args
 			opts := PullOptions{
 				Output:    output,
 				OutputDir: outputDir,
 			}
+			var pullErrs []error
 			for _, imageName := range imageNameList {
-				getImage(imageName, opts)
+				if err := getImage(imageName, opts); err != nil {
+					log.Printf("%s 拉取失败: %v", imageName, err)
+					pullErrs = append(pullErrs, fmt.Errorf("%s: %w", imageName, err))
+				}
 			}
+			return errors.Join(pullErrs...)
 		},
 	}
 	cmd.Flags().StringVarP(&targetOS, "os", "", "linux", "目标操作系统")
@@ -112,24 +116,21 @@ func NewPullCommand() *cobra.Command {
 	return cmd
 }
 
-func getImage(imageName string, opts PullOptions) {
+func getImage(imageName string, opts PullOptions) error {
 	imageInfo, err := parseImageInfo(imageName)
 	if err != nil {
-		log.Printf("镜像名称解析失败 %s: %v", imageName, err)
-		return
+		return fmt.Errorf("镜像名称解析失败: %w", err)
 	}
 	log.Printf("获取镜像%s:%s,目标平台%s/%s", imageInfo.Image, imageInfo.Tag, platform.targetOS, platform.targetArch)
 
 	token, err := getAuthToken(imageInfo)
 	if err != nil {
-		log.Printf("认证失败: %v", err)
-		return
+		return fmt.Errorf("认证失败: %w", err)
 	}
 
 	tempDir, err := prepareWorkspace(imageInfo)
 	if err != nil {
-		log.Printf("准备临时目录失败: %v", err)
-		return
+		return fmt.Errorf("准备临时目录失败: %w", err)
 	}
 	defer func() {
 		if err := os.RemoveAll(tempDir); err != nil {
@@ -140,40 +141,35 @@ func getImage(imageName string, opts PullOptions) {
 	manifest, err := fetchManifest(imageInfo, token)
 	log.Println(manifest)
 	if err != nil {
-		log.Printf("%s\n获取清单失败: %v", imageName, err)
-		return
+		return fmt.Errorf("获取清单失败: %w", err)
 	}
 
 	err = createManifestFile(imageInfo, manifest, tempDir)
 	if err != nil {
-		log.Printf("%s\n创建失败清单文件失败: %v", imageName, err)
-		return
+		return fmt.Errorf("创建清单文件失败: %w", err)
 	}
 
 	err = downloadConfig(imageInfo, manifest, token, tempDir)
 	if err != nil {
-		log.Printf("%s\n下载配置文件失败: %v", imageName, err)
-		return
+		return fmt.Errorf("下载配置文件失败: %w", err)
 	}
 
 	err = downloadLayers(imageInfo, manifest, token, tempDir)
 	if err != nil {
-		log.Printf("%s\n下载镜像层失败: %v", imageName, err)
-		return
+		return fmt.Errorf("下载镜像层失败: %w", err)
 	}
 
 	outputFile, err := resolveOutputFile(imageInfo, opts)
 	if err != nil {
-		log.Printf("%s\n解析输出路径失败: %v", imageName, err)
-		return
+		return fmt.Errorf("解析输出路径失败: %w", err)
 	}
 	err = packageImage(tempDir, outputFile)
 	if err != nil {
-		log.Printf("%s\n打包镜像失败: %v", imageName, err)
-		return
+		return fmt.Errorf("打包镜像失败: %w", err)
 	}
 
 	log.Printf("镜像拉取成功: %s", outputFile)
+	return nil
 }
 
 func initHTTPClient(proxy string) error {
