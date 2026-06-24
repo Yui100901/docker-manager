@@ -1,8 +1,10 @@
 package reverse
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestShellQuote(t *testing.T) {
@@ -80,5 +82,23 @@ func TestDockerRunCommandStringPrettyQuotesArguments(t *testing.T) {
 	want := strings.Join(wantParts, "")
 	if got != want {
 		t.Fatalf("DockerRunCommandStringPretty() =\n%q\nwant\n%q", got, want)
+	}
+}
+
+func TestInspectBackupPathSanitizesContainerName(t *testing.T) {
+	backupDir := filepath.Join("docker-inspect-backups", "20260624-123456")
+	got := inspectBackupPath(backupDir, "/team app/db:1")
+	want := filepath.Join(backupDir, "team_app_db_1.inspect.json")
+	if got != want {
+		t.Fatalf("inspectBackupPath() = %q, want %q", got, want)
+	}
+}
+
+func TestInspectBackupDirUsesTimestamp(t *testing.T) {
+	now := time.Date(2026, 6, 24, 12, 34, 56, 0, time.Local)
+	got := inspectBackupDir(now)
+	want := filepath.Join(inspectBackupRoot, "20260624-123456")
+	if got != want {
+		t.Fatalf("inspectBackupDir() = %q, want %q", got, want)
 	}
 }

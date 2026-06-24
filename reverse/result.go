@@ -1,16 +1,21 @@
 package reverse
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"docker-manager/docker"
 
 	"github.com/Yui100901/MyGo/command"
 	"gopkg.in/yaml.v3"
 )
+
+const inspectBackupRoot = "docker-inspect-backups"
 
 //
 // @Author yfy2001
@@ -268,10 +273,22 @@ func reverseWithOptions(names []string, options ReverseOptions) (*ReverseResult,
 func (rr *ReverseResult) rerunContainers() error {
 	// rerun docker run
 	var firstErr error
+	backupDir := inspectBackupDir(time.Now())
 	for name := range rr.RunCommands {
 		if rr.options.DryRun {
+			fmt.Printf("Dry run: backup inspect for %s to %s\n", name, inspectBackupPath(backupDir, name))
 			fmt.Printf("Dry run: recreate container %s\n", name)
 		} else {
+			backupPath, err := backupContainerInspect(name, backupDir)
+			if err != nil {
+				if firstErr == nil {
+					firstErr = fmt.Errorf("备份容器 %s inspect 失败: %w", name, err)
+				}
+				log.Printf("备份容器 %s inspect 失败，跳过重建: %v", name, err)
+				continue
+			}
+			fmt.Println("Backup inspect", name, "to", backupPath)
+
 			containerID, err := containerManager.RecreateContainer(name, name)
 			if err != nil {
 				if firstErr == nil {
@@ -307,4 +324,57 @@ func (rr *ReverseResult) rerunContainers() error {
 	}
 
 	return firstErr
+}
+
+func backupContainerInspect(name, backupDir string) (string, error) {
+	inspect, err := containerManager.Inspect(name)
+	if err != nil {
+		return "", err
+	}
+
+	data, err := json.MarshalIndent(inspect, "", "  ")
+	if err != nil {
+		return "", err
+	}
+
+	if err := os.MkdirAll(backupDir, 0755); err != nil {
+		return "", err
+	}
+
+	backupPath := inspectBackupPath(backupDir, name)
+	if err := os.WriteFile(backupPath, append(data, '\n'), 0644); err != nil {
+		return "", err
+	}
+	return backupPath, nil
+}
+
+func inspectBackupDir(now time.Time) string {
+	return filepath.Join(inspectBackupRoot, now.Format("20060102-150405"))
+}
+
+func inspectBackupPath(backupDir, name string) string {
+	return filepath.Join(backupDir, sanitizeBackupFileName(name)+".inspect.json")
+}
+
+func sanitizeBackupFileName(name string) string {
+	name = strings.TrimPrefix(name, "/")
+	var sb strings.Builder
+	for _, r := range name {
+		if r >= 'a' && r <= 'z' ||
+			r >= 'A' && r <= 'Z' ||
+			r >= '0' && r <= '9' {
+			sb.WriteRune(r)
+			continue
+		}
+		switch r {
+		case '.', '-', '_':
+			sb.WriteRune(r)
+		default:
+			sb.WriteRune('_')
+		}
+	}
+	if sb.Len() == 0 {
+		return "container"
+	}
+	return sb.String()
 }
