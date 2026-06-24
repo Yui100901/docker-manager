@@ -23,10 +23,23 @@ const inspectBackupRoot = "docker-inspect-backups"
 //
 
 var containerManager *docker.ContainerManager
+var newContainerManager = docker.NewContainerManager
 
 // SetContainerManager allows main to inject a ContainerManager instead of using package init
 func SetContainerManager(cm *docker.ContainerManager) {
 	containerManager = cm
+}
+
+func ensureContainerManager() error {
+	if containerManager != nil {
+		return nil
+	}
+	cm, err := newContainerManager()
+	if err != nil {
+		return fmt.Errorf("init Docker container manager: %w", err)
+	}
+	containerManager = cm
+	return nil
 }
 
 type ReverseResult struct {
@@ -254,6 +267,9 @@ func (rr *ReverseResult) buildTopLevelComposeMeta() (map[string]interface{}, map
 }
 
 func reverseWithOptions(names []string, options ReverseOptions) (*ReverseResult, error) {
+	if err := ensureContainerManager(); err != nil {
+		return nil, err
+	}
 	var results []ParsedResult
 
 	for _, name := range names {
