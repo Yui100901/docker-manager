@@ -17,6 +17,7 @@ func NewReverseCommand() *cobra.Command {
 		filterDefaultEnvs bool
 		prettyFormat      bool
 		dryRun            bool
+		confirm           bool
 	)
 
 	cmd := &cobra.Command{
@@ -25,6 +26,9 @@ func NewReverseCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return fmt.Errorf("必须提供至少一个容器名称")
+			}
+			if rerun && !dryRun && !confirm {
+				return fmt.Errorf("reverse --rerun 会停止、删除并重建容器；如确认执行，请添加 --confirm；如仅审计，请使用 --dry-run")
 			}
 
 			// 校验输出类型
@@ -46,6 +50,7 @@ func NewReverseCommand() *cobra.Command {
 				Save:              save,
 				ReverseType:       rt,
 				DryRun:            dryRun,
+				Confirm:           confirm,
 			}
 
 			reverseResult, err := reverseWithOptions(args, opts)
@@ -100,6 +105,7 @@ func NewReverseCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&mergePorts, "merge-ports", true, "命令是否合并连续端口，compose无法合并（默认开启）")
 	cmd.Flags().BoolVar(&prettyFormat, "pretty", false, "是否格式化输出 docker run 命令（默认关闭）")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "仅打印将要执行的操作，不实际重新运行容器（用于审计/确认）")
+	cmd.Flags().BoolVar(&confirm, "confirm", false, "确认执行 --rerun 的停止、删除并重建容器操作")
 
 	return cmd
 }
