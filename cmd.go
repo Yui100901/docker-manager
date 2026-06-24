@@ -1,12 +1,14 @@
 package main
 
 import (
-	"docker-manager/docker"
+	"errors"
+	"fmt"
 	"log"
 	"path/filepath"
 	"strings"
 
 	"github.com/Yui100901/MyGo/file_utils"
+	"github.com/docker/docker/api/types/image"
 	"github.com/spf13/cobra"
 )
 
@@ -15,7 +17,13 @@ import (
 // @Date 2025/7/18 09 50
 //
 
-var imageManager *docker.ImageManager
+type imageService interface {
+	List(all bool) ([]image.Summary, error)
+	Save(images []string, outputFile string) error
+	Load(inputFile string) error
+}
+
+var imageManager imageService
 
 func newLoadCommand() *cobra.Command {
 	cmd := &cobra.Command{
@@ -103,14 +111,17 @@ func saveImages(path string, merge bool, all bool) error {
 		for imageID := range imageMap {
 			imageIDList = append(imageIDList, imageID)
 		}
-		return imageManager.Save(imageIDList, "images.tar")
+		return imageManager.Save(imageIDList, filepath.Join(path, "images.tar"))
 	} else {
+		var saveErrs []error
 		for imageID, imageName := range imageMap {
-			err := imageManager.Save([]string{imageID}, filepath.Join(path, imageName+".tar"))
-			if err != nil {
-				log.Println(err)
+			outputFile := filepath.Join(path, imageName+".tar")
+			if err := imageManager.Save([]string{imageID}, outputFile); err != nil {
+				wrappedErr := fmt.Errorf("export image %s to %s: %w", imageID, outputFile, err)
+				log.Println(wrappedErr)
+				saveErrs = append(saveErrs, wrappedErr)
 			}
 		}
+		return errors.Join(saveErrs...)
 	}
-	return nil
 }
