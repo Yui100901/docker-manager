@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 
+	"docker-manager/docker"
+
 	"github.com/Yui100901/MyGo/file_utils"
 	"github.com/Yui100901/MyGo/network/http_utils"
 	"github.com/Yui100901/MyGo/struct_utils"
@@ -61,11 +63,14 @@ type ImageInfo struct {
 type PullOptions struct {
 	Output    string
 	OutputDir string
+	Load      bool
 }
 
 var httpClient *http_utils.HTTPClient
+var loadPulledImage = loadImageTar
 
 func init() {
+	configureHTTPLogging(false)
 	if err := initHTTPClient(""); err != nil {
 		log.Fatalf("初始化 HTTP 客户端失败: %v", err)
 	}
@@ -78,6 +83,8 @@ func NewPullCommand() *cobra.Command {
 	var proxy string
 	var output string
 	var outputDir string
+	var load bool
+	var verboseHTTP bool
 	cmd := &cobra.Command{
 		Use:   "pull <images...>",
 		Short: "无需docker客户端，下载docker镜像",
@@ -87,6 +94,7 @@ func NewPullCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			platform.targetOS = targetOS
 			platform.targetArch = arch
+			configureHTTPLogging(verboseHTTP)
 			if err := initHTTPClient(proxy); err != nil {
 				return fmt.Errorf("配置代理失败: %w", err)
 			}
@@ -97,6 +105,7 @@ func NewPullCommand() *cobra.Command {
 			opts := PullOptions{
 				Output:    output,
 				OutputDir: outputDir,
+				Load:      load,
 			}
 			var pullErrs []error
 			success := 0
@@ -120,6 +129,8 @@ func NewPullCommand() *cobra.Command {
 	cmd.Flags().StringVar(&proxy, "proxy", "", "强制指定 HTTP 代理，例如 http://127.0.0.1:7890；为空时使用环境变量代理")
 	cmd.Flags().StringVarP(&output, "output", "o", "", "输出 tar 文件路径，仅支持单个镜像")
 	cmd.Flags().StringVar(&outputDir, "output-dir", ".", "输出 tar 文件目录")
+	cmd.Flags().BoolVar(&load, "load", false, "拉取并打包完成后自动导入 Docker")
+	cmd.Flags().BoolVar(&verboseHTTP, "verbose-http", false, "输出底层 HTTP 请求调试日志")
 	return cmd
 }
 
@@ -175,7 +186,28 @@ func getImage(imageName string, opts PullOptions) error {
 		return fmt.Errorf("打包镜像失败: %w", err)
 	}
 
+	return completePulledImage(outputFile, opts)
+}
+
+func configureHTTPLogging(verbose bool) {
+	if verbose {
+		http_utils.Logger.SetOutput(os.Stdout)
+		return
+	}
+	http_utils.Logger.SetOutput(io.Discard)
+}
+
+func completePulledImage(outputFile string, opts PullOptions) error {
 	log.Printf("镜像拉取成功: %s", outputFile)
+	if !opts.Load {
+		return nil
+	}
+
+	log.Printf("Load pulled image: %s", outputFile)
+	if err := loadPulledImage(outputFile); err != nil {
+		return fmt.Errorf("导入镜像失败: %w", err)
+	}
+	log.Printf("镜像导入成功: %s", outputFile)
 	return nil
 }
 
@@ -481,6 +513,14 @@ func packageImage(tempDir, outputFile string) error {
 		return fmt.Errorf("创建输出目录失败: %w", err)
 	}
 	return file_utils.CreateTarArchive(tempDir, outputFile)
+}
+
+func loadImageTar(path string) error {
+	im, err := docker.NewImageManager()
+	if err != nil {
+		return err
+	}
+	return im.Load(path)
 }
 
 func sha256Hash(input string) string {

@@ -1,6 +1,8 @@
 package pull
 
 import (
+	"bytes"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -8,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Yui100901/MyGo/network/http_utils"
 	digest "github.com/opencontainers/go-digest"
 )
 
@@ -347,5 +350,59 @@ func TestPullCommandReturnsImageParseError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "镜像名称解析失败") {
 		t.Fatalf("Execute() error = %q, want image parse error", err.Error())
+	}
+}
+
+func TestCompletePulledImageLoadsWhenRequested(t *testing.T) {
+	var loadedPath string
+	previous := loadPulledImage
+	loadPulledImage = func(path string) error {
+		loadedPath = path
+		return nil
+	}
+	t.Cleanup(func() {
+		loadPulledImage = previous
+	})
+
+	if err := completePulledImage("busybox.tar", PullOptions{Load: true}); err != nil {
+		t.Fatalf("completePulledImage() error = %v", err)
+	}
+	if loadedPath != "busybox.tar" {
+		t.Fatalf("loadedPath = %q, want busybox.tar", loadedPath)
+	}
+}
+
+func TestCompletePulledImageReturnsLoadError(t *testing.T) {
+	loadErr := errors.New("load failed")
+	previous := loadPulledImage
+	loadPulledImage = func(path string) error {
+		return loadErr
+	}
+	t.Cleanup(func() {
+		loadPulledImage = previous
+	})
+
+	err := completePulledImage("busybox.tar", PullOptions{Load: true})
+	if err == nil {
+		t.Fatal("completePulledImage() error = nil, want load error")
+	}
+	if !errors.Is(err, loadErr) {
+		t.Fatalf("completePulledImage() error = %v, want wrapped %v", err, loadErr)
+	}
+}
+
+func TestConfigureHTTPLogging(t *testing.T) {
+	var buf bytes.Buffer
+	configureHTTPLogging(false)
+	http_utils.Logger.Print("hidden")
+	if buf.Len() != 0 {
+		t.Fatalf("buffer length = %d, want 0", buf.Len())
+	}
+
+	http_utils.Logger.SetOutput(&buf)
+	configureHTTPLogging(false)
+	http_utils.Logger.Print("hidden")
+	if buf.Len() != 0 {
+		t.Fatalf("buffer length = %d, want 0 after quiet logging", buf.Len())
 	}
 }

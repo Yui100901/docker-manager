@@ -102,3 +102,43 @@ func TestInspectBackupDirUsesTimestamp(t *testing.T) {
 		t.Fatalf("inspectBackupDir() = %q, want %q", got, want)
 	}
 }
+
+func TestMergePortRanges(t *testing.T) {
+	got := mergePortRanges([]PortBindingSpec{
+		{HostPort: 8080, ContPort: 80, Proto: "tcp"},
+		{HostPort: 8081, ContPort: 81, Proto: "tcp"},
+		{HostPort: 8083, ContPort: 83, Proto: "tcp"},
+	})
+	want := []string{"8080-8081:80-81/tcp", "8083:83/tcp"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("mergePortRanges() = %#v, want %#v", got, want)
+	}
+}
+
+func TestComposeFormatterFormat(t *testing.T) {
+	service := ComposeFormatter{}.Format(&ContainerSpec{
+		Image:         "busybox:latest",
+		ContainerName: "demo",
+		RestartPolicy: "on-failure:3",
+		Envs:          []string{"GREETING=hello"},
+		Mounts:        []string{"/tmp:/host_tmp:ro"},
+		PortBindings: []PortBindingSpec{
+			{HostPort: 8080, ContPort: 80, Proto: "tcp"},
+		},
+		Cmd:         []string{"sh", "-c", "sleep 300"},
+		NetworkMode: "bridge",
+	})
+
+	if service.Image != "busybox:latest" {
+		t.Fatalf("Image = %q, want busybox:latest", service.Image)
+	}
+	if service.Restart != "on-failure" {
+		t.Fatalf("Restart = %q, want on-failure", service.Restart)
+	}
+	if len(service.Ports) != 1 || service.Ports[0] != "8080:80/tcp" {
+		t.Fatalf("Ports = %#v, want 8080:80/tcp", service.Ports)
+	}
+	if len(service.Command) != 3 || service.Command[2] != "sleep 300" {
+		t.Fatalf("Command = %#v, want shell command", service.Command)
+	}
+}
