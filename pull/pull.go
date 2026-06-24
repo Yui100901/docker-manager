@@ -409,7 +409,15 @@ func fetchWithRetry(url string, headers map[string]string, query map[string]stri
 	var lastErr error
 	backoff := initialBackoff
 	for i := 0; i < maxHTTPRetries; i++ {
-		resp, err := httpClient.Get(url, headers, query).ReadBodyBytes()
+		result := httpClient.Get(url, headers, query)
+		if _, err := result.Response(); err != nil {
+			lastErr = err
+			log.Printf("请求 %s 失败（尝试 %d/%d）: %v，稍后重试...", url, i+1, maxHTTPRetries, err)
+			time.Sleep(backoff)
+			backoff *= 2
+			continue
+		}
+		resp, err := result.ReadBodyBytes()
 		if err == nil {
 			return resp, nil
 		}
