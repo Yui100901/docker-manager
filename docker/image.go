@@ -94,3 +94,29 @@ func (im *ImageManager) Load(inputFile string) error {
 	_, err = io.Copy(os.Stdout, resp.Body)
 	return err
 }
+
+// Tag tags an image in the local Docker engine.
+func (im *ImageManager) Tag(ctx context.Context, source, target string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return im.cli.ImageTag(ctx, source, target)
+}
+
+// Push pushes an image from the local Docker engine to a registry.
+func (im *ImageManager) Push(ctx context.Context, ref string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	resp, err := im.cli.ImagePush(ctx, ref, image.PushOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if cerr := resp.Close(); cerr != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "警告: 关闭 push response 失败: %v\n", cerr)
+		}
+	}()
+	_, err = io.Copy(os.Stdout, resp)
+	return err
+}

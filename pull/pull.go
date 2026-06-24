@@ -68,6 +68,7 @@ type PullOptions struct {
 	Output    string
 	OutputDir string
 	Load      bool
+	To        string
 }
 
 type CommandDefaults struct {
@@ -79,6 +80,8 @@ type CommandDefaults struct {
 
 var httpClient *http_utils.HTTPClient
 var loadPulledImage = loadImageTar
+var tagPulledImage = tagImage
+var pushPulledImage = pushImage
 
 func init() {
 	configureHTTPLogging(false)
@@ -99,6 +102,7 @@ func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command 
 	var output string
 	var outputDir string
 	var load bool
+	var to string
 	var verboseHTTP bool
 	cmd := &cobra.Command{
 		Use:   "pull <images...>",
@@ -126,11 +130,12 @@ func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command 
 				Output:    output,
 				OutputDir: outputDir,
 				Load:      load,
+				To:        to,
 			}
 			var pullErrs []error
 			success := 0
 			total := len(imageNameList)
-			log.Printf("Pull images: total=%d os=%s arch=%s output=%s outputDir=%s", total, targetOS, arch, output, outputDir)
+			log.Printf("Pull images: total=%d os=%s arch=%s output=%s outputDir=%s to=%s", total, targetOS, arch, output, outputDir, to)
 			for i, imageName := range imageNameList {
 				log.Printf("Pull image [%d/%d]: %s", i+1, total, imageName)
 				if err := getImage(imageName, opts); err != nil {
@@ -151,6 +156,7 @@ func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command 
 	cmd.Flags().StringVar(&outputDir, "output-dir", ".", "输出 tar 文件目录")
 	cmd.Flags().BoolVar(&load, "load", false, "拉取并打包完成后自动导入 Docker")
 	cmd.Flags().BoolVar(&verboseHTTP, "verbose-http", false, "输出底层 HTTP 请求调试日志")
+	cmd.Flags().StringVar(&to, "to", "", "pull 后导入 Docker、tag 并 push 到目标 registry/repository")
 	return cmd
 }
 
@@ -250,7 +256,7 @@ func getImage(imageName string, opts PullOptions) error {
 		return err
 	}
 
-	return completePulledImage(outputFile, opts)
+	return completePulledImage(outputFile, imageInfo, opts)
 }
 
 func configureHTTPLogging(verbose bool) {
@@ -261,9 +267,9 @@ func configureHTTPLogging(verbose bool) {
 	http_utils.Logger.SetOutput(io.Discard)
 }
 
-func completePulledImage(outputFile string, opts PullOptions) error {
+func completePulledImage(outputFile string, info *ImageInfo, opts PullOptions) error {
 	log.Printf("镜像拉取成功: %s", outputFile)
-	if !opts.Load {
+	if !opts.Load && opts.To == "" {
 		return nil
 	}
 
@@ -272,7 +278,81 @@ func completePulledImage(outputFile string, opts PullOptions) error {
 		return fmt.Errorf("导入镜像失败: %w", err)
 	}
 	log.Printf("镜像导入成功: %s", outputFile)
+
+	if opts.To == "" {
+		return nil
+	}
+	target, err := resolvePushTarget(info, opts.To)
+	if err != nil {
+		return err
+	}
+	source := localImageRef(info)
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	log.Printf("Tag pulled image: %s -> %s", source, target)
+	if err := tagPulledImage(ctx, source, target); err != nil {
+		return fmt.Errorf("tag 镜像失败: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	log.Printf("Push pulled image: %s", target)
+	if err := pushPulledImage(ctx, target); err != nil {
+		return fmt.Errorf("push 镜像失败: %w", err)
+	}
+	log.Printf("镜像推送成功: %s", target)
 	return nil
+}
+
+func localImageRef(info *ImageInfo) string {
+	return fmt.Sprintf("%s:%s", imagePath(info), info.Tag)
+}
+
+func resolvePushTarget(info *ImageInfo, target string) (string, error) {
+	target = strings.Trim(strings.TrimSpace(target), "/")
+	if target == "" {
+		return "", fmt.Errorf("--to 不能为空")
+	}
+	if strings.Contains(target, "@") {
+		return "", fmt.Errorf("--to 不支持 digest 目标: %s", target)
+	}
+	if isTaggedImageRef(target) {
+		return validateImageRef(target)
+	}
+
+	registry, namespace, hasNamespace := strings.Cut(target, "/")
+	var ref string
+	if hasNamespace {
+		ref = fmt.Sprintf("%s/%s/%s:%s", registry, strings.Trim(namespace, "/"), info.Image, info.Tag)
+	} else {
+		ref = fmt.Sprintf("%s/%s:%s", registry, imagePath(info), info.Tag)
+	}
+	return validateImageRef(ref)
+}
+
+func isTaggedImageRef(ref string) bool {
+	lastSlash := strings.LastIndex(ref, "/")
+	if lastSlash < 0 || strings.LastIndex(ref, ":") <= lastSlash {
+		return false
+	}
+	named, err := reference.ParseNormalizedNamed(ref)
+	if err != nil {
+		return false
+	}
+	_, ok := named.(reference.Tagged)
+	return ok
+}
+
+func validateImageRef(ref string) (string, error) {
+	if _, err := reference.ParseNormalizedNamed(ref); err != nil {
+		return "", fmt.Errorf("无效目标镜像 %q: %w", ref, err)
+	}
+	return ref, nil
 }
 
 func initHTTPClient(proxy string) error {
@@ -822,6 +902,22 @@ func loadImageTar(path string) error {
 		return err
 	}
 	return im.Load(path)
+}
+
+func tagImage(ctx context.Context, source, target string) error {
+	im, err := docker.NewImageManager()
+	if err != nil {
+		return err
+	}
+	return im.Tag(ctx, source, target)
+}
+
+func pushImage(ctx context.Context, target string) error {
+	im, err := docker.NewImageManager()
+	if err != nil {
+		return err
+	}
+	return im.Push(ctx, target)
 }
 
 func sha256Hash(input string) string {

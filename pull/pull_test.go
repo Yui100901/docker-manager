@@ -383,7 +383,7 @@ func TestCompletePulledImageLoadsWhenRequested(t *testing.T) {
 		loadPulledImage = previous
 	})
 
-	if err := completePulledImage("busybox.tar", PullOptions{Load: true}); err != nil {
+	if err := completePulledImage("busybox.tar", testBusyboxInfo(), PullOptions{Load: true}); err != nil {
 		t.Fatalf("completePulledImage() error = %v", err)
 	}
 	if loadedPath != "busybox.tar" {
@@ -401,13 +401,126 @@ func TestCompletePulledImageReturnsLoadError(t *testing.T) {
 		loadPulledImage = previous
 	})
 
-	err := completePulledImage("busybox.tar", PullOptions{Load: true})
+	err := completePulledImage("busybox.tar", testBusyboxInfo(), PullOptions{Load: true})
 	if err == nil {
 		t.Fatal("completePulledImage() error = nil, want load error")
 	}
 	if !errors.Is(err, loadErr) {
 		t.Fatalf("completePulledImage() error = %v, want wrapped %v", err, loadErr)
 	}
+}
+
+func TestResolvePushTarget(t *testing.T) {
+	tests := []struct {
+		name   string
+		info   *ImageInfo
+		target string
+		want   string
+	}{
+		{
+			name:   "registry keeps source repository path",
+			info:   &ImageInfo{Repository: "team", Image: "app", Tag: "v1"},
+			target: "registry.local:5000",
+			want:   "registry.local:5000/team/app:v1",
+		},
+		{
+			name:   "namespace prefix uses source image name",
+			info:   testBusyboxInfo(),
+			target: "registry.local/mirror",
+			want:   "registry.local/mirror/busybox:latest",
+		},
+		{
+			name:   "explicit tagged target is used as is",
+			info:   testBusyboxInfo(),
+			target: "registry.local/mirror/busybox:v2",
+			want:   "registry.local/mirror/busybox:v2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolvePushTarget(tt.info, tt.target)
+			if err != nil {
+				t.Fatalf("resolvePushTarget() error = %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("resolvePushTarget() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolvePushTargetRejectsInvalidTarget(t *testing.T) {
+	if _, err := resolvePushTarget(testBusyboxInfo(), ""); err == nil {
+		t.Fatal("resolvePushTarget() error = nil, want blank target error")
+	}
+	if _, err := resolvePushTarget(testBusyboxInfo(), "registry.local/team@sha256:abc"); err == nil {
+		t.Fatal("resolvePushTarget() error = nil, want digest target error")
+	}
+}
+
+func TestCompletePulledImageMirrorsWhenToSet(t *testing.T) {
+	var calls []string
+	previousLoad := loadPulledImage
+	previousTag := tagPulledImage
+	previousPush := pushPulledImage
+	loadPulledImage = func(path string) error {
+		calls = append(calls, "load:"+path)
+		return nil
+	}
+	tagPulledImage = func(ctx context.Context, source, target string) error {
+		calls = append(calls, "tag:"+source+"->"+target)
+		return nil
+	}
+	pushPulledImage = func(ctx context.Context, target string) error {
+		calls = append(calls, "push:"+target)
+		return nil
+	}
+	t.Cleanup(func() {
+		loadPulledImage = previousLoad
+		tagPulledImage = previousTag
+		pushPulledImage = previousPush
+	})
+
+	err := completePulledImage("busybox.tar", testBusyboxInfo(), PullOptions{To: "registry.local:5000"})
+	if err != nil {
+		t.Fatalf("completePulledImage() error = %v", err)
+	}
+	want := []string{
+		"load:busybox.tar",
+		"tag:library/busybox:latest->registry.local:5000/library/busybox:latest",
+		"push:registry.local:5000/library/busybox:latest",
+	}
+	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("calls = %#v, want %#v", calls, want)
+	}
+}
+
+func TestCompletePulledImageReturnsPushError(t *testing.T) {
+	pushErr := errors.New("push failed")
+	previousLoad := loadPulledImage
+	previousTag := tagPulledImage
+	previousPush := pushPulledImage
+	loadPulledImage = func(path string) error { return nil }
+	tagPulledImage = func(ctx context.Context, source, target string) error { return nil }
+	pushPulledImage = func(ctx context.Context, target string) error { return pushErr }
+	t.Cleanup(func() {
+		loadPulledImage = previousLoad
+		tagPulledImage = previousTag
+		pushPulledImage = previousPush
+	})
+
+	err := completePulledImage("busybox.tar", testBusyboxInfo(), PullOptions{To: "registry.local:5000"})
+	if err == nil {
+		t.Fatal("completePulledImage() error = nil, want push error")
+	}
+	if !errors.Is(err, pushErr) {
+		t.Fatalf("completePulledImage() error = %v, want wrapped %v", err, pushErr)
+	}
+}
+
+func testBusyboxInfo() *ImageInfo {
+	return &ImageInfo{Repository: "library", Image: "busybox", Tag: "latest"}
 }
 
 func TestConfigureHTTPLogging(t *testing.T) {
