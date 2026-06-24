@@ -183,6 +183,24 @@ func TestCommandFormatterIncludesDevicesAndUlimits(t *testing.T) {
 	}
 }
 
+func TestCommandFormatterIncludesLoggingOptions(t *testing.T) {
+	cmd := CommandFormatter{}.Format(&ContainerSpec{
+		Image:         "busybox:latest",
+		ContainerName: "demo",
+		LogDriver:     "json-file",
+		LogOptions: map[string]string{
+			"max-file": "3",
+			"max-size": "10m",
+		},
+	}, ReverseOptions{})
+
+	got := strings.Join(cmd, " ")
+	want := "docker run -d --name demo --log-driver json-file --log-opt max-file=3 --log-opt max-size=10m --__SPLIT__ busybox:latest"
+	if got != want {
+		t.Fatalf("CommandFormatter logging options = %q, want %q", got, want)
+	}
+}
+
 func TestComposeFormatterFormat(t *testing.T) {
 	service := ComposeFormatter{}.Format(&ContainerSpec{
 		Image:         "busybox:latest",
@@ -190,16 +208,21 @@ func TestComposeFormatterFormat(t *testing.T) {
 		Labels: map[string]string{
 			"com.example.role": "worker",
 		},
-		DNS:           []string{"1.1.1.1"},
-		DNSSearch:     []string{"svc.local"},
-		ExtraHosts:    []string{"api.local:10.0.0.8"},
-		Privileged:    true,
-		CapAdd:        []string{"NET_ADMIN"},
-		CapDrop:       []string{"MKNOD"},
-		SecurityOpt:   []string{"no-new-privileges:true"},
-		Devices:       []string{"/dev/fuse:/dev/fuse:rwm"},
+		DNS:         []string{"1.1.1.1"},
+		DNSSearch:   []string{"svc.local"},
+		ExtraHosts:  []string{"api.local:10.0.0.8"},
+		Privileged:  true,
+		CapAdd:      []string{"NET_ADMIN"},
+		CapDrop:     []string{"MKNOD"},
+		SecurityOpt: []string{"no-new-privileges:true"},
+		Devices:     []string{"/dev/fuse:/dev/fuse:rwm"},
 		Ulimits: map[string]UlimitSpec{
 			"nofile": {Soft: 1024, Hard: 2048},
+		},
+		LogDriver: "json-file",
+		LogOptions: map[string]string{
+			"max-file": "3",
+			"max-size": "10m",
 		},
 		RestartPolicy: "on-failure:3",
 		Envs:          []string{"GREETING=hello"},
@@ -252,5 +275,14 @@ func TestComposeFormatterFormat(t *testing.T) {
 	}
 	if service.Ulimits["nofile"].Soft != 1024 || service.Ulimits["nofile"].Hard != 2048 {
 		t.Fatalf("Ulimits = %#v, want nofile soft=1024 hard=2048", service.Ulimits)
+	}
+	if service.Logging == nil {
+		t.Fatal("Logging = nil, want logging config")
+	}
+	if service.Logging.Driver != "json-file" {
+		t.Fatalf("Logging.Driver = %q, want json-file", service.Logging.Driver)
+	}
+	if service.Logging.Options["max-size"] != "10m" || service.Logging.Options["max-file"] != "3" {
+		t.Fatalf("Logging.Options = %#v, want max-size=10m and max-file=3", service.Logging.Options)
 	}
 }

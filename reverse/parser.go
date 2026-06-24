@@ -22,6 +22,8 @@ type ContainerSpec struct {
 	SecurityOpt     []string
 	Devices         []string
 	Ulimits         map[string]UlimitSpec
+	LogDriver       string
+	LogOptions      map[string]string
 	Privileged      bool
 	PublishAllPorts bool
 	AutoRemove      bool
@@ -78,6 +80,8 @@ func (p *Parser) ToSpec() *ContainerSpec {
 		SecurityOpt:     copyStringSlice(p.ci.HostConfig.SecurityOpt),
 		Devices:         p.parseDevices(),
 		Ulimits:         p.parseUlimits(),
+		LogDriver:       p.ci.HostConfig.LogConfig.Type,
+		LogOptions:      copyStringMap(p.ci.HostConfig.LogConfig.Config),
 		Privileged:      p.ci.HostConfig.Privileged,
 		PublishAllPorts: p.ci.HostConfig.PublishAllPorts,
 		AutoRemove:      p.ci.HostConfig.AutoRemove,
@@ -287,6 +291,12 @@ func (f CommandFormatter) Format(spec *ContainerSpec, opts ReverseOptions) []str
 	for _, ulimit := range formatUlimits(spec.Ulimits) {
 		add("--ulimit", ulimit)
 	}
+	if spec.LogDriver != "" {
+		add("--log-driver", spec.LogDriver)
+	}
+	for _, opt := range formatMapOptions(spec.LogOptions) {
+		add("--log-opt", opt)
+	}
 	for _, e := range spec.Envs {
 		add("-e", e)
 	}
@@ -409,6 +419,7 @@ func (f ComposeFormatter) Format(spec *ContainerSpec) ComposeService {
 		SecurityOpt:   spec.SecurityOpt,
 		Devices:       spec.Devices,
 		Ulimits:       spec.Ulimits,
+		Logging:       formatComposeLogging(spec),
 		Privileged:    spec.Privileged,
 		Restart:       restart,
 		User:          spec.User,
@@ -487,6 +498,33 @@ func formatUlimits(ulimits map[string]UlimitSpec) []string {
 		result = append(result, fmt.Sprintf("%s=%d:%d", key, ulimit.Soft, ulimit.Hard))
 	}
 	return result
+}
+
+func formatMapOptions(options map[string]string) []string {
+	if len(options) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(options))
+	for key := range options {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	result := make([]string, 0, len(keys))
+	for _, key := range keys {
+		result = append(result, fmt.Sprintf("%s=%s", key, options[key]))
+	}
+	return result
+}
+
+func formatComposeLogging(spec *ContainerSpec) *ComposeLogging {
+	if spec.LogDriver == "" && len(spec.LogOptions) == 0 {
+		return nil
+	}
+	return &ComposeLogging{
+		Driver:  spec.LogDriver,
+		Options: spec.LogOptions,
+	}
 }
 
 func trimContainerName(name string) string {
