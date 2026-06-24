@@ -1,12 +1,10 @@
 package main
 
 import (
-	"docker-manager/docker"
+	"os"
+
 	"docker-manager/pull"
 	"docker-manager/reverse"
-	"fmt"
-	"log"
-	"os"
 
 	"github.com/spf13/cobra"
 )
@@ -17,37 +15,74 @@ import (
 //
 
 func main() {
-	// 初始化 managers 并注入到各个包
-	im, err := docker.NewImageManager()
-	if err != nil {
-		log.Fatalf("无法初始化 Docker ImageManager: %v", err)
+	cfg := appConfig{}
+	opts := outputOptions{}
+	rootCmd := newRootCommand(&cfg, &opts)
+	if err := rootCmd.Execute(); err != nil {
+		writeCommandError(rootCmd.ErrOrStderr(), err, opts)
+		os.Exit(1)
 	}
-	// 将 imageManager 注入到本包的变量（在 cmd.go）
-	imageManager = im
+}
 
-	cm, err := docker.NewContainerManager()
-	if err != nil {
-		log.Fatalf("无法初始化 Docker ContainerManager: %v", err)
-	}
-	reverse.SetContainerManager(cm)
-
+func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
+	configPath := defaultConfigPath
 	rootCmd := &cobra.Command{
-		Use:   "dm <command>",
-		Short: "Docker小工具，可用于管理容器.\nAuthor:Yui",
-		Run: func(cmd *cobra.Command, args []string) {
-			err := cmd.Help()
+		Use:           "dm <command>",
+		Short:         "Docker manager helper\nAuthor:Yui",
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			loaded, err := loadAppConfig(configPath)
 			if err != nil {
-				return
+				return err
 			}
+			*cfg = loaded
+			applyOutputDefaults(cmd, cfg, opts)
+			configureLogging(*opts)
+			return nil
+		},
+		Run: func(cmd *cobra.Command, args []string) {
+			_ = cmd.Help()
 		},
 	}
 
+	opts.Verbose = cfg.Verbose
+	opts.Quiet = cfg.Quiet
+	opts.JSON = cfg.JSON
+	rootCmd.PersistentFlags().StringVar(&configPath, "config", defaultConfigPath, "config file path")
+	rootCmd.PersistentFlags().BoolVar(&opts.Verbose, "verbose", opts.Verbose, "enable verbose logs")
+	rootCmd.PersistentFlags().BoolVar(&opts.Quiet, "quiet", opts.Quiet, "suppress info logs")
+	rootCmd.PersistentFlags().BoolVar(&opts.JSON, "json", opts.JSON, "emit machine-readable JSON logs and errors")
+
 	rootCmd.AddCommand(newLoadCommand())
-	rootCmd.AddCommand(newSaveCommand())
+	rootCmd.AddCommand(newSaveCommandWithDefaults(func() string { return cfg.OutputDir }))
 	rootCmd.AddCommand(reverse.NewReverseCommand())
-	rootCmd.AddCommand(pull.NewPullCommand())
-	if err := rootCmd.Execute(); err != nil {
-		fmt.Println(err)
-		os.Exit(1)
+	rootCmd.AddCommand(pull.NewPullCommandWithDefaults(func() pull.CommandDefaults {
+		return pull.CommandDefaults{
+			Proxy:     cfg.Proxy,
+			TargetOS:  cfg.TargetOS,
+			Arch:      cfg.Arch,
+			OutputDir: cfg.OutputDir,
+		}
+	}))
+	return rootCmd
+}
+
+func applyOutputDefaults(cmd *cobra.Command, cfg *appConfig, opts *outputOptions) {
+	flags := cmd.Root().PersistentFlags()
+	if !flags.Changed("verbose") {
+		opts.Verbose = cfg.Verbose
+	}
+	if !flags.Changed("quiet") {
+		opts.Quiet = cfg.Quiet
+	}
+	if !flags.Changed("json") {
+		opts.JSON = cfg.JSON
+	}
+	if flags.Changed("verbose") && opts.Verbose {
+		opts.Quiet = false
+	}
+	if flags.Changed("quiet") && opts.Quiet {
+		opts.Verbose = false
 	}
 }

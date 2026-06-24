@@ -1,6 +1,7 @@
 package main
 
 import (
+	"docker-manager/docker"
 	"errors"
 	"fmt"
 	"log"
@@ -26,6 +27,9 @@ type imageService interface {
 }
 
 var imageManager imageService
+var newImageManager = func() (imageService, error) {
+	return docker.NewImageManager()
+}
 
 type SaveOptions struct {
 	Merge   bool
@@ -43,20 +47,25 @@ func newLoadCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "load [path]",
 		Short: "导入Docker镜像，默认从images，以及所有子目录寻找镜像",
-		Run: func(cmd *cobra.Command, args []string) {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			path := "images"
 			if len(args) > 0 {
 				path = args[0]
 			}
 			if err := loadImages(path); err != nil {
-				log.Fatalf("Import failed: %v", err)
+				return fmt.Errorf("import failed: %w", err)
 			}
+			return nil
 		},
 	}
 	return cmd
 }
 
 func newSaveCommand() *cobra.Command {
+	return newSaveCommandWithDefaults(func() string { return "" })
+}
+
+func newSaveCommandWithDefaults(defaultOutputDir func() string) *cobra.Command {
 	var merge bool
 	var all bool
 	var dryRun bool
@@ -64,14 +73,14 @@ func newSaveCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "save [path] [options]",
 		Short: "导出Docker镜像，默认为当前路径下的images。",
-		Run: func(cmd *cobra.Command, args []string) {
-			path := "images"
+		RunE: func(cmd *cobra.Command, args []string) error {
+			path := defaultSavePath(defaultOutputDir)
 			if len(args) > 0 {
 				path = args[0]
 			}
 			if !dryRun {
 				if _, err := file_utils.CreateDirectory(path); err != nil {
-					log.Fatalf("Create directory failed: %v", err)
+					return fmt.Errorf("create directory failed: %w", err)
 				}
 			}
 			opts := SaveOptions{
@@ -81,8 +90,9 @@ func newSaveCommand() *cobra.Command {
 				Filters: filters,
 			}
 			if err := saveImagesWithOptions(path, opts); err != nil {
-				log.Fatalf("Export failed: %v", err)
+				return fmt.Errorf("export failed: %w", err)
 			}
+			return nil
 		},
 	}
 	cmd.Flags().BoolVarP(&merge, "merge", "m", false, "合并成一个文件images.tar")
@@ -92,7 +102,19 @@ func newSaveCommand() *cobra.Command {
 	return cmd
 }
 
+func defaultSavePath(defaultOutputDir func() string) string {
+	if defaultOutputDir != nil {
+		if path := strings.TrimSpace(defaultOutputDir()); path != "" {
+			return path
+		}
+	}
+	return "images"
+}
+
 func loadImages(path string) error {
+	if err := ensureImageManager(); err != nil {
+		return err
+	}
 	discovery, err := findDockerImageArchives(path)
 	if err != nil {
 		return err
@@ -167,6 +189,9 @@ func saveImages(path string, merge bool, all bool) error {
 }
 
 func saveImagesWithOptions(path string, opts SaveOptions) error {
+	if err := ensureImageManager(); err != nil {
+		return err
+	}
 	images, err := imageManager.List(opts.All)
 	if err != nil {
 		log.Println(err)
@@ -317,4 +342,16 @@ func wildcardToRegex(pattern string) string {
 		}
 	}
 	return sb.String()
+}
+
+func ensureImageManager() error {
+	if imageManager != nil {
+		return nil
+	}
+	manager, err := newImageManager()
+	if err != nil {
+		return fmt.Errorf("init Docker image manager: %w", err)
+	}
+	imageManager = manager
+	return nil
 }
