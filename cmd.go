@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/Yui100901/MyGo/file_utils"
@@ -25,6 +26,18 @@ type imageService interface {
 }
 
 var imageManager imageService
+
+type SaveOptions struct {
+	Merge   bool
+	All     bool
+	DryRun  bool
+	Filters []string
+}
+
+type imageExportTarget struct {
+	ID   string
+	Name string
+}
 
 func newLoadCommand() *cobra.Command {
 	cmd := &cobra.Command{
@@ -46,6 +59,8 @@ func newLoadCommand() *cobra.Command {
 func newSaveCommand() *cobra.Command {
 	var merge bool
 	var all bool
+	var dryRun bool
+	var filters []string
 	cmd := &cobra.Command{
 		Use:   "save [path] [options]",
 		Short: "导出Docker镜像，默认为当前路径下的images。",
@@ -54,16 +69,26 @@ func newSaveCommand() *cobra.Command {
 			if len(args) > 0 {
 				path = args[0]
 			}
-			if _, err := file_utils.CreateDirectory(path); err != nil {
-				log.Fatalf("Create directory failed: %v", err)
+			if !dryRun {
+				if _, err := file_utils.CreateDirectory(path); err != nil {
+					log.Fatalf("Create directory failed: %v", err)
+				}
 			}
-			if err := saveImages(path, merge, all); err != nil {
+			opts := SaveOptions{
+				Merge:   merge,
+				All:     all,
+				DryRun:  dryRun,
+				Filters: filters,
+			}
+			if err := saveImagesWithOptions(path, opts); err != nil {
 				log.Fatalf("Export failed: %v", err)
 			}
 		},
 	}
 	cmd.Flags().BoolVarP(&merge, "merge", "m", false, "合并成一个文件images.tar")
 	cmd.Flags().BoolVarP(&all, "all", "a", false, "导出所有镜像，包括无tag镜像")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "仅预览将导出的镜像，不写入文件")
+	cmd.Flags().StringArrayVarP(&filters, "filter", "f", nil, "筛选要导出的镜像，支持镜像名/tag/ID和通配符，可重复指定")
 	return cmd
 }
 
@@ -138,37 +163,38 @@ func isDockerImageArchive(path string) bool {
 }
 
 func saveImages(path string, merge bool, all bool) error {
-	images, err := imageManager.List(all)
+	return saveImagesWithOptions(path, SaveOptions{Merge: merge, All: all})
+}
+
+func saveImagesWithOptions(path string, opts SaveOptions) error {
+	images, err := imageManager.List(opts.All)
 	if err != nil {
 		log.Println(err)
 		return err
 	}
-	imageMap := make(map[string]string)
-	skipped := 0
-	for _, image := range images {
-		imageID := image.ID
-		if len(image.RepoTags) > 0 {
-			imageName := image.RepoTags[0]
-			imageName = strings.ReplaceAll(imageName, "/", "_")
-			imageName = strings.ReplaceAll(imageName, ":", "-")
-			imageMap[imageID] = imageName
-		} else {
-			if all {
-				imageMap[imageID] = strings.ReplaceAll(imageID, ":", "_")
-			} else {
-				skipped++
+	targets, skipped := buildImageExportTargets(images, opts)
+	for _, target := range targets {
+		log.Println("Export image", target.ID, target.Name)
+	}
+	total := len(targets)
+	log.Printf("Save images: total=%d skipped=%d merge=%v dryRun=%v output=%s filters=%s", total, skipped, opts.Merge, opts.DryRun, path, strings.Join(opts.Filters, ","))
+
+	if opts.DryRun {
+		for i, target := range targets {
+			outputFile := filepath.Join(path, target.Name+".tar")
+			if opts.Merge {
+				outputFile = filepath.Join(path, "images.tar")
 			}
+			log.Printf("Dry run save image [%d/%d]: %s -> %s", i+1, total, target.ID, outputFile)
 		}
+		log.Printf("Save summary: total=%d success=0 failed=0 skipped=%d dryRun=true", total, skipped)
+		return nil
 	}
-	for imageID, imageName := range imageMap {
-		log.Println("Export image", imageID, imageName)
-	}
-	total := len(imageMap)
-	log.Printf("Save images: total=%d skipped=%d merge=%v output=%s", total, skipped, merge, path)
-	if merge {
-		imageIDList := make([]string, 0, len(imageMap))
-		for imageID := range imageMap {
-			imageIDList = append(imageIDList, imageID)
+
+	if opts.Merge {
+		imageIDList := make([]string, 0, len(targets))
+		for _, target := range targets {
+			imageIDList = append(imageIDList, target.ID)
 		}
 		outputFile := filepath.Join(path, "images.tar")
 		log.Printf("Save merged images [1/1]: images=%d output=%s", total, outputFile)
@@ -181,13 +207,11 @@ func saveImages(path string, merge bool, all bool) error {
 	} else {
 		var saveErrs []error
 		success := 0
-		index := 0
-		for imageID, imageName := range imageMap {
-			index++
-			outputFile := filepath.Join(path, imageName+".tar")
-			log.Printf("Save image [%d/%d]: %s -> %s", index, total, imageID, outputFile)
-			if err := imageManager.Save([]string{imageID}, outputFile); err != nil {
-				wrappedErr := fmt.Errorf("export image %s to %s: %w", imageID, outputFile, err)
+		for i, target := range targets {
+			outputFile := filepath.Join(path, target.Name+".tar")
+			log.Printf("Save image [%d/%d]: %s -> %s", i+1, total, target.ID, outputFile)
+			if err := imageManager.Save([]string{target.ID}, outputFile); err != nil {
+				wrappedErr := fmt.Errorf("export image %s to %s: %w", target.ID, outputFile, err)
 				log.Println(wrappedErr)
 				saveErrs = append(saveErrs, wrappedErr)
 				continue
@@ -197,4 +221,100 @@ func saveImages(path string, merge bool, all bool) error {
 		log.Printf("Save summary: total=%d success=%d failed=%d skipped=%d", total, success, len(saveErrs), skipped)
 		return errors.Join(saveErrs...)
 	}
+}
+
+func buildImageExportTargets(images []image.Summary, opts SaveOptions) ([]imageExportTarget, int) {
+	var targets []imageExportTarget
+	skipped := 0
+	for _, image := range images {
+		imageID := image.ID
+		if !matchesImageFilters(image, opts.Filters) {
+			skipped++
+			continue
+		}
+		if len(image.RepoTags) > 0 {
+			imageName := image.RepoTags[0]
+			imageName = strings.ReplaceAll(imageName, "/", "_")
+			imageName = strings.ReplaceAll(imageName, ":", "-")
+			targets = append(targets, imageExportTarget{ID: imageID, Name: imageName})
+		} else {
+			if opts.All {
+				targets = append(targets, imageExportTarget{
+					ID:   imageID,
+					Name: strings.ReplaceAll(imageID, ":", "_"),
+				})
+			} else {
+				skipped++
+			}
+		}
+	}
+	return targets, skipped
+}
+
+func matchesImageFilters(img image.Summary, filters []string) bool {
+	if len(filters) == 0 {
+		return true
+	}
+	candidates := imageFilterCandidates(img)
+	for _, filter := range filters {
+		for _, candidate := range candidates {
+			if wildcardMatch(filter, candidate) || candidate == filter || strings.HasPrefix(candidate, filter) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func imageFilterCandidates(img image.Summary) []string {
+	candidates := []string{img.ID, strings.TrimPrefix(img.ID, "sha256:")}
+	if shortID := strings.TrimPrefix(img.ID, "sha256:"); len(shortID) > 12 {
+		candidates = append(candidates, shortID[:12])
+	}
+	for _, tag := range img.RepoTags {
+		candidates = append(candidates, tag)
+		repo, version := splitRepoTag(tag)
+		if repo != "" {
+			candidates = append(candidates, repo)
+			if slash := strings.LastIndex(repo, "/"); slash >= 0 && slash < len(repo)-1 {
+				candidates = append(candidates, repo[slash+1:])
+			}
+		}
+		if version != "" {
+			candidates = append(candidates, version)
+		}
+	}
+	return candidates
+}
+
+func splitRepoTag(ref string) (string, string) {
+	lastSlash := strings.LastIndex(ref, "/")
+	lastColon := strings.LastIndex(ref, ":")
+	if lastColon > lastSlash {
+		return ref[:lastColon], ref[lastColon+1:]
+	}
+	return ref, ""
+}
+
+func wildcardMatch(pattern, value string) bool {
+	re, err := regexp.Compile("^" + wildcardToRegex(pattern) + "$")
+	if err != nil {
+		return false
+	}
+	return re.MatchString(value)
+}
+
+func wildcardToRegex(pattern string) string {
+	var sb strings.Builder
+	for _, r := range pattern {
+		switch r {
+		case '*':
+			sb.WriteString(".*")
+		case '?':
+			sb.WriteByte('.')
+		default:
+			sb.WriteString(regexp.QuoteMeta(string(r)))
+		}
+	}
+	return sb.String()
 }

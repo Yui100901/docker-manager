@@ -96,6 +96,71 @@ func TestSaveImagesReturnsExportErrors(t *testing.T) {
 	}
 }
 
+func TestSaveImagesFiltersByWildcard(t *testing.T) {
+	manager := &fakeImageManager{
+		images: []image.Summary{
+			{ID: "sha256:one", RepoTags: []string{"repo/app:v1"}},
+			{ID: "sha256:two", RepoTags: []string{"repo/other:v2"}},
+			{ID: "sha256:three", RepoTags: []string{"library/busybox:latest"}},
+		},
+	}
+	withFakeImageManager(t, manager)
+
+	err := saveImagesWithOptions("backup", SaveOptions{
+		Filters: []string{"repo/*:v?"},
+	})
+	if err != nil {
+		t.Fatalf("saveImagesWithOptions() error = %v", err)
+	}
+	if len(manager.saveCalls) != 2 {
+		t.Fatalf("Save called %d times, want 2", len(manager.saveCalls))
+	}
+	got := map[string]bool{}
+	for _, call := range manager.saveCalls {
+		got[call.images[0]] = true
+	}
+	if !got["sha256:one"] || !got["sha256:two"] {
+		t.Fatalf("saved images = %#v, want sha256:one and sha256:two", got)
+	}
+}
+
+func TestSaveImagesFiltersByShortIDAndRepositoryName(t *testing.T) {
+	manager := &fakeImageManager{
+		images: []image.Summary{
+			{ID: "sha256:abcdef1234567890", RepoTags: []string{"repo/app:v1"}},
+			{ID: "sha256:two", RepoTags: []string{"library/busybox:latest"}},
+		},
+	}
+	withFakeImageManager(t, manager)
+
+	err := saveImagesWithOptions("backup", SaveOptions{
+		Filters: []string{"abcdef123456", "busybox"},
+	})
+	if err != nil {
+		t.Fatalf("saveImagesWithOptions() error = %v", err)
+	}
+	if len(manager.saveCalls) != 2 {
+		t.Fatalf("Save called %d times, want 2", len(manager.saveCalls))
+	}
+}
+
+func TestSaveImagesDryRunDoesNotSave(t *testing.T) {
+	manager := &fakeImageManager{
+		images: []image.Summary{
+			{ID: "sha256:one", RepoTags: []string{"repo/app:v1"}},
+		},
+	}
+	withFakeImageManager(t, manager)
+
+	err := saveImagesWithOptions("backup", SaveOptions{DryRun: true})
+	if err != nil {
+		t.Fatalf("saveImagesWithOptions() error = %v", err)
+	}
+	if len(manager.saveCalls) != 0 {
+		t.Fatalf("Save called %d times, want 0", len(manager.saveCalls))
+	}
+}
+
 func TestIsDockerImageArchive(t *testing.T) {
 	tests := []struct {
 		path string
