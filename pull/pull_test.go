@@ -3,9 +3,12 @@ package pull
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -584,6 +587,106 @@ func TestBuildGETRequestAppliesHeadersAndQuery(t *testing.T) {
 	}
 }
 
+func TestParseAuthChallenge(t *testing.T) {
+	challenge := parseAuthChallenge(`Bearer realm="https://auth.example/token",service="registry.example",scope="repository:team/app:pull"`)
+	if challenge.Scheme != "Bearer" {
+		t.Fatalf("Scheme = %q, want Bearer", challenge.Scheme)
+	}
+	if challenge.Params["realm"] != "https://auth.example/token" ||
+		challenge.Params["service"] != "registry.example" ||
+		challenge.Params["scope"] != "repository:team/app:pull" {
+		t.Fatalf("Params = %#v", challenge.Params)
+	}
+}
+
+func TestFetchManifestAllowsAnonymousRegistry(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/team/app/manifests/v1" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(testOCIManifestJSON()))
+	}))
+	defer server.Close()
+	restore := replacePullHTTPClient(server.Client())
+	defer restore()
+
+	info := &ImageInfo{Registry: strings.TrimPrefix(server.URL, "http://"), Repository: "team", Image: "app", Tag: "v1"}
+	manifest, auth, err := fetchManifest(context.Background(), info, PullOptions{PlainHTTP: true})
+	if err != nil {
+		t.Fatalf("fetchManifest() error = %v", err)
+	}
+	if auth != nil {
+		t.Fatalf("auth = %#v, want nil for anonymous registry", auth)
+	}
+	if manifest.Config.Digest == "" {
+		t.Fatalf("manifest = %#v, want config digest", manifest)
+	}
+}
+
+func TestFetchManifestUsesBearerChallenge(t *testing.T) {
+	var tokenRequested bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/team/app/manifests/v1":
+			if r.Header.Get("Authorization") != "Bearer test-token" {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="`+serverURLFromRequest(r)+`/token",service="test-registry",scope="repository:team/app:pull"`)
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			_, _ = w.Write([]byte(testOCIManifestJSON()))
+		case "/token":
+			tokenRequested = true
+			if r.URL.Query().Get("service") != "test-registry" || r.URL.Query().Get("scope") != "repository:team/app:pull" {
+				t.Fatalf("token query = %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"token":"test-token"}`))
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	restore := replacePullHTTPClient(server.Client())
+	defer restore()
+
+	info := &ImageInfo{Registry: strings.TrimPrefix(server.URL, "http://"), Repository: "team", Image: "app", Tag: "v1"}
+	_, auth, err := fetchManifest(context.Background(), info, PullOptions{PlainHTTP: true})
+	if err != nil {
+		t.Fatalf("fetchManifest() error = %v", err)
+	}
+	if !tokenRequested {
+		t.Fatal("token endpoint was not requested")
+	}
+	if auth == nil || auth.Authorization != "Bearer test-token" {
+		t.Fatalf("auth = %#v, want bearer token", auth)
+	}
+}
+
+func TestFetchManifestUsesBasicCredentialFromDockerConfig(t *testing.T) {
+	wantAuth := basicAuthHeader("demo", "secret")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != wantAuth {
+			w.Header().Set("WWW-Authenticate", `Basic realm="private"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte(testOCIManifestJSON()))
+	}))
+	defer server.Close()
+	restore := replacePullHTTPClient(server.Client())
+	defer restore()
+
+	registryName := strings.TrimPrefix(server.URL, "http://")
+	configPath := writePullDockerConfig(t, registryName, "demo", "secret")
+	info := &ImageInfo{Registry: registryName, Repository: "team", Image: "app", Tag: "v1"}
+	_, auth, err := fetchManifest(context.Background(), info, PullOptions{PlainHTTP: true, DockerConfig: configPath})
+	if err != nil {
+		t.Fatalf("fetchManifest() error = %v", err)
+	}
+	if auth == nil || auth.Authorization != wantAuth {
+		t.Fatalf("auth = %#v, want basic auth", auth)
+	}
+}
+
 func TestCreateTarArchiveWithContextRemovesPartialOnCancel(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte("[]"), 0644); err != nil {
@@ -599,5 +702,46 @@ func TestCreateTarArchiveWithContextRemovesPartialOnCancel(t *testing.T) {
 	}
 	if _, err := os.Stat(partialDownloadPath(output)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("partial file stat error = %v, want not exist", err)
+	}
+}
+
+func testOCIManifestJSON() string {
+	return `{
+		"schemaVersion": 2,
+		"mediaType": "application/vnd.oci.image.manifest.v1+json",
+		"config": {
+			"mediaType": "application/vnd.oci.image.config.v1+json",
+			"digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"size": 2
+		},
+		"layers": []
+	}`
+}
+
+func serverURLFromRequest(r *http.Request) string {
+	return "http://" + r.Host
+}
+
+func writePullDockerConfig(t *testing.T, registryName, username, password string) string {
+	t.Helper()
+	auth := base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
+	path := filepath.Join(t.TempDir(), "config.json")
+	content := `{"auths":{` + strconvQuote(registryName) + `:{"auth":` + strconvQuote(auth) + `}}}`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func strconvQuote(value string) string {
+	data, _ := json.Marshal(value)
+	return string(data)
+}
+
+func replacePullHTTPClient(client *http.Client) func() {
+	previous := httpClient
+	httpClient = &http_utils.HTTPClient{Client: client}
+	return func() {
+		httpClient = previous
 	}
 }

@@ -2,8 +2,10 @@ package pull
 
 import (
 	"archive/tar"
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +26,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -64,11 +67,13 @@ type ImageInfo struct {
 }
 
 type PullOptions struct {
-	Context   context.Context
-	Output    string
-	OutputDir string
-	Load      bool
-	To        string
+	Context      context.Context
+	Output       string
+	OutputDir    string
+	Load         bool
+	To           string
+	DockerConfig string
+	PlainHTTP    bool
 }
 
 type CommandDefaults struct {
@@ -82,6 +87,7 @@ var httpClient *http_utils.HTTPClient
 var loadPulledImage = loadImageTar
 var tagPulledImage = tagImage
 var pushPulledImage = pushImage
+var runPullCredentialHelper = defaultRunPullCredentialHelper
 
 func init() {
 	configureHTTPLogging(false)
@@ -103,6 +109,8 @@ func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command 
 	var outputDir string
 	var load bool
 	var to string
+	var dockerConfig string
+	var plainHTTP bool
 	var verboseHTTP bool
 	cmd := &cobra.Command{
 		Use:   "pull <images...>",
@@ -126,16 +134,18 @@ func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command 
 			}
 			imageNameList = args
 			opts := PullOptions{
-				Context:   ctx,
-				Output:    output,
-				OutputDir: outputDir,
-				Load:      load,
-				To:        to,
+				Context:      ctx,
+				Output:       output,
+				OutputDir:    outputDir,
+				Load:         load,
+				To:           to,
+				DockerConfig: dockerConfig,
+				PlainHTTP:    plainHTTP,
 			}
 			var pullErrs []error
 			success := 0
 			total := len(imageNameList)
-			log.Printf("Pull images: total=%d os=%s arch=%s output=%s outputDir=%s to=%s", total, targetOS, arch, output, outputDir, to)
+			log.Printf("Pull images: total=%d os=%s arch=%s output=%s outputDir=%s to=%s plainHTTP=%v", total, targetOS, arch, output, outputDir, to, plainHTTP)
 			for i, imageName := range imageNameList {
 				log.Printf("Pull image [%d/%d]: %s", i+1, total, imageName)
 				if err := getImage(imageName, opts); err != nil {
@@ -157,6 +167,8 @@ func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command 
 	cmd.Flags().BoolVar(&load, "load", false, "拉取并打包完成后自动导入 Docker")
 	cmd.Flags().BoolVar(&verboseHTTP, "verbose-http", false, "输出底层 HTTP 请求调试日志")
 	cmd.Flags().StringVar(&to, "to", "", "pull 后导入 Docker、tag 并 push 到目标 registry/repository")
+	cmd.Flags().StringVar(&dockerConfig, "docker-config", "", "Docker config.json 路径，默认使用 DOCKER_CONFIG/config.json 或 ~/.docker/config.json")
+	cmd.Flags().BoolVar(&plainHTTP, "plain-http", false, "使用 http:// 拉取 registry，适用于未启用 TLS 的内网 registry")
 	return cmd
 }
 
@@ -195,11 +207,6 @@ func getImage(imageName string, opts PullOptions) error {
 	}
 	log.Printf("获取镜像%s:%s,目标平台%s/%s", imageInfo.Image, imageInfo.Tag, platform.targetOS, platform.targetArch)
 
-	token, err := getAuthToken(ctx, imageInfo)
-	if err != nil {
-		return fmt.Errorf("认证失败: %w", err)
-	}
-
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -214,7 +221,7 @@ func getImage(imageName string, opts PullOptions) error {
 		}
 	}()
 
-	manifest, err := fetchManifest(ctx, imageInfo, token)
+	manifest, auth, err := fetchManifest(ctx, imageInfo, opts)
 	log.Println(manifest)
 	if err != nil {
 		return fmt.Errorf("获取清单失败: %w", err)
@@ -229,12 +236,12 @@ func getImage(imageName string, opts PullOptions) error {
 		return fmt.Errorf("创建清单文件失败: %w", err)
 	}
 
-	err = downloadConfig(ctx, imageInfo, manifest, token, tempDir)
+	err = downloadConfig(ctx, imageInfo, manifest, auth, opts, tempDir)
 	if err != nil {
 		return fmt.Errorf("下载配置文件失败: %w", err)
 	}
 
-	err = downloadLayers(ctx, imageInfo, manifest, token, tempDir)
+	err = downloadLayers(ctx, imageInfo, manifest, auth, opts, tempDir)
 	if err != nil {
 		return fmt.Errorf("下载镜像层失败: %w", err)
 	}
@@ -400,38 +407,9 @@ func parseImageInfo(imageName string) (*ImageInfo, error) {
 	return spec, nil
 }
 
-func getAuthToken(ctx context.Context, info *ImageInfo) (string, error) {
-	authURL := "https://auth.docker.io/token"
-	query := map[string]string{
-		"service": "registry.docker.io",
-		"scope":   fmt.Sprintf("repository:%s:pull", imagePath(info)),
-	}
-
-	respBytes, err := fetchWithRetry(ctx, authURL, nil, query)
-	if err != nil {
-		return "", fmt.Errorf("认证请求失败: %w", err)
-	}
-
-	type tokenResponse struct {
-		Token string `json:"token"`
-	}
-	token, err := struct_utils.UnmarshalData[tokenResponse](respBytes, struct_utils.JSON)
-	if err != nil {
-		return "", fmt.Errorf("解析Token失败: %w", err)
-	}
-
-	return token.Token, nil
-}
-
-func fetchManifest(ctx context.Context, info *ImageInfo, token string) (*ocispec.Manifest, error) {
-	manifestURL := fmt.Sprintf("https://%s/v2/%s/manifests/%s",
-		info.Registry,
-		imagePath(info),
-		getReference(info),
-	)
-
+func fetchManifest(ctx context.Context, info *ImageInfo, opts PullOptions) (*ocispec.Manifest, *pullRegistryAuth, error) {
+	manifestURL := registryAPIURL(opts, info, "manifests", getReference(info))
 	headers := map[string]string{
-		"Authorization": fmt.Sprintf("Bearer %s", token),
 		"Accept": strings.Join([]string{
 			dockerManifestV2,
 			dockerManifestListV2,
@@ -440,24 +418,25 @@ func fetchManifest(ctx context.Context, info *ImageInfo, token string) (*ocispec
 		}, ", "),
 	}
 
-	respBytes, err := fetchWithRetry(ctx, manifestURL, headers, nil)
+	respBytes, auth, err := fetchRegistryBytesWithRetry(ctx, manifestURL, headers, nil, info, opts, nil)
 	if err != nil {
-		return nil, fmt.Errorf("获取清单失败: %w", err)
+		return nil, auth, fmt.Errorf("获取清单失败: %w", err)
 	}
 
 	isIndex, err := isManifestIndex(respBytes)
 	if err != nil {
-		return nil, fmt.Errorf("解析清单类型失败: %w", err)
+		return nil, auth, fmt.Errorf("解析清单类型失败: %w", err)
 	}
 	if isIndex {
 		index, err := struct_utils.UnmarshalData[ocispec.Index](respBytes, struct_utils.JSON)
 		if err != nil {
-			return nil, fmt.Errorf("解析多架构清单失败: %w", err)
+			return nil, auth, fmt.Errorf("解析多架构清单失败: %w", err)
 		}
-		return handleOCIIndex(ctx, info, index, token)
+		return handleOCIIndex(ctx, info, index, auth, opts)
 	}
 
-	return struct_utils.UnmarshalData[ocispec.Manifest](respBytes, struct_utils.JSON)
+	manifest, err := struct_utils.UnmarshalData[ocispec.Manifest](respBytes, struct_utils.JSON)
+	return manifest, auth, err
 }
 
 func getReference(info *ImageInfo) string {
@@ -467,7 +446,7 @@ func getReference(info *ImageInfo) string {
 	return info.Tag
 }
 
-func handleOCIIndex(ctx context.Context, info *ImageInfo, index *ocispec.Index, token string) (*ocispec.Manifest, error) {
+func handleOCIIndex(ctx context.Context, info *ImageInfo, index *ocispec.Index, auth *pullRegistryAuth, opts PullOptions) (*ocispec.Manifest, *pullRegistryAuth, error) {
 	log.Println("[+] 检测到多架构镜像索引")
 	var selectedDigest string
 
@@ -481,29 +460,24 @@ func handleOCIIndex(ctx context.Context, info *ImageInfo, index *ocispec.Index, 
 	}
 
 	if selectedDigest == "" {
-		return nil, fmt.Errorf("未找到匹配的平台: %s/%s", platform.targetOS, platform.targetArch)
+		return nil, auth, fmt.Errorf("未找到匹配的平台: %s/%s", platform.targetOS, platform.targetArch)
 	}
 
-	manifestURL := fmt.Sprintf("https://%s/v2/%s/manifests/%s",
-		info.Registry,
-		imagePath(info),
-		selectedDigest,
-	)
-
+	manifestURL := registryAPIURL(opts, info, "manifests", selectedDigest)
 	headers := map[string]string{
-		"Authorization": fmt.Sprintf("Bearer %s", token),
 		"Accept": strings.Join([]string{
 			dockerManifestV2,
 			ocispec.MediaTypeImageManifest,
 		}, ", "),
 	}
 
-	resp, err := fetchWithRetry(ctx, manifestURL, headers, nil)
+	resp, auth, err := fetchRegistryBytesWithRetry(ctx, manifestURL, headers, nil, info, opts, auth)
 	if err != nil {
-		return nil, fmt.Errorf("获取架构清单失败: %w", err)
+		return nil, auth, fmt.Errorf("获取架构清单失败: %w", err)
 	}
 
-	return struct_utils.UnmarshalData[ocispec.Manifest](resp, struct_utils.JSON)
+	manifest, err := struct_utils.UnmarshalData[ocispec.Manifest](resp, struct_utils.JSON)
+	return manifest, auth, err
 }
 
 func prepareWorkspace(info *ImageInfo) (string, error) {
@@ -512,7 +486,7 @@ func prepareWorkspace(info *ImageInfo) (string, error) {
 }
 
 // 改进版：使用 errgroup 管理并发下载，加入并发上限
-func downloadLayers(ctx context.Context, info *ImageInfo, manifest *ocispec.Manifest, token, tempDir string) error {
+func downloadLayers(ctx context.Context, info *ImageInfo, manifest *ocispec.Manifest, auth *pullRegistryAuth, opts PullOptions, tempDir string) error {
 	g, ctx := errgroup.WithContext(ctx)
 	sem := make(chan struct{}, maxLayerConcurrency)
 
@@ -526,7 +500,7 @@ func downloadLayers(ctx context.Context, info *ImageInfo, manifest *ocispec.Mani
 		}
 		g.Go(func() error {
 			defer func() { <-sem }()
-			return downloadLayer(ctx, info, l, token, tempDir)
+			return downloadLayer(ctx, info, l, auth, opts, tempDir)
 		})
 	}
 
@@ -537,31 +511,21 @@ func downloadLayers(ctx context.Context, info *ImageInfo, manifest *ocispec.Mani
 	return nil
 }
 
-func downloadConfig(ctx context.Context, info *ImageInfo, manifest *ocispec.Manifest, token, tempDir string) error {
-	configURL := fmt.Sprintf("https://%s/v2/%s/blobs/%s",
-		info.Registry,
-		imagePath(info),
-		manifest.Config.Digest,
-	)
-
+func downloadConfig(ctx context.Context, info *ImageInfo, manifest *ocispec.Manifest, auth *pullRegistryAuth, opts PullOptions, tempDir string) error {
+	configURL := registryAPIURL(opts, info, "blobs", string(manifest.Config.Digest))
 	digest := strings.TrimPrefix(string(manifest.Config.Digest), "sha256:")
 	if digest == string(manifest.Config.Digest) {
 		// 没有前缀，尝试再替换常见前缀
 		digest = strings.TrimPrefix(digest, "sha:")
 	}
 	configPath := filepath.Join(tempDir, digest+".json")
-	headers := map[string]string{"Authorization": "Bearer " + token}
 
-	return saveWithRetry(ctx, configURL, headers, nil, configPath)
+	_, err := saveRegistryFileWithRetry(ctx, configURL, nil, nil, info, opts, auth, configPath)
+	return err
 }
 
-func downloadLayer(ctx context.Context, info *ImageInfo, layer ocispec.Descriptor, token, tempDir string) error {
-	layerURL := fmt.Sprintf("https://%s/v2/%s/blobs/%s",
-		info.Registry,
-		imagePath(info),
-		layer.Digest,
-	)
-
+func downloadLayer(ctx context.Context, info *ImageInfo, layer ocispec.Descriptor, auth *pullRegistryAuth, opts PullOptions, tempDir string) error {
+	layerURL := registryAPIURL(opts, info, "blobs", string(layer.Digest))
 	layerID := sha256Hash(string(layer.Digest))
 	layerDir := filepath.Join(tempDir, layerID)
 	if err := os.MkdirAll(layerDir, 0755); err != nil {
@@ -570,9 +534,8 @@ func downloadLayer(ctx context.Context, info *ImageInfo, layer ocispec.Descripto
 
 	// 下载层文件
 	gzPath := filepath.Join(layerDir, "layer.tar.gz")
-	headers := map[string]string{"Authorization": "Bearer " + token}
 
-	if err := saveWithRetry(ctx, layerURL, headers, nil, gzPath); err != nil {
+	if _, err := saveRegistryFileWithRetry(ctx, layerURL, nil, nil, info, opts, auth, gzPath); err != nil {
 		return fmt.Errorf("下载层失败: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
@@ -591,6 +554,440 @@ func downloadLayer(ctx context.Context, info *ImageInfo, layer ocispec.Descripto
 	}
 
 	return os.Remove(gzPath)
+}
+
+type pullRegistryAuth struct {
+	Authorization string
+}
+
+type pullRegistryCredential struct {
+	Found         bool
+	Username      string
+	Password      string
+	IdentityToken string
+	Source        string
+	Message       string
+}
+
+type pullDockerConfigFile struct {
+	Auths       map[string]pullDockerAuthEntry `json:"auths"`
+	CredsStore  string                         `json:"credsStore"`
+	CredHelpers map[string]string              `json:"credHelpers"`
+}
+
+type pullDockerAuthEntry struct {
+	Auth          string `json:"auth"`
+	Username      string `json:"username"`
+	Password      string `json:"password"`
+	IdentityToken string `json:"identitytoken"`
+}
+
+type pullCredentialHelperResponse struct {
+	ServerURL string `json:"ServerURL"`
+	Username  string `json:"Username"`
+	Secret    string `json:"Secret"`
+}
+
+type authChallenge struct {
+	Scheme string
+	Params map[string]string
+}
+
+type httpStatusError struct {
+	StatusCode int
+	Status     string
+	Header     http.Header
+}
+
+func (e *httpStatusError) Error() string {
+	return fmt.Sprintf("HTTP %d %s", e.StatusCode, e.Status)
+}
+
+func registryAPIURL(opts PullOptions, info *ImageInfo, kind, ref string) string {
+	scheme := "https"
+	if opts.PlainHTTP {
+		scheme = "http"
+	}
+	return fmt.Sprintf("%s://%s/v2/%s/%s/%s", scheme, info.Registry, imagePath(info), kind, ref)
+}
+
+func fetchRegistryBytesWithRetry(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, info *ImageInfo, opts PullOptions, auth *pullRegistryAuth) ([]byte, *pullRegistryAuth, error) {
+	var lastErr error
+	currentAuth := auth
+	backoff := initialBackoff
+	for i := 0; i < maxHTTPRetries; i++ {
+		if err := ctx.Err(); err != nil {
+			return nil, currentAuth, err
+		}
+		body, nextAuth, err := fetchRegistryBytesOnce(ctx, rawURL, headers, query, info, opts, currentAuth)
+		if err == nil {
+			return body, nextAuth, nil
+		}
+		currentAuth = nextAuth
+		lastErr = err
+		log.Printf("请求 %s 失败（尝试 %d/%d）: %v，稍后重试...", rawURL, i+1, maxHTTPRetries, err)
+		if err := sleepWithContext(ctx, backoff); err != nil {
+			return nil, currentAuth, err
+		}
+		backoff *= 2
+	}
+	return nil, currentAuth, lastErr
+}
+
+func fetchRegistryBytesOnce(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, info *ImageInfo, opts PullOptions, auth *pullRegistryAuth) ([]byte, *pullRegistryAuth, error) {
+	body, err := httpGetBytesWithStatus(ctx, rawURL, authHeaders(headers, auth), query)
+	if err == nil {
+		return body, auth, nil
+	}
+	statusErr, ok := err.(*httpStatusError)
+	if !ok || statusErr.StatusCode != http.StatusUnauthorized {
+		return nil, auth, err
+	}
+	nextAuth, err := resolveRegistryAuth(ctx, statusErr.Header.Get("WWW-Authenticate"), info, opts)
+	if err != nil {
+		return nil, auth, err
+	}
+	body, err = httpGetBytesWithStatus(ctx, rawURL, authHeaders(headers, nextAuth), query)
+	if err != nil {
+		return nil, nextAuth, err
+	}
+	return body, nextAuth, nil
+}
+
+func saveRegistryFileWithRetry(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, info *ImageInfo, opts PullOptions, auth *pullRegistryAuth, outputPath string) (*pullRegistryAuth, error) {
+	var lastErr error
+	currentAuth := auth
+	backoff := initialBackoff
+	for i := 0; i < maxHTTPRetries; i++ {
+		if err := ctx.Err(); err != nil {
+			_ = removePartialDownload(outputPath)
+			return currentAuth, err
+		}
+		nextAuth, err := saveRegistryFileOnce(ctx, rawURL, headers, query, info, opts, currentAuth, outputPath)
+		if err == nil {
+			return nextAuth, nil
+		}
+		currentAuth = nextAuth
+		_ = removePartialDownload(outputPath)
+		lastErr = err
+		log.Printf("保存 %s 到 %s 失败（尝试 %d/%d）: %v，稍后重试...", rawURL, outputPath, i+1, maxHTTPRetries, err)
+		if err := sleepWithContext(ctx, backoff); err != nil {
+			_ = removePartialDownload(outputPath)
+			return currentAuth, err
+		}
+		backoff *= 2
+	}
+	return currentAuth, lastErr
+}
+
+func saveRegistryFileOnce(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, info *ImageInfo, opts PullOptions, auth *pullRegistryAuth, outputPath string) (*pullRegistryAuth, error) {
+	err := httpSaveToFileWithStatus(ctx, rawURL, authHeaders(headers, auth), query, outputPath)
+	if err == nil {
+		return auth, nil
+	}
+	statusErr, ok := err.(*httpStatusError)
+	if !ok || statusErr.StatusCode != http.StatusUnauthorized {
+		return auth, err
+	}
+	nextAuth, err := resolveRegistryAuth(ctx, statusErr.Header.Get("WWW-Authenticate"), info, opts)
+	if err != nil {
+		return auth, err
+	}
+	err = httpSaveToFileWithStatus(ctx, rawURL, authHeaders(headers, nextAuth), query, outputPath)
+	return nextAuth, err
+}
+
+func authHeaders(headers map[string]string, auth *pullRegistryAuth) map[string]string {
+	result := map[string]string{}
+	for key, value := range headers {
+		result[key] = value
+	}
+	if auth != nil && auth.Authorization != "" {
+		result["Authorization"] = auth.Authorization
+	}
+	return result
+}
+
+func resolveRegistryAuth(ctx context.Context, header string, info *ImageInfo, opts PullOptions) (*pullRegistryAuth, error) {
+	challenge := parseAuthChallenge(header)
+	cred, credErr := loadPullRegistryCredential(ctx, info.Registry, opts.DockerConfig)
+	switch strings.ToLower(challenge.Scheme) {
+	case "bearer":
+		token, err := fetchBearerToken(ctx, challenge, info, cred)
+		if err != nil {
+			if credErr != nil {
+				return nil, fmt.Errorf("获取 Bearer token 失败: %w；读取 Docker 凭据也失败: %v", err, credErr)
+			}
+			return nil, err
+		}
+		return &pullRegistryAuth{Authorization: "Bearer " + token}, nil
+	case "basic":
+		if credErr != nil {
+			return nil, credErr
+		}
+		if cred.Username == "" && cred.Password == "" {
+			return nil, fmt.Errorf("registry %s 需要 Basic 认证，但未找到 Docker 凭据", info.Registry)
+		}
+		return &pullRegistryAuth{Authorization: basicAuthHeader(cred.Username, cred.Password)}, nil
+	default:
+		if credErr == nil {
+			if cred.IdentityToken != "" {
+				return &pullRegistryAuth{Authorization: "Bearer " + cred.IdentityToken}, nil
+			}
+			if cred.Username != "" || cred.Password != "" {
+				return &pullRegistryAuth{Authorization: basicAuthHeader(cred.Username, cred.Password)}, nil
+			}
+		}
+		if strings.TrimSpace(header) == "" {
+			return nil, fmt.Errorf("registry %s 返回 401 但没有 WWW-Authenticate challenge", info.Registry)
+		}
+		return nil, fmt.Errorf("不支持的 registry 认证方式 %q", challenge.Scheme)
+	}
+}
+
+func parseAuthChallenge(header string) authChallenge {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return authChallenge{Params: map[string]string{}}
+	}
+	scheme, rest, _ := strings.Cut(header, " ")
+	return authChallenge{
+		Scheme: strings.TrimSpace(scheme),
+		Params: parseChallengeParams(rest),
+	}
+}
+
+func parseChallengeParams(input string) map[string]string {
+	params := map[string]string{}
+	for len(input) > 0 {
+		input = strings.TrimLeft(input, " ,")
+		if input == "" {
+			break
+		}
+		key, rest, ok := strings.Cut(input, "=")
+		if !ok {
+			break
+		}
+		key = strings.TrimSpace(key)
+		rest = strings.TrimLeft(rest, " ")
+		var value string
+		if strings.HasPrefix(rest, "\"") {
+			value, rest = readQuotedChallengeValue(rest[1:])
+		} else {
+			value, rest, _ = strings.Cut(rest, ",")
+		}
+		if key != "" {
+			params[strings.ToLower(key)] = value
+		}
+		input = rest
+	}
+	return params
+}
+
+func readQuotedChallengeValue(input string) (string, string) {
+	var sb strings.Builder
+	escaped := false
+	for i, r := range input {
+		if escaped {
+			sb.WriteRune(r)
+			escaped = false
+			continue
+		}
+		if r == '\\' {
+			escaped = true
+			continue
+		}
+		if r == '"' {
+			return sb.String(), input[i+1:]
+		}
+		sb.WriteRune(r)
+	}
+	return sb.String(), ""
+}
+
+func fetchBearerToken(ctx context.Context, challenge authChallenge, info *ImageInfo, cred pullRegistryCredential) (string, error) {
+	realm := challenge.Params["realm"]
+	if realm == "" {
+		return "", fmt.Errorf("Bearer challenge missing realm")
+	}
+	query := map[string]string{}
+	if service := challenge.Params["service"]; service != "" {
+		query["service"] = service
+	}
+	scope := challenge.Params["scope"]
+	if scope == "" {
+		scope = fmt.Sprintf("repository:%s:pull", imagePath(info))
+	}
+	query["scope"] = scope
+	headers := map[string]string{}
+	if cred.IdentityToken != "" {
+		headers["Authorization"] = "Bearer " + cred.IdentityToken
+	} else if cred.Username != "" || cred.Password != "" {
+		headers["Authorization"] = basicAuthHeader(cred.Username, cred.Password)
+	}
+	respBytes, err := fetchWithRetry(ctx, realm, headers, query)
+	if err != nil {
+		return "", fmt.Errorf("认证请求失败: %w", err)
+	}
+	var token struct {
+		Token       string `json:"token"`
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(respBytes, &token); err != nil {
+		return "", fmt.Errorf("解析 token 失败: %w", err)
+	}
+	if token.Token != "" {
+		return token.Token, nil
+	}
+	if token.AccessToken != "" {
+		return token.AccessToken, nil
+	}
+	return "", fmt.Errorf("认证响应不包含 token")
+}
+
+func loadPullRegistryCredential(ctx context.Context, registryName, configPath string) (pullRegistryCredential, error) {
+	if configPath == "" {
+		configPath = defaultPullDockerConfigPath()
+	}
+	cfg, err := readPullDockerConfig(configPath)
+	if err != nil {
+		return pullRegistryCredential{}, err
+	}
+	keys := pullRegistryConfigKeys(registryName)
+	if helper, server := findPullCredentialHelper(cfg, keys); helper != "" {
+		cred, err := runPullCredentialHelper(ctx, helper, server)
+		if err != nil {
+			return pullRegistryCredential{Source: "credential-helper", Message: err.Error()}, err
+		}
+		cred.Found = true
+		cred.Source = "credential-helper"
+		return cred, nil
+	}
+	for _, key := range keys {
+		entry, ok := cfg.Auths[key]
+		if !ok {
+			continue
+		}
+		cred := pullCredentialFromAuthEntry(entry)
+		cred.Found = cred.Username != "" || cred.Password != "" || cred.IdentityToken != ""
+		cred.Source = "auths"
+		return cred, nil
+	}
+	return pullRegistryCredential{}, nil
+}
+
+func defaultPullDockerConfigPath() string {
+	if dir := strings.TrimSpace(os.Getenv("DOCKER_CONFIG")); dir != "" {
+		return filepath.Join(dir, "config.json")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".docker", "config.json")
+	}
+	return filepath.Join(home, ".docker", "config.json")
+}
+
+func readPullDockerConfig(path string) (pullDockerConfigFile, error) {
+	var cfg pullDockerConfigFile
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return cfg, nil
+		}
+		return cfg, err
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
+func findPullCredentialHelper(cfg pullDockerConfigFile, keys []string) (string, string) {
+	for _, key := range keys {
+		if helper := strings.TrimSpace(cfg.CredHelpers[key]); helper != "" {
+			return helper, key
+		}
+	}
+	if helper := strings.TrimSpace(cfg.CredsStore); helper != "" {
+		return helper, keys[0]
+	}
+	return "", ""
+}
+
+func pullRegistryConfigKeys(registryName string) []string {
+	keys := []string{
+		registryName,
+		"https://" + registryName,
+		"http://" + registryName,
+		"https://" + registryName + "/v1/",
+	}
+	if registryName == "docker.io" || registryName == "registry-1.docker.io" || registryName == "index.docker.io" {
+		keys = append(keys, "https://index.docker.io/v1/", "index.docker.io", "docker.io", "registry-1.docker.io")
+	}
+	return uniquePullStrings(keys)
+}
+
+func pullCredentialFromAuthEntry(entry pullDockerAuthEntry) pullRegistryCredential {
+	cred := pullRegistryCredential{
+		Username:      entry.Username,
+		Password:      entry.Password,
+		IdentityToken: entry.IdentityToken,
+	}
+	if cred.Username == "" && cred.Password == "" && entry.Auth != "" {
+		decoded, err := base64.StdEncoding.DecodeString(entry.Auth)
+		if err == nil {
+			username, password, ok := strings.Cut(string(decoded), ":")
+			if ok {
+				cred.Username = username
+				cred.Password = password
+			}
+		}
+	}
+	return cred
+}
+
+func defaultRunPullCredentialHelper(ctx context.Context, helper, server string) (pullRegistryCredential, error) {
+	cmd := exec.CommandContext(ctx, "docker-credential-"+helper, "get")
+	cmd.Stdin = strings.NewReader(server)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return pullRegistryCredential{}, fmt.Errorf("docker-credential-%s get failed: %s", helper, msg)
+	}
+	var resp pullCredentialHelperResponse
+	if err := json.Unmarshal(stdout.Bytes(), &resp); err != nil {
+		return pullRegistryCredential{}, err
+	}
+	cred := pullRegistryCredential{Username: resp.Username, Password: resp.Secret}
+	if resp.Username == "<token>" {
+		cred.Username = ""
+		cred.Password = ""
+		cred.IdentityToken = resp.Secret
+	}
+	return cred, nil
+}
+
+func basicAuthHeader(username, password string) string {
+	return "Basic " + base64.StdEncoding.EncodeToString([]byte(username+":"+password))
+}
+
+func uniquePullStrings(values []string) []string {
+	seen := map[string]bool{}
+	var result []string
+	for _, value := range values {
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		result = append(result, value)
+	}
+	return result
 }
 
 // fetchWithRetry 会带简单的重试和指数退避，返回 body bytes
@@ -649,6 +1046,10 @@ func saveWithRetryContext(ctx context.Context, url string, headers map[string]st
 }
 
 func httpGetBytes(ctx context.Context, rawURL string, headers map[string]string, query map[string]string) ([]byte, error) {
+	return httpGetBytesWithStatus(ctx, rawURL, headers, query)
+}
+
+func httpGetBytesWithStatus(ctx context.Context, rawURL string, headers map[string]string, query map[string]string) ([]byte, error) {
 	req, err := buildGETRequest(ctx, rawURL, headers, query)
 	if err != nil {
 		return nil, err
@@ -663,12 +1064,16 @@ func httpGetBytes(ctx context.Context, rawURL string, headers map[string]string,
 		}
 	}()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("HTTP %d %s", resp.StatusCode, resp.Status)
+		return nil, &httpStatusError{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone()}
 	}
 	return io.ReadAll(resp.Body)
 }
 
 func httpSaveToFile(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, outputPath string) error {
+	return httpSaveToFileWithStatus(ctx, rawURL, headers, query, outputPath)
+}
+
+func httpSaveToFileWithStatus(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, outputPath string) error {
 	req, err := buildGETRequest(ctx, rawURL, headers, query)
 	if err != nil {
 		return err
@@ -683,7 +1088,7 @@ func httpSaveToFile(ctx context.Context, rawURL string, headers map[string]strin
 		}
 	}()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("HTTP %d %s", resp.StatusCode, resp.Status)
+		return &httpStatusError{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone()}
 	}
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
 		return err
