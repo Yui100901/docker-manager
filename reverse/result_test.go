@@ -165,6 +165,24 @@ func TestCommandFormatterIncludesSecurityOptions(t *testing.T) {
 	}
 }
 
+func TestCommandFormatterIncludesDevicesAndUlimits(t *testing.T) {
+	cmd := CommandFormatter{}.Format(&ContainerSpec{
+		Image:         "busybox:latest",
+		ContainerName: "demo",
+		Devices:       []string{"/dev/fuse:/dev/fuse:rwm"},
+		Ulimits: map[string]UlimitSpec{
+			"nofile": {Soft: 1024, Hard: 2048},
+			"nproc":  {Soft: 256, Hard: 512},
+		},
+	}, ReverseOptions{})
+
+	got := strings.Join(cmd, " ")
+	want := "docker run -d --name demo --device /dev/fuse:/dev/fuse:rwm --ulimit nofile=1024:2048 --ulimit nproc=256:512 --__SPLIT__ busybox:latest"
+	if got != want {
+		t.Fatalf("CommandFormatter devices and ulimits = %q, want %q", got, want)
+	}
+}
+
 func TestComposeFormatterFormat(t *testing.T) {
 	service := ComposeFormatter{}.Format(&ContainerSpec{
 		Image:         "busybox:latest",
@@ -179,6 +197,10 @@ func TestComposeFormatterFormat(t *testing.T) {
 		CapAdd:        []string{"NET_ADMIN"},
 		CapDrop:       []string{"MKNOD"},
 		SecurityOpt:   []string{"no-new-privileges:true"},
+		Devices:       []string{"/dev/fuse:/dev/fuse:rwm"},
+		Ulimits: map[string]UlimitSpec{
+			"nofile": {Soft: 1024, Hard: 2048},
+		},
 		RestartPolicy: "on-failure:3",
 		Envs:          []string{"GREETING=hello"},
 		Mounts:        []string{"/tmp:/host_tmp:ro"},
@@ -224,5 +246,11 @@ func TestComposeFormatterFormat(t *testing.T) {
 	}
 	if len(service.SecurityOpt) != 1 || service.SecurityOpt[0] != "no-new-privileges:true" {
 		t.Fatalf("SecurityOpt = %#v, want no-new-privileges:true", service.SecurityOpt)
+	}
+	if len(service.Devices) != 1 || service.Devices[0] != "/dev/fuse:/dev/fuse:rwm" {
+		t.Fatalf("Devices = %#v, want /dev/fuse:/dev/fuse:rwm", service.Devices)
+	}
+	if service.Ulimits["nofile"].Soft != 1024 || service.Ulimits["nofile"].Hard != 2048 {
+		t.Fatalf("Ulimits = %#v, want nofile soft=1024 hard=2048", service.Ulimits)
 	}
 }

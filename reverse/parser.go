@@ -20,6 +20,8 @@ type ContainerSpec struct {
 	CapAdd          []string
 	CapDrop         []string
 	SecurityOpt     []string
+	Devices         []string
+	Ulimits         map[string]UlimitSpec
 	Privileged      bool
 	PublishAllPorts bool
 	AutoRemove      bool
@@ -39,6 +41,11 @@ type PortBindingSpec struct {
 	HostPort int
 	ContPort int
 	Proto    string
+}
+
+type UlimitSpec struct {
+	Soft int64 `yaml:"soft"`
+	Hard int64 `yaml:"hard"`
 }
 
 type ParsedResult struct {
@@ -69,6 +76,8 @@ func (p *Parser) ToSpec() *ContainerSpec {
 		CapAdd:          copyStringSlice(p.ci.HostConfig.CapAdd),
 		CapDrop:         copyStringSlice(p.ci.HostConfig.CapDrop),
 		SecurityOpt:     copyStringSlice(p.ci.HostConfig.SecurityOpt),
+		Devices:         p.parseDevices(),
+		Ulimits:         p.parseUlimits(),
 		Privileged:      p.ci.HostConfig.Privileged,
 		PublishAllPorts: p.ci.HostConfig.PublishAllPorts,
 		AutoRemove:      p.ci.HostConfig.AutoRemove,
@@ -177,6 +186,44 @@ func (p *Parser) parsePortBindings() []PortBindingSpec {
 	return result
 }
 
+func (p *Parser) parseDevices() []string {
+	var devices []string
+	for _, device := range p.ci.HostConfig.Devices {
+		devices = append(devices, formatDevice(device.PathOnHost, device.PathInContainer, device.CgroupPermissions))
+	}
+	return devices
+}
+
+func formatDevice(hostPath, containerPath, permissions string) string {
+	if containerPath == "" || containerPath == hostPath {
+		if permissions == "" {
+			return hostPath
+		}
+		return fmt.Sprintf("%s:%s", hostPath, permissions)
+	}
+	if permissions == "" {
+		return fmt.Sprintf("%s:%s", hostPath, containerPath)
+	}
+	return fmt.Sprintf("%s:%s:%s", hostPath, containerPath, permissions)
+}
+
+func (p *Parser) parseUlimits() map[string]UlimitSpec {
+	if len(p.ci.HostConfig.Ulimits) == 0 {
+		return nil
+	}
+	ulimits := make(map[string]UlimitSpec, len(p.ci.HostConfig.Ulimits))
+	for _, ulimit := range p.ci.HostConfig.Ulimits {
+		if ulimit == nil || ulimit.Name == "" {
+			continue
+		}
+		ulimits[ulimit.Name] = UlimitSpec{Soft: ulimit.Soft, Hard: ulimit.Hard}
+	}
+	if len(ulimits) == 0 {
+		return nil
+	}
+	return ulimits
+}
+
 // -------------------- Formatter --------------------
 
 type CommandFormatter struct{}
@@ -233,6 +280,12 @@ func (f CommandFormatter) Format(spec *ContainerSpec, opts ReverseOptions) []str
 	}
 	for _, opt := range spec.SecurityOpt {
 		add("--security-opt", opt)
+	}
+	for _, device := range spec.Devices {
+		add("--device", device)
+	}
+	for _, ulimit := range formatUlimits(spec.Ulimits) {
+		add("--ulimit", ulimit)
 	}
 	for _, e := range spec.Envs {
 		add("-e", e)
@@ -354,6 +407,8 @@ func (f ComposeFormatter) Format(spec *ContainerSpec) ComposeService {
 		CapAdd:        spec.CapAdd,
 		CapDrop:       spec.CapDrop,
 		SecurityOpt:   spec.SecurityOpt,
+		Devices:       spec.Devices,
+		Ulimits:       spec.Ulimits,
 		Privileged:    spec.Privileged,
 		Restart:       restart,
 		User:          spec.User,
@@ -412,6 +467,24 @@ func formatLabels(labels map[string]string) []string {
 	result := make([]string, 0, len(keys))
 	for _, key := range keys {
 		result = append(result, fmt.Sprintf("%s=%s", key, labels[key]))
+	}
+	return result
+}
+
+func formatUlimits(ulimits map[string]UlimitSpec) []string {
+	if len(ulimits) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(ulimits))
+	for key := range ulimits {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	result := make([]string, 0, len(keys))
+	for _, key := range keys {
+		ulimit := ulimits[key]
+		result = append(result, fmt.Sprintf("%s=%d:%d", key, ulimit.Soft, ulimit.Hard))
 	}
 	return result
 }

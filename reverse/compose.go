@@ -21,6 +21,8 @@ type ComposeService struct {
 	CapAdd        []string          `yaml:"cap_add,omitempty"`
 	CapDrop       []string          `yaml:"cap_drop,omitempty"`
 	SecurityOpt   []string          `yaml:"security_opt,omitempty"`
+	Devices       []string          `yaml:"devices,omitempty"`
+	Ulimits       map[string]UlimitSpec `yaml:"ulimits,omitempty"`
 	Privileged    bool              `yaml:"privileged,omitempty"`
 	Restart       string            `yaml:"restart,omitempty"`
 	User          string            `yaml:"user,omitempty"`
