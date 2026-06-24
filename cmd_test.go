@@ -12,6 +12,7 @@ import (
 type fakeImageManager struct {
 	images    []image.Summary
 	saveErrs  map[string]error
+	loadErrs  map[string]error
 	saveCalls []saveCall
 	loadCalls []string
 }
@@ -38,7 +39,7 @@ func (m *fakeImageManager) Save(images []string, outputFile string) error {
 
 func (m *fakeImageManager) Load(inputFile string) error {
 	m.loadCalls = append(m.loadCalls, inputFile)
-	return nil
+	return m.loadErrs[inputFile]
 }
 
 func withFakeImageManager(t *testing.T, manager *fakeImageManager) {
@@ -171,5 +172,35 @@ func TestLoadImagesSupportsSingleArchiveFile(t *testing.T) {
 	}
 	if manager.loadCalls[0] != path {
 		t.Fatalf("Load called with %q, want %q", manager.loadCalls[0], path)
+	}
+}
+
+func TestLoadImagesReturnsAggregatedErrors(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first.tar")
+	second := filepath.Join(dir, "second.tar")
+	for _, path := range []string{first, second} {
+		if err := os.WriteFile(path, []byte("test"), 0644); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+	}
+
+	loadErr := errors.New("load failed")
+	manager := &fakeImageManager{
+		loadErrs: map[string]error{
+			first: loadErr,
+		},
+	}
+	withFakeImageManager(t, manager)
+
+	err := loadImages(dir)
+	if err == nil {
+		t.Fatal("loadImages() error = nil, want load error")
+	}
+	if !errors.Is(err, loadErr) {
+		t.Fatalf("loadImages() error = %v, want wrapped %v", err, loadErr)
+	}
+	if len(manager.loadCalls) != 2 {
+		t.Fatalf("Load called %d times, want 2", len(manager.loadCalls))
 	}
 }

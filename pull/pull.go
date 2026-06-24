@@ -99,12 +99,19 @@ func NewPullCommand() *cobra.Command {
 				OutputDir: outputDir,
 			}
 			var pullErrs []error
-			for _, imageName := range imageNameList {
+			success := 0
+			total := len(imageNameList)
+			log.Printf("Pull images: total=%d os=%s arch=%s output=%s outputDir=%s", total, targetOS, arch, output, outputDir)
+			for i, imageName := range imageNameList {
+				log.Printf("Pull image [%d/%d]: %s", i+1, total, imageName)
 				if err := getImage(imageName, opts); err != nil {
 					log.Printf("%s 拉取失败: %v", imageName, err)
 					pullErrs = append(pullErrs, fmt.Errorf("%s: %w", imageName, err))
+					continue
 				}
+				success++
 			}
+			log.Printf("Pull summary: total=%d success=%d failed=%d", total, success, len(pullErrs))
 			return errors.Join(pullErrs...)
 		},
 	}

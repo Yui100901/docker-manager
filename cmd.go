@@ -68,32 +68,50 @@ func newSaveCommand() *cobra.Command {
 }
 
 func loadImages(path string) error {
-	archives, err := findDockerImageArchives(path)
+	discovery, err := findDockerImageArchives(path)
 	if err != nil {
 		return err
 	}
-	for _, archive := range archives {
+	total := len(discovery.Archives)
+	log.Printf("Load images: found=%d skipped=%d path=%s", total, discovery.Skipped, path)
+
+	var loadErrs []error
+	success := 0
+	for i, archive := range discovery.Archives {
+		log.Printf("Load image archive [%d/%d]: %s", i+1, total, archive)
 		if err := imageManager.Load(archive); err != nil {
-			return err
+			wrappedErr := fmt.Errorf("load image archive %s: %w", archive, err)
+			log.Println(wrappedErr)
+			loadErrs = append(loadErrs, wrappedErr)
+			continue
 		}
+		success++
 	}
-	return nil
+	failed := len(loadErrs)
+	log.Printf("Load summary: found=%d success=%d failed=%d skipped=%d", total, success, failed, discovery.Skipped)
+	return errors.Join(loadErrs...)
 }
 
-func findDockerImageArchives(path string) ([]string, error) {
+type imageArchiveDiscovery struct {
+	Archives []string
+	Skipped  int
+}
+
+func findDockerImageArchives(path string) (imageArchiveDiscovery, error) {
 	info, err := os.Stat(path)
 	if err != nil {
-		return nil, err
+		return imageArchiveDiscovery{}, err
 	}
 	if !info.IsDir() {
 		if isDockerImageArchive(path) {
-			return []string{path}, nil
+			return imageArchiveDiscovery{Archives: []string{path}}, nil
 		}
 		log.Printf("Skip non-image archive: %s", path)
-		return nil, nil
+		return imageArchiveDiscovery{Skipped: 1}, nil
 	}
 
 	var archives []string
+	skipped := 0
 	err = filepath.WalkDir(path, func(filePath string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -103,12 +121,13 @@ func findDockerImageArchives(path string) ([]string, error) {
 		}
 		if !isDockerImageArchive(filePath) {
 			log.Printf("Skip non-image archive: %s", filePath)
+			skipped++
 			return nil
 		}
 		archives = append(archives, filePath)
 		return nil
 	})
-	return archives, err
+	return imageArchiveDiscovery{Archives: archives, Skipped: skipped}, err
 }
 
 func isDockerImageArchive(path string) bool {
@@ -125,6 +144,7 @@ func saveImages(path string, merge bool, all bool) error {
 		return err
 	}
 	imageMap := make(map[string]string)
+	skipped := 0
 	for _, image := range images {
 		imageID := image.ID
 		if len(image.RepoTags) > 0 {
@@ -135,28 +155,46 @@ func saveImages(path string, merge bool, all bool) error {
 		} else {
 			if all {
 				imageMap[imageID] = strings.ReplaceAll(imageID, ":", "_")
+			} else {
+				skipped++
 			}
 		}
 	}
 	for imageID, imageName := range imageMap {
 		log.Println("Export image", imageID, imageName)
 	}
+	total := len(imageMap)
+	log.Printf("Save images: total=%d skipped=%d merge=%v output=%s", total, skipped, merge, path)
 	if merge {
 		imageIDList := make([]string, 0, len(imageMap))
 		for imageID := range imageMap {
 			imageIDList = append(imageIDList, imageID)
 		}
-		return imageManager.Save(imageIDList, filepath.Join(path, "images.tar"))
+		outputFile := filepath.Join(path, "images.tar")
+		log.Printf("Save merged images [1/1]: images=%d output=%s", total, outputFile)
+		if err := imageManager.Save(imageIDList, outputFile); err != nil {
+			log.Printf("Save summary: total=%d success=0 failed=1 skipped=%d", total, skipped)
+			return err
+		}
+		log.Printf("Save summary: total=%d success=%d failed=0 skipped=%d", total, total, skipped)
+		return nil
 	} else {
 		var saveErrs []error
+		success := 0
+		index := 0
 		for imageID, imageName := range imageMap {
+			index++
 			outputFile := filepath.Join(path, imageName+".tar")
+			log.Printf("Save image [%d/%d]: %s -> %s", index, total, imageID, outputFile)
 			if err := imageManager.Save([]string{imageID}, outputFile); err != nil {
 				wrappedErr := fmt.Errorf("export image %s to %s: %w", imageID, outputFile, err)
 				log.Println(wrappedErr)
 				saveErrs = append(saveErrs, wrappedErr)
+				continue
 			}
+			success++
 		}
+		log.Printf("Save summary: total=%d success=%d failed=%d skipped=%d", total, success, len(saveErrs), skipped)
 		return errors.Join(saveErrs...)
 	}
 }
