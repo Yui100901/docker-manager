@@ -1,6 +1,7 @@
 package pull
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -138,5 +139,108 @@ func TestIsManifestIndex(t *testing.T) {
 				t.Fatalf("isManifestIndex() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestProxyFuncFromSettingUsesEnvironmentByDefault(t *testing.T) {
+	t.Setenv("http_proxy", "")
+	t.Setenv("https_proxy", "")
+	t.Setenv("no_proxy", "")
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("NO_PROXY", "")
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:7890")
+
+	proxyFunc, err := proxyFuncFromSetting("")
+	if err != nil {
+		t.Fatalf("proxyFuncFromSetting() error = %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, "http://example.com", nil)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	got, err := proxyFunc(req)
+	if err != nil {
+		t.Fatalf("proxyFunc() error = %v", err)
+	}
+	if got == nil || got.String() != "http://127.0.0.1:7890" {
+		t.Fatalf("proxy = %v, want http://127.0.0.1:7890", got)
+	}
+}
+
+func TestProxyFuncFromSettingNoEnvironmentUsesNoProxy(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "")
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("NO_PROXY", "")
+	t.Setenv("http_proxy", "")
+	t.Setenv("https_proxy", "")
+	t.Setenv("no_proxy", "")
+
+	proxyFunc, err := proxyFuncFromSetting("")
+	if err != nil {
+		t.Fatalf("proxyFuncFromSetting() error = %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, "http://example.com", nil)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	got, err := proxyFunc(req)
+	if err != nil {
+		t.Fatalf("proxyFunc() error = %v", err)
+	}
+	if got != nil {
+		t.Fatalf("proxy = %v, want nil", got)
+	}
+}
+
+func TestProxyFuncFromSettingExplicitProxyOverridesEnvironment(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:7890")
+
+	proxyFunc, err := proxyFuncFromSetting("http://10.0.0.1:8080")
+	if err != nil {
+		t.Fatalf("proxyFuncFromSetting() error = %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, "http://example.com", nil)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	got, err := proxyFunc(req)
+	if err != nil {
+		t.Fatalf("proxyFunc() error = %v", err)
+	}
+	if got == nil || got.String() != "http://10.0.0.1:8080" {
+		t.Fatalf("proxy = %v, want http://10.0.0.1:8080", got)
+	}
+}
+
+func TestProxyFuncFromSettingRejectsInvalidProxy(t *testing.T) {
+	if _, err := proxyFuncFromSetting("127.0.0.1:7890"); err == nil {
+		t.Fatal("proxyFuncFromSetting() error = nil, want invalid proxy error")
+	}
+}
+
+func TestProxyFuncFromSettingRespectsNoProxy(t *testing.T) {
+	t.Setenv("http_proxy", "")
+	t.Setenv("no_proxy", "")
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:7890")
+	t.Setenv("NO_PROXY", "example.com")
+
+	proxyFunc, err := proxyFuncFromSetting("")
+	if err != nil {
+		t.Fatalf("proxyFuncFromSetting() error = %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, "http://example.com", nil)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	got, err := proxyFunc(req)
+	if err != nil {
+		t.Fatalf("proxyFunc() error = %v", err)
+	}
+	if got != nil {
+		t.Fatalf("proxy = %v, want nil", got)
 	}
 }

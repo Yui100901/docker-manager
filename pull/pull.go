@@ -29,7 +29,6 @@ import (
 
 const (
 	defaultRegistry = "registry-1.docker.io"
-	defaultProxy    = "http://127.0.0.1:7890"
 	dockerHubDomain = "docker.io"
 	// Docker schema v2 media types. OCI media types are provided by ocispec.
 	dockerManifestV2     = "application/vnd.docker.distribution.manifest.v2+json"
@@ -59,22 +58,29 @@ type ImageInfo struct {
 var httpClient *http_utils.HTTPClient
 
 func init() {
-	initHTTPClient()
+	if err := initHTTPClient(""); err != nil {
+		log.Fatalf("初始化 HTTP 客户端失败: %v", err)
+	}
 }
 
 func NewPullCommand() *cobra.Command {
 	var imageNameList []string
 	var targetOS string
 	var arch string
+	var proxy string
 	cmd := &cobra.Command{
 		Use:   "pull <images...>",
 		Short: "无需docker客户端，下载docker镜像",
 		Long: `无需docker客户端，下载docker镜像，从官方镜像源拉取。
-需要环境变量配置代理，默认代理为127.0.0.1:7890（clash）。
+默认使用 HTTP_PROXY/HTTPS_PROXY 环境变量代理；未设置则直连。可通过 --proxy 强制指定代理。
 默认拉取linux/amd64镜像。`,
 		Run: func(cmd *cobra.Command, args []string) {
 			platform.targetOS = targetOS
 			platform.targetArch = arch
+			if err := initHTTPClient(proxy); err != nil {
+				log.Printf("配置代理失败: %v", err)
+				return
+			}
 			imageNameList = args
 			for _, imageName := range imageNameList {
 				getImage(imageName)
@@ -83,6 +89,7 @@ func NewPullCommand() *cobra.Command {
 	}
 	cmd.Flags().StringVarP(&targetOS, "os", "", "linux", "目标操作系统")
 	cmd.Flags().StringVarP(&arch, "arch", "a", "amd64", "目标架构")
+	cmd.Flags().StringVar(&proxy, "proxy", "", "强制指定 HTTP 代理，例如 http://127.0.0.1:7890；为空时使用环境变量代理")
 	return cmd
 }
 
@@ -145,19 +152,20 @@ func getImage(imageName string) {
 	log.Printf("镜像拉取成功: %s", outputFile)
 }
 
-func initHTTPClient() {
-	proxyURL, err := url.Parse(getProxyURL())
+func initHTTPClient(proxy string) error {
+	proxyFunc, err := proxyFuncFromSetting(proxy)
 	if err != nil {
-		log.Fatalf("无效代理地址: %v", err)
+		return err
 	}
 
-	transport := &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+	transport := &http.Transport{Proxy: proxyFunc}
 	httpClient = &http_utils.HTTPClient{
 		Client: &http.Client{
 			Transport: transport,
 			Timeout:   600 * time.Second,
 		},
 	}
+	return nil
 }
 
 func parseImageInfo(imageName string) (*ImageInfo, error) {
@@ -440,11 +448,86 @@ func sha256Hash(input string) string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(input)))
 }
 
-func getProxyURL() string {
-	if proxy := os.Getenv("HTTP_PROXY"); proxy != "" {
-		return proxy
+func proxyFuncFromSetting(proxy string) (func(*http.Request) (*url.URL, error), error) {
+	if proxy == "" {
+		return proxyFromEnvironment, nil
 	}
-	return defaultProxy
+
+	proxyURL, err := url.Parse(proxy)
+	if err != nil {
+		return nil, fmt.Errorf("无效代理地址 %q: %w", proxy, err)
+	}
+	if proxyURL.Scheme == "" || proxyURL.Host == "" {
+		return nil, fmt.Errorf("无效代理地址 %q: 必须包含 scheme 和 host，例如 http://127.0.0.1:7890", proxy)
+	}
+	return http.ProxyURL(proxyURL), nil
+}
+
+func proxyFromEnvironment(req *http.Request) (*url.URL, error) {
+	if req == nil || req.URL == nil {
+		return nil, nil
+	}
+	if shouldBypassProxy(req.URL.Hostname()) {
+		return nil, nil
+	}
+
+	proxy := proxyEnvForScheme(req.URL.Scheme)
+	if proxy == "" {
+		return nil, nil
+	}
+
+	proxyURL, err := url.Parse(proxy)
+	if err != nil {
+		return nil, err
+	}
+	if proxyURL.Scheme == "" || proxyURL.Host == "" {
+		return nil, fmt.Errorf("无效环境变量代理地址 %q: 必须包含 scheme 和 host", proxy)
+	}
+	return proxyURL, nil
+}
+
+func proxyEnvForScheme(scheme string) string {
+	switch strings.ToLower(scheme) {
+	case "https":
+		return firstEnv("HTTPS_PROXY", "https_proxy")
+	case "http":
+		return firstEnv("HTTP_PROXY", "http_proxy")
+	default:
+		return ""
+	}
+}
+
+func firstEnv(names ...string) string {
+	for _, name := range names {
+		if value := os.Getenv(name); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func shouldBypassProxy(host string) bool {
+	noProxy := firstEnv("NO_PROXY", "no_proxy")
+	if noProxy == "" || host == "" {
+		return false
+	}
+
+	for _, item := range strings.Split(noProxy, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if item == "*" || item == host {
+			return true
+		}
+		if strings.HasPrefix(item, ".") && strings.HasSuffix(host, item) {
+			return true
+		}
+		if strings.HasPrefix(host, item+".") {
+			return true
+		}
+	}
+	return false
 }
 
 func splitRepositoryImage(path string) (string, string) {
