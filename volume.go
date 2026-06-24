@@ -35,6 +35,7 @@ type dockerVolumeService struct {
 type VolumeOptions struct {
 	All     bool
 	NoTrunc bool
+	ReportFormatOptions
 }
 
 type VolumeReport struct {
@@ -95,12 +96,14 @@ func newVolumeListUnusedCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("volume report failed: %w", err)
 			}
-			printVolumeReport(cmd.OutOrStdout(), report, opts)
-			return nil
+			return printReport(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
+				printVolumeReport(w, report, opts)
+			})
 		},
 	}
 	cmd.Flags().BoolVar(&opts.All, "all", false, "显示所有 volume，包括仍被容器引用的 volume")
 	cmd.Flags().BoolVar(&opts.NoTrunc, "no-trunc", false, "显示完整 volume 名称和挂载点")
+	addReportFormatFlag(cmd, &opts.Format)
 	return cmd
 }
 

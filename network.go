@@ -34,6 +34,7 @@ type dockerNetworkService struct {
 
 type NetworkOptions struct {
 	RunningOnly bool
+	ReportFormatOptions
 }
 
 type NetworkReport struct {
@@ -91,11 +92,13 @@ func newNetworkCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("network report failed: %w", err)
 			}
-			printNetworkReport(cmd.OutOrStdout(), report)
-			return nil
+			return printReport(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
+				printNetworkReport(w, report)
+			})
 		},
 	}
 	cmd.Flags().BoolVar(&opts.RunningOnly, "running-only", false, "只查看正在运行的容器")
+	addReportFormatFlag(cmd, &opts.Format)
 	return cmd
 }
 

@@ -42,6 +42,7 @@ type HealthOptions struct {
 	LogTail          int
 	RestartThreshold int
 	Keywords         []string
+	ReportFormatOptions
 }
 
 type HealthReport struct {
@@ -104,8 +105,9 @@ func newHealthCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("health report failed: %w", err)
 			}
-			printHealthReport(cmd.OutOrStdout(), report)
-			return nil
+			return printReport(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
+				printHealthReport(w, report)
+			})
 		},
 	}
 	cmd.Flags().BoolVar(&opts.RunningOnly, "running-only", false, "只检查正在运行的容器")
@@ -113,6 +115,7 @@ func newHealthCommand() *cobra.Command {
 	cmd.Flags().IntVar(&opts.LogTail, "log-tail", opts.LogTail, "每个容器扫描最近日志行数")
 	cmd.Flags().IntVar(&opts.RestartThreshold, "restart-threshold", opts.RestartThreshold, "restart 次数达到该阈值时报告风险")
 	cmd.Flags().StringArrayVar(&opts.Keywords, "keyword", opts.Keywords, "日志扫描关键词，可重复指定")
+	addReportFormatFlag(cmd, &opts.Format)
 	return cmd
 }
 

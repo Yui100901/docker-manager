@@ -35,6 +35,7 @@ type dockerInspectDiffService struct {
 
 type InspectDiffOptions struct {
 	ShowSecrets bool
+	ReportFormatOptions
 }
 
 type InspectDiffReport struct {
@@ -62,11 +63,13 @@ func newInspectDiffCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("inspect diff failed: %w", err)
 			}
-			printInspectDiffReport(cmd.OutOrStdout(), report)
-			return nil
+			return printReport(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
+				printInspectDiffReport(w, report)
+			})
 		},
 	}
 	cmd.Flags().BoolVar(&opts.ShowSecrets, "show-secrets", false, "显示 env/label 中疑似敏感字段的真实值")
+	addReportFormatFlag(cmd, &opts.Format)
 	return cmd
 }
 

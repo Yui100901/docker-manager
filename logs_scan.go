@@ -41,6 +41,7 @@ type LogsScanOptions struct {
 	Context     int
 	Since       string
 	Keywords    []string
+	ReportFormatOptions
 }
 
 type LogsScanReport struct {
@@ -91,8 +92,9 @@ func newLogsScanCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("logs scan failed: %w", err)
 			}
-			printLogsScanReport(cmd.OutOrStdout(), report)
-			return nil
+			return printReport(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
+				printLogsScanReport(w, report)
+			})
 		},
 	}
 	cmd.Flags().BoolVar(&opts.All, "all", false, "扫描所有容器")
@@ -101,6 +103,7 @@ func newLogsScanCommand() *cobra.Command {
 	cmd.Flags().IntVar(&opts.Context, "context", opts.Context, "命中日志前后各输出多少行上下文")
 	cmd.Flags().StringVar(&opts.Since, "since", "", "只扫描该时间之后的日志，例如 30m、2h 或 RFC3339 时间")
 	cmd.Flags().StringArrayVar(&opts.Keywords, "keyword", opts.Keywords, "日志扫描关键词，可重复指定")
+	addReportFormatFlag(cmd, &opts.Format)
 	return cmd
 }
 

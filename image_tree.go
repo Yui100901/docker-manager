@@ -35,6 +35,7 @@ type dockerImageTreeService struct {
 type ImageTreeOptions struct {
 	NoTrunc bool
 	Top     int
+	ReportFormatOptions
 }
 
 type ImageTreeReport struct {
@@ -86,12 +87,14 @@ func newImageTreeCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("image tree failed: %w", err)
 			}
-			printImageTreeReport(cmd.OutOrStdout(), report, opts)
-			return nil
+			return printReport(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
+				printImageTreeReport(w, report, opts)
+			})
 		},
 	}
 	cmd.Flags().BoolVar(&opts.NoTrunc, "no-trunc", false, "显示完整 layer ID 和构建命令")
 	cmd.Flags().IntVar(&opts.Top, "top", opts.Top, "显示最大的前 N 个 layer，0 表示不显示")
+	addReportFormatFlag(cmd, &opts.Format)
 	return cmd
 }
 

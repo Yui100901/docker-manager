@@ -49,6 +49,7 @@ type RegistryLoginCheckOptions struct {
 	DockerConfig string
 	PlainHTTP    bool
 	Timeout      time.Duration
+	ReportFormatOptions
 }
 
 type RegistryLoginCheckReport struct {
@@ -116,13 +117,15 @@ func newRegistryLoginCheckCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("registry login check failed: %w", err)
 			}
-			printRegistryLoginCheckReport(cmd.OutOrStdout(), report)
-			return nil
+			return printReport(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
+				printRegistryLoginCheckReport(w, report)
+			})
 		},
 	}
 	cmd.Flags().StringVar(&opts.DockerConfig, "docker-config", "", "Docker config.json 路径，默认使用 DOCKER_CONFIG/config.json 或 ~/.docker/config.json")
 	cmd.Flags().BoolVar(&opts.PlainHTTP, "plain-http", false, "使用 http:// 访问 registry /v2/，用于未启用 TLS 的内网 registry")
 	cmd.Flags().DurationVar(&opts.Timeout, "timeout", opts.Timeout, "registry 连通性检查超时时间")
+	addReportFormatFlag(cmd, &opts.Format)
 	return cmd
 }
 

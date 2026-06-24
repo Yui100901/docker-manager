@@ -42,6 +42,7 @@ type dockerPruneService struct {
 
 type PruneReportOptions struct {
 	Apply bool
+	ReportFormatOptions
 }
 
 type PruneReport struct {
@@ -102,11 +103,13 @@ func newPruneReportCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("prune report failed: %w", err)
 			}
-			printPruneReport(cmd.OutOrStdout(), report)
-			return nil
+			return printReport(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
+				printPruneReport(w, report)
+			})
 		},
 	}
 	cmd.Flags().BoolVar(&opts.Apply, "apply", false, "根据报告执行清理")
+	addReportFormatFlag(cmd, &opts.Format)
 	return cmd
 }
 
