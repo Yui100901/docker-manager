@@ -70,6 +70,13 @@ type PullOptions struct {
 	Load      bool
 }
 
+type CommandDefaults struct {
+	Proxy     string
+	TargetOS  string
+	Arch      string
+	OutputDir string
+}
+
 var httpClient *http_utils.HTTPClient
 var loadPulledImage = loadImageTar
 
@@ -81,6 +88,10 @@ func init() {
 }
 
 func NewPullCommand() *cobra.Command {
+	return NewPullCommandWithDefaults(nil)
+}
+
+func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command {
 	var imageNameList []string
 	var targetOS string
 	var arch string
@@ -99,6 +110,7 @@ func NewPullCommand() *cobra.Command {
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
 			defer stop()
 
+			applyCommandDefaults(cmd, defaults, &proxy, &targetOS, &arch, &outputDir)
 			platform.targetOS = targetOS
 			platform.targetArch = arch
 			configureHTTPLogging(verboseHTTP)
@@ -140,6 +152,26 @@ func NewPullCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&load, "load", false, "拉取并打包完成后自动导入 Docker")
 	cmd.Flags().BoolVar(&verboseHTTP, "verbose-http", false, "输出底层 HTTP 请求调试日志")
 	return cmd
+}
+
+func applyCommandDefaults(cmd *cobra.Command, defaults func() CommandDefaults, proxy, targetOS, arch, outputDir *string) {
+	if defaults == nil {
+		return
+	}
+	cfg := defaults()
+	flags := cmd.Flags()
+	if cfg.Proxy != "" && !flags.Changed("proxy") {
+		*proxy = cfg.Proxy
+	}
+	if cfg.TargetOS != "" && !flags.Changed("os") {
+		*targetOS = cfg.TargetOS
+	}
+	if cfg.Arch != "" && !flags.Changed("arch") {
+		*arch = cfg.Arch
+	}
+	if cfg.OutputDir != "" && !flags.Changed("output-dir") {
+		*outputDir = cfg.OutputDir
+	}
 }
 
 func getImage(imageName string, opts PullOptions) error {

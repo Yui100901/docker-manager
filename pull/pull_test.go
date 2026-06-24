@@ -325,6 +325,23 @@ func TestPullCommandReturnsInvalidProxyError(t *testing.T) {
 	}
 }
 
+func TestPullCommandUsesConfiguredDefaultProxy(t *testing.T) {
+	cmd := NewPullCommandWithDefaults(func() CommandDefaults {
+		return CommandDefaults{Proxy: "127.0.0.1:7890"}
+	})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"busybox:latest"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want invalid configured proxy error")
+	}
+	if !strings.Contains(err.Error(), "代理失败") {
+		t.Fatalf("Execute() error = %q, want proxy error", err.Error())
+	}
+}
+
 func TestPullCommandRejectsOutputWithMultipleImages(t *testing.T) {
 	cmd := NewPullCommand()
 	cmd.SetOut(io.Discard)
