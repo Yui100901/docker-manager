@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"docker-manager/docker"
+
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
@@ -23,7 +25,7 @@ type healthDockerService interface {
 }
 
 var newHealthDockerService = func() (healthDockerService, error) {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	cli, err := docker.NewClient()
 	if err != nil {
 		return nil, err
 	}

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"docker-manager/docker"
+
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 	"github.com/spf13/cobra"
@@ -21,7 +23,7 @@ type logsScanDockerService interface {
 }
 
 var newLogsScanDockerService = func() (logsScanDockerService, error) {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	cli, err := docker.NewClient()
 	if err != nil {
 		return nil, err
 	}

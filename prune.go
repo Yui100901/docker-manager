@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"docker-manager/docker"
+
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/build"
 	"github.com/docker/docker/api/types/container"
@@ -27,7 +29,7 @@ type pruneDockerService interface {
 }
 
 var newPruneDockerService = func() (pruneDockerService, error) {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	cli, err := docker.NewClient()
 	if err != nil {
 		return nil, err
 	}

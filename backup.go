@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"docker-manager/docker"
 	"docker-manager/reverse"
 
 	"github.com/docker/docker/api/types/container"
@@ -50,7 +51,7 @@ type backupDockerService interface {
 }
 
 var newBackupDockerService = func() (backupDockerService, error) {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	cli, err := docker.NewClient()
 	if err != nil {
 		return nil, err
 	}

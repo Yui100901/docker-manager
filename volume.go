@@ -6,6 +6,8 @@ import (
 	"io"
 	"sort"
 
+	"docker-manager/docker"
+
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/volume"
@@ -19,7 +21,7 @@ type volumeDockerService interface {
 }
 
 var newVolumeDockerService = func() (volumeDockerService, error) {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	cli, err := docker.NewClient()
 	if err != nil {
 		return nil, err
 	}

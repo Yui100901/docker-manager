@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"docker-manager/docker"
+
 	imageapi "github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
 	"github.com/spf13/cobra"
@@ -19,7 +21,7 @@ type imageTreeDockerService interface {
 }
 
 var newImageTreeDockerService = func() (imageTreeDockerService, error) {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	cli, err := docker.NewClient()
 	if err != nil {
 		return nil, err
 	}

@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"docker-manager/docker"
+
 	"github.com/docker/docker/api/types/registry"
 	"github.com/docker/docker/client"
 	"github.com/spf13/cobra"
@@ -25,7 +27,7 @@ type registryLoginDockerService interface {
 }
 
 var newRegistryLoginDockerService = func() (registryLoginDockerService, error) {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	cli, err := docker.NewClient()
 	if err != nil {
 		return nil, err
 	}
