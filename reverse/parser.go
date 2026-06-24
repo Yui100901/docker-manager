@@ -199,13 +199,13 @@ func (p *Parser) parseDevices() []string {
 }
 
 func formatDevice(hostPath, containerPath, permissions string) string {
-	if containerPath == "" || containerPath == hostPath {
-		if permissions == "" {
-			return hostPath
-		}
-		return fmt.Sprintf("%s:%s", hostPath, permissions)
+	if containerPath == "" {
+		containerPath = hostPath
 	}
 	if permissions == "" {
+		if containerPath == hostPath {
+			return hostPath
+		}
 		return fmt.Sprintf("%s:%s", hostPath, containerPath)
 	}
 	return fmt.Sprintf("%s:%s:%s", hostPath, containerPath, permissions)

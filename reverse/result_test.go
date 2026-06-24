@@ -5,6 +5,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/docker/docker/api/types/container"
+	units "github.com/docker/go-units"
 )
 
 func TestShellQuote(t *testing.T) {
@@ -180,6 +183,51 @@ func TestCommandFormatterIncludesDevicesAndUlimits(t *testing.T) {
 	want := "docker run -d --name demo --device /dev/fuse:/dev/fuse:rwm --ulimit nofile=1024:2048 --ulimit nproc=256:512 --__SPLIT__ busybox:latest"
 	if got != want {
 		t.Fatalf("CommandFormatter devices and ulimits = %q, want %q", got, want)
+	}
+}
+
+func TestParserToSpecIncludesDeviceUlimitAndLoggingFields(t *testing.T) {
+	spec := NewParser(container.InspectResponse{
+		ContainerJSONBase: &container.ContainerJSONBase{
+			Name: "/demo",
+			HostConfig: &container.HostConfig{
+				LogConfig: container.LogConfig{
+					Type: "json-file",
+					Config: map[string]string{
+						"max-file": "3",
+						"max-size": "10m",
+					},
+				},
+				Resources: container.Resources{
+					Devices: []container.DeviceMapping{
+						{
+							PathOnHost:        "/dev/fuse",
+							PathInContainer:   "/dev/fuse",
+							CgroupPermissions: "rwm",
+						},
+					},
+					Ulimits: []*units.Ulimit{
+						{Name: "nofile", Soft: 1024, Hard: 2048},
+					},
+				},
+			},
+		},
+		Config: &container.Config{
+			Image: "busybox:latest",
+		},
+	}, ReverseOptions{}).ToSpec()
+
+	if len(spec.Devices) != 1 || spec.Devices[0] != "/dev/fuse:/dev/fuse:rwm" {
+		t.Fatalf("Devices = %#v, want /dev/fuse:/dev/fuse:rwm", spec.Devices)
+	}
+	if spec.Ulimits["nofile"].Soft != 1024 || spec.Ulimits["nofile"].Hard != 2048 {
+		t.Fatalf("Ulimits = %#v, want nofile soft=1024 hard=2048", spec.Ulimits)
+	}
+	if spec.LogDriver != "json-file" {
+		t.Fatalf("LogDriver = %q, want json-file", spec.LogDriver)
+	}
+	if spec.LogOptions["max-size"] != "10m" || spec.LogOptions["max-file"] != "3" {
+		t.Fatalf("LogOptions = %#v, want max-size=10m and max-file=3", spec.LogOptions)
 	}
 }
 
