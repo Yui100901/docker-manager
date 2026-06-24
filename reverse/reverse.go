@@ -78,6 +78,9 @@ func NewReverseCommand() *cobra.Command {
 			return nil
 		},
 		ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+			if err := ensureContainerManager(); err != nil {
+				return nil, cobra.ShellCompDirectiveError
+			}
 			containers, err := containerManager.ListAll()
 			if err != nil {
 				return nil, cobra.ShellCompDirectiveError
