@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -67,20 +68,54 @@ func newSaveCommand() *cobra.Command {
 }
 
 func loadImages(path string) error {
-	fileData, err := file_utils.NewFileData(path)
+	archives, err := findDockerImageArchives(path)
 	if err != nil {
 		return err
 	}
-	files, _, err := file_utils.TraverseDirFiles(fileData.AbsPath, true)
-	if err != nil {
-		return err
-	}
-	for _, file := range files {
-		if err := imageManager.Load(file.Path); err != nil {
+	for _, archive := range archives {
+		if err := imageManager.Load(archive); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func findDockerImageArchives(path string) ([]string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		if isDockerImageArchive(path) {
+			return []string{path}, nil
+		}
+		log.Printf("Skip non-image archive: %s", path)
+		return nil, nil
+	}
+
+	var archives []string
+	err = filepath.WalkDir(path, func(filePath string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if !isDockerImageArchive(filePath) {
+			log.Printf("Skip non-image archive: %s", filePath)
+			return nil
+		}
+		archives = append(archives, filePath)
+		return nil
+	})
+	return archives, err
+}
+
+func isDockerImageArchive(path string) bool {
+	name := strings.ToLower(filepath.Base(path))
+	return strings.HasSuffix(name, ".tar") ||
+		strings.HasSuffix(name, ".tar.gz") ||
+		strings.HasSuffix(name, ".tgz")
 }
 
 func saveImages(path string, merge bool, all bool) error {

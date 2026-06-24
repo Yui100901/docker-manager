@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -12,6 +13,7 @@ type fakeImageManager struct {
 	images    []image.Summary
 	saveErrs  map[string]error
 	saveCalls []saveCall
+	loadCalls []string
 }
 
 type saveCall struct {
@@ -35,6 +37,7 @@ func (m *fakeImageManager) Save(images []string, outputFile string) error {
 }
 
 func (m *fakeImageManager) Load(inputFile string) error {
+	m.loadCalls = append(m.loadCalls, inputFile)
 	return nil
 }
 
@@ -89,5 +92,84 @@ func TestSaveImagesReturnsExportErrors(t *testing.T) {
 	}
 	if len(manager.saveCalls) != 2 {
 		t.Fatalf("Save called %d times, want 2", len(manager.saveCalls))
+	}
+}
+
+func TestIsDockerImageArchive(t *testing.T) {
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{path: "image.tar", want: true},
+		{path: "image.TAR", want: true},
+		{path: "image.tar.gz", want: true},
+		{path: "image.tgz", want: true},
+		{path: "image.zip", want: false},
+		{path: "README.md", want: false},
+		{path: "tar.txt", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			if got := isDockerImageArchive(tt.path); got != tt.want {
+				t.Fatalf("isDockerImageArchive(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadImagesSkipsNonImageArchives(t *testing.T) {
+	dir := t.TempDir()
+	files := []string{
+		"image.tar",
+		"nested/image.tar.gz",
+		"nested/image.tgz",
+		"README.md",
+		"nested/image.zip",
+	}
+	for _, name := range files {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatalf("MkdirAll() error = %v", err)
+		}
+		if err := os.WriteFile(path, []byte("test"), 0644); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+	}
+
+	manager := &fakeImageManager{}
+	withFakeImageManager(t, manager)
+
+	if err := loadImages(dir); err != nil {
+		t.Fatalf("loadImages() error = %v", err)
+	}
+
+	if len(manager.loadCalls) != 3 {
+		t.Fatalf("Load called %d times, want 3: %v", len(manager.loadCalls), manager.loadCalls)
+	}
+	for _, loaded := range manager.loadCalls {
+		if !isDockerImageArchive(loaded) {
+			t.Fatalf("loaded non-image archive %q", loaded)
+		}
+	}
+}
+
+func TestLoadImagesSupportsSingleArchiveFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "image.tar")
+	if err := os.WriteFile(path, []byte("test"), 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	manager := &fakeImageManager{}
+	withFakeImageManager(t, manager)
+
+	if err := loadImages(path); err != nil {
+		t.Fatalf("loadImages() error = %v", err)
+	}
+	if len(manager.loadCalls) != 1 {
+		t.Fatalf("Load called %d times, want 1", len(manager.loadCalls))
+	}
+	if manager.loadCalls[0] != path {
+		t.Fatalf("Load called with %q, want %q", manager.loadCalls[0], path)
 	}
 }
