@@ -2,8 +2,12 @@ package pull
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	digest "github.com/opencontainers/go-digest"
 )
 
 // 测试parseImageInfo函数，验证不同格式的镜像字符串是否被正确解析为Registry、Repository、Image、Tag和Digest等字段。
@@ -242,5 +246,60 @@ func TestProxyFuncFromSettingRespectsNoProxy(t *testing.T) {
 	}
 	if got != nil {
 		t.Fatalf("proxy = %v, want nil", got)
+	}
+}
+
+func TestVerifyFileDigest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "layer.tar.gz")
+	content := []byte("layer-content")
+	if err := os.WriteFile(path, content, 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	if err := verifyFileDigest(path, digest.FromBytes(content)); err != nil {
+		t.Fatalf("verifyFileDigest() error = %v", err)
+	}
+	if err := verifyFileDigest(path, digest.FromBytes([]byte("other-content"))); err == nil {
+		t.Fatal("verifyFileDigest() error = nil, want mismatch error")
+	}
+}
+
+func TestResolveOutputFile(t *testing.T) {
+	info := &ImageInfo{
+		Repository: "library",
+		Image:      "nginx",
+		Tag:        "latest",
+	}
+
+	got, err := resolveOutputFile(info, PullOptions{OutputDir: "dist"})
+	if err != nil {
+		t.Fatalf("resolveOutputFile() error = %v", err)
+	}
+	want := filepath.Join("dist", "library_nginx_latest.tar")
+	if got != want {
+		t.Fatalf("resolveOutputFile() = %q, want %q", got, want)
+	}
+
+	got, err = resolveOutputFile(info, PullOptions{Output: filepath.Join("out", "nginx.tar"), OutputDir: "dist"})
+	if err != nil {
+		t.Fatalf("resolveOutputFile() error = %v", err)
+	}
+	want = filepath.Join("out", "nginx.tar")
+	if got != want {
+		t.Fatalf("resolveOutputFile() = %q, want %q", got, want)
+	}
+}
+
+func TestDefaultOutputFileNameSanitizesTag(t *testing.T) {
+	info := &ImageInfo{
+		Repository: "team",
+		Image:      "app",
+		Tag:        "feature/test",
+	}
+
+	got := defaultOutputFileName(info)
+	want := "team_app_feature_test.tar"
+	if got != want {
+		t.Fatalf("defaultOutputFileName() = %q, want %q", got, want)
 	}
 }

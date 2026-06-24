@@ -4,11 +4,13 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 
 	"github.com/Yui100901/MyGo/file_utils"
 	"github.com/Yui100901/MyGo/network/http_utils"
 	"github.com/Yui100901/MyGo/struct_utils"
 	"github.com/distribution/reference"
+	digest "github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
@@ -55,6 +57,11 @@ type ImageInfo struct {
 	Digest     string
 }
 
+type PullOptions struct {
+	Output    string
+	OutputDir string
+}
+
 var httpClient *http_utils.HTTPClient
 
 func init() {
@@ -68,6 +75,8 @@ func NewPullCommand() *cobra.Command {
 	var targetOS string
 	var arch string
 	var proxy string
+	var output string
+	var outputDir string
 	cmd := &cobra.Command{
 		Use:   "pull <images...>",
 		Short: "无需docker客户端，下载docker镜像",
@@ -81,19 +90,29 @@ func NewPullCommand() *cobra.Command {
 				log.Printf("配置代理失败: %v", err)
 				return
 			}
+			if output != "" && len(args) > 1 {
+				log.Printf("--output 只能在拉取单个镜像时使用，请改用 --output-dir")
+				return
+			}
 			imageNameList = args
+			opts := PullOptions{
+				Output:    output,
+				OutputDir: outputDir,
+			}
 			for _, imageName := range imageNameList {
-				getImage(imageName)
+				getImage(imageName, opts)
 			}
 		},
 	}
 	cmd.Flags().StringVarP(&targetOS, "os", "", "linux", "目标操作系统")
 	cmd.Flags().StringVarP(&arch, "arch", "a", "amd64", "目标架构")
 	cmd.Flags().StringVar(&proxy, "proxy", "", "强制指定 HTTP 代理，例如 http://127.0.0.1:7890；为空时使用环境变量代理")
+	cmd.Flags().StringVarP(&output, "output", "o", "", "输出 tar 文件路径，仅支持单个镜像")
+	cmd.Flags().StringVar(&outputDir, "output-dir", ".", "输出 tar 文件目录")
 	return cmd
 }
 
-func getImage(imageName string) {
+func getImage(imageName string, opts PullOptions) {
 	imageInfo, err := parseImageInfo(imageName)
 	if err != nil {
 		log.Printf("镜像名称解析失败 %s: %v", imageName, err)
@@ -143,7 +162,12 @@ func getImage(imageName string) {
 		return
 	}
 
-	outputFile, err := packageImage(tempDir, imageInfo)
+	outputFile, err := resolveOutputFile(imageInfo, opts)
+	if err != nil {
+		log.Printf("%s\n解析输出路径失败: %v", imageName, err)
+		return
+	}
+	err = packageImage(tempDir, outputFile)
 	if err != nil {
 		log.Printf("%s\n打包镜像失败: %v", imageName, err)
 		return
@@ -368,6 +392,9 @@ func downloadLayer(info *ImageInfo, layer ocispec.Descriptor, token, tempDir str
 	if err := saveWithRetry(layerURL, headers, nil, gzPath); err != nil {
 		return fmt.Errorf("下载层失败: %w", err)
 	}
+	if err := verifyFileDigest(gzPath, layer.Digest); err != nil {
+		return fmt.Errorf("校验层 digest 失败: %w", err)
+	}
 
 	// 解压文件
 	if err := file_utils.DecompressGzip(gzPath, filepath.Join(layerDir, "layer.tar")); err != nil {
@@ -438,14 +465,83 @@ func getLayerPaths(layers []ocispec.Descriptor) []string {
 	return paths
 }
 
-func packageImage(tempDir string, info *ImageInfo) (string, error) {
-	name := strings.ReplaceAll(imagePath(info), "/", "_")
-	outputFile := fmt.Sprintf("%s_%s.tar", name, info.Tag)
-	return outputFile, file_utils.CreateTarArchive(tempDir, outputFile)
+func packageImage(tempDir, outputFile string) error {
+	if err := os.MkdirAll(filepath.Dir(outputFile), 0755); err != nil {
+		return fmt.Errorf("创建输出目录失败: %w", err)
+	}
+	return file_utils.CreateTarArchive(tempDir, outputFile)
 }
 
 func sha256Hash(input string) string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(input)))
+}
+
+func verifyFileDigest(path string, expected digest.Digest) error {
+	if expected == "" {
+		return nil
+	}
+	if err := expected.Validate(); err != nil {
+		return err
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if cerr := file.Close(); cerr != nil {
+			log.Printf("警告: 关闭文件 %s 失败: %v", path, cerr)
+		}
+	}()
+
+	verifier := expected.Verifier()
+	if _, err := io.Copy(verifier, file); err != nil {
+		return err
+	}
+	if !verifier.Verified() {
+		return fmt.Errorf("digest mismatch for %s: expected %s", path, expected)
+	}
+	return nil
+}
+
+func resolveOutputFile(info *ImageInfo, opts PullOptions) (string, error) {
+	if opts.Output != "" {
+		return opts.Output, nil
+	}
+
+	outputDir := opts.OutputDir
+	if outputDir == "" {
+		outputDir = "."
+	}
+	return filepath.Join(outputDir, defaultOutputFileName(info)), nil
+}
+
+func defaultOutputFileName(info *ImageInfo) string {
+	name := strings.ReplaceAll(imagePath(info), "/", "_")
+	tag := sanitizeOutputName(info.Tag)
+	if tag == "" {
+		tag = "latest"
+	}
+	return fmt.Sprintf("%s_%s.tar", name, tag)
+}
+
+func sanitizeOutputName(name string) string {
+	var sb strings.Builder
+	for _, r := range name {
+		if r >= 'a' && r <= 'z' ||
+			r >= 'A' && r <= 'Z' ||
+			r >= '0' && r <= '9' {
+			sb.WriteRune(r)
+			continue
+		}
+		switch r {
+		case '.', '-', '_':
+			sb.WriteRune(r)
+		default:
+			sb.WriteRune('_')
+		}
+	}
+	return sb.String()
 }
 
 func proxyFuncFromSetting(proxy string) (func(*http.Request) (*url.URL, error), error) {
