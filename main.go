@@ -64,6 +64,7 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 	rootCmd.AddCommand(newInspectDiffCommand())
 	rootCmd.AddCommand(newImageCommand())
 	rootCmd.AddCommand(newVolumeCommand())
+	rootCmd.AddCommand(newLogsScanCommand())
 	rootCmd.AddCommand(reverse.NewReverseCommand())
 	rootCmd.AddCommand(pull.NewPullCommandWithDefaults(func() pull.CommandDefaults {
 		return pull.CommandDefaults{

@@ -1,0 +1,354 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/client"
+	"github.com/spf13/cobra"
+)
+
+type logsScanDockerService interface {
+	ListContainers(ctx context.Context, all bool) ([]container.Summary, error)
+	InspectContainer(ctx context.Context, id string) (container.InspectResponse, error)
+	ContainerLogs(ctx context.Context, id string, options container.LogsOptions) (io.ReadCloser, error)
+}
+
+var newLogsScanDockerService = func() (logsScanDockerService, error) {
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err != nil {
+		return nil, err
+	}
+	return &dockerLogsScanService{cli: cli}, nil
+}
+
+type dockerLogsScanService struct {
+	cli *client.Client
+}
+
+type LogsScanOptions struct {
+	All         bool
+	RunningOnly bool
+	Tail        int
+	Context     int
+	Since       string
+	Keywords    []string
+}
+
+type LogsScanReport struct {
+	GeneratedAt string              `json:"generated_at"`
+	Keywords    []string            `json:"keywords"`
+	Containers  []LogsScanContainer `json:"containers"`
+	Summary     LogsScanSummary     `json:"summary"`
+}
+
+type LogsScanSummary struct {
+	ScannedContainers int `json:"scanned_containers"`
+	ContainersMatched int `json:"containers_matched"`
+	TotalMatches      int `json:"total_matches"`
+	Errors            int `json:"errors"`
+}
+
+type LogsScanContainer struct {
+	ID      string         `json:"id"`
+	Name    string         `json:"name"`
+	Image   string         `json:"image,omitempty"`
+	State   string         `json:"state,omitempty"`
+	Error   string         `json:"error,omitempty"`
+	Matches []LogScanMatch `json:"matches,omitempty"`
+}
+
+type LogScanMatch struct {
+	LineNumber int      `json:"line_number"`
+	Line       string   `json:"line"`
+	Keywords   []string `json:"keywords"`
+	Before     []string `json:"before,omitempty"`
+	After      []string `json:"after,omitempty"`
+}
+
+func newLogsScanCommand() *cobra.Command {
+	opts := LogsScanOptions{
+		Tail:     500,
+		Context:  0,
+		Keywords: []string{"error", "panic", "exception", "fatal", "oom", "killed"},
+	}
+	cmd := &cobra.Command{
+		Use:   "logs-scan [container...]",
+		Short: "扫描容器最近日志中的错误关键词",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateLogsScanArgs(args, opts); err != nil {
+				return err
+			}
+			report, err := runLogsScan(cmd.Context(), args, opts)
+			if err != nil {
+				return fmt.Errorf("logs scan failed: %w", err)
+			}
+			printLogsScanReport(cmd.OutOrStdout(), report)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&opts.All, "all", false, "扫描所有容器")
+	cmd.Flags().BoolVar(&opts.RunningOnly, "running-only", false, "扫描所有正在运行的容器")
+	cmd.Flags().IntVar(&opts.Tail, "tail", opts.Tail, "每个容器扫描最近日志行数，-1 表示全部")
+	cmd.Flags().IntVar(&opts.Context, "context", opts.Context, "命中日志前后各输出多少行上下文")
+	cmd.Flags().StringVar(&opts.Since, "since", "", "只扫描该时间之后的日志，例如 30m、2h 或 RFC3339 时间")
+	cmd.Flags().StringArrayVar(&opts.Keywords, "keyword", opts.Keywords, "日志扫描关键词，可重复指定")
+	return cmd
+}
+
+func validateLogsScanArgs(args []string, opts LogsScanOptions) error {
+	if opts.All && opts.RunningOnly {
+		return fmt.Errorf("不能同时指定 --all 和 --running-only")
+	}
+	if len(args) == 0 && !opts.All && !opts.RunningOnly {
+		return fmt.Errorf("必须指定至少一个容器，或使用 --all/--running-only")
+	}
+	if len(args) > 0 && (opts.All || opts.RunningOnly) {
+		return fmt.Errorf("不能同时指定容器名称和 --all/--running-only")
+	}
+	if opts.Context < 0 {
+		return fmt.Errorf("--context 不能小于 0")
+	}
+	if opts.Tail == 0 || opts.Tail < -1 {
+		return fmt.Errorf("--tail 必须为正数，或使用 -1 表示全部")
+	}
+	return nil
+}
+
+func runLogsScan(ctx context.Context, args []string, opts LogsScanOptions) (LogsScanReport, error) {
+	svc, err := newLogsScanDockerService()
+	if err != nil {
+		return LogsScanReport{}, err
+	}
+	targets, err := logsScanTargets(ctx, svc, args, opts)
+	if err != nil {
+		return LogsScanReport{}, err
+	}
+	return buildLogsScanReport(ctx, svc, targets, opts), nil
+}
+
+func logsScanTargets(ctx context.Context, svc logsScanDockerService, args []string, opts LogsScanOptions) ([]container.Summary, error) {
+	if len(args) > 0 {
+		targets := make([]container.Summary, 0, len(args))
+		for _, arg := range args {
+			targets = append(targets, container.Summary{ID: arg, Names: []string{"/" + arg}})
+		}
+		return targets, nil
+	}
+	containers, err := svc.ListContainers(ctx, opts.All)
+	if err != nil {
+		return nil, err
+	}
+	if opts.RunningOnly {
+		var running []container.Summary
+		for _, c := range containers {
+			if c.State == "running" {
+				running = append(running, c)
+			}
+		}
+		containers = running
+	}
+	sort.Slice(containers, func(i, j int) bool {
+		return firstContainerName(containers[i].Names) < firstContainerName(containers[j].Names)
+	})
+	return containers, nil
+}
+
+func buildLogsScanReport(ctx context.Context, svc logsScanDockerService, targets []container.Summary, opts LogsScanOptions) LogsScanReport {
+	keywords := normalizeKeywords(opts.Keywords)
+	report := LogsScanReport{
+		GeneratedAt: time.Now().Format(time.RFC3339),
+		Keywords:    keywords,
+	}
+	for _, target := range targets {
+		item := LogsScanContainer{
+			ID:    shortID(target.ID),
+			Name:  firstContainerName(target.Names),
+			Image: target.Image,
+			State: string(target.State),
+		}
+		ref := target.ID
+		if ref == "" {
+			ref = item.Name
+		}
+		if item.Name == "" {
+			item.Name = ref
+		}
+		report.Summary.ScannedContainers++
+
+		inspect, err := svc.InspectContainer(ctx, ref)
+		if err != nil {
+			item.Error = fmt.Sprintf("inspect failed: %v", err)
+			report.Summary.Errors++
+			report.Containers = append(report.Containers, item)
+			continue
+		}
+		applyLogsScanInspect(&item, inspect)
+
+		text, err := readContainerLogText(ctx, svc, ref, inspect, opts)
+		if err != nil {
+			item.Error = fmt.Sprintf("read logs failed: %v", err)
+			report.Summary.Errors++
+			report.Containers = append(report.Containers, item)
+			continue
+		}
+		item.Matches = findLogScanMatches(text, keywords, opts.Context)
+		if len(item.Matches) > 0 {
+			report.Summary.ContainersMatched++
+			report.Summary.TotalMatches += len(item.Matches)
+		}
+		report.Containers = append(report.Containers, item)
+	}
+	sortLogsScanReport(&report)
+	return report
+}
+
+func applyLogsScanInspect(item *LogsScanContainer, inspect container.InspectResponse) {
+	if inspect.ContainerJSONBase != nil {
+		if item.ID == "" {
+			item.ID = shortID(inspect.ID)
+		}
+		if name := normalizeContainerName(inspect.Name); name != "" {
+			item.Name = name
+		}
+	}
+	if inspect.Config != nil && item.Image == "" {
+		item.Image = inspect.Config.Image
+	}
+	if inspect.State != nil && inspect.State.Status != "" {
+		item.State = string(inspect.State.Status)
+	}
+}
+
+func readContainerLogText(ctx context.Context, svc logsScanDockerService, id string, inspect container.InspectResponse, opts LogsScanOptions) (string, error) {
+	tailValue := strconv.Itoa(opts.Tail)
+	if opts.Tail < 0 {
+		tailValue = "all"
+	}
+	options := container.LogsOptions{
+		ShowStdout: true,
+		ShowStderr: true,
+		Tail:       tailValue,
+	}
+	if opts.Since != "" {
+		options.Since = normalizeLogsSince(opts.Since)
+	}
+	reader, err := svc.ContainerLogs(ctx, id, options)
+	if err != nil {
+		return "", err
+	}
+	defer reader.Close()
+	return readDockerLogs(reader, inspect.Config != nil && inspect.Config.Tty)
+}
+
+func normalizeLogsSince(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if d, err := time.ParseDuration(value); err == nil {
+		return strconv.FormatInt(time.Now().Add(-d).Unix(), 10)
+	}
+	return value
+}
+
+func findLogScanMatches(text string, keywords []string, contextLines int) []LogScanMatch {
+	lines := splitLogLines(text)
+	var matches []LogScanMatch
+	for i, line := range lines {
+		lower := strings.ToLower(line)
+		var found []string
+		for _, keyword := range keywords {
+			if strings.Contains(lower, keyword) {
+				found = append(found, keyword)
+			}
+		}
+		if len(found) == 0 {
+			continue
+		}
+		match := LogScanMatch{
+			LineNumber: i + 1,
+			Line:       line,
+			Keywords:   found,
+			Before:     surroundingLines(lines, i-contextLines, i),
+			After:      surroundingLines(lines, i+1, i+1+contextLines),
+		}
+		matches = append(matches, match)
+	}
+	return matches
+}
+
+func splitLogLines(text string) []string {
+	var lines []string
+	for _, rawLine := range strings.Split(text, "\n") {
+		line := strings.TrimRight(rawLine, "\r")
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+func surroundingLines(lines []string, start, end int) []string {
+	if start < 0 {
+		start = 0
+	}
+	if end > len(lines) {
+		end = len(lines)
+	}
+	if start >= end {
+		return nil
+	}
+	return append([]string(nil), lines[start:end]...)
+}
+
+func printLogsScanReport(w io.Writer, report LogsScanReport) {
+	fmt.Fprintf(w, "Docker logs scan (%s)\n", report.GeneratedAt)
+	fmt.Fprintf(w, "Keywords: %s\n", strings.Join(report.Keywords, ", "))
+	fmt.Fprintf(w, "Summary: scanned=%d matched_containers=%d matches=%d errors=%d\n\n", report.Summary.ScannedContainers, report.Summary.ContainersMatched, report.Summary.TotalMatches, report.Summary.Errors)
+
+	for _, c := range report.Containers {
+		status := fmt.Sprintf("matches=%d", len(c.Matches))
+		if c.Error != "" {
+			status += " error=" + c.Error
+		}
+		fmt.Fprintf(w, "%s state=%s image=%s %s\n", c.Name, c.State, c.Image, status)
+		for _, match := range c.Matches {
+			for _, before := range match.Before {
+				fmt.Fprintf(w, "    | %s\n", before)
+			}
+			fmt.Fprintf(w, "  > line %d [%s] %s\n", match.LineNumber, strings.Join(match.Keywords, ","), match.Line)
+			for _, after := range match.After {
+				fmt.Fprintf(w, "    | %s\n", after)
+			}
+		}
+	}
+	if len(report.Containers) == 0 {
+		fmt.Fprintln(w, "No containers scanned.")
+	}
+}
+
+func sortLogsScanReport(report *LogsScanReport) {
+	sort.Slice(report.Containers, func(i, j int) bool {
+		return report.Containers[i].Name < report.Containers[j].Name
+	})
+}
+
+func (s *dockerLogsScanService) ListContainers(ctx context.Context, all bool) ([]container.Summary, error) {
+	return s.cli.ContainerList(ctx, container.ListOptions{All: all})
+}
+
+func (s *dockerLogsScanService) InspectContainer(ctx context.Context, id string) (container.InspectResponse, error) {
+	return s.cli.ContainerInspect(ctx, id)
+}
+
+func (s *dockerLogsScanService) ContainerLogs(ctx context.Context, id string, options container.LogsOptions) (io.ReadCloser, error) {
+	return s.cli.ContainerLogs(ctx, id, options)
+}
