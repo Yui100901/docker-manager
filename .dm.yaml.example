@@ -1,0 +1,12 @@
+# docker-manager default config
+#
+# Copy this file to .dm.yaml and adjust values as needed.
+
+# proxy: http://127.0.0.1:7890
+os: linux
+arch: amd64
+output_dir: images
+
+verbose: false
+quiet: false
+json: false
