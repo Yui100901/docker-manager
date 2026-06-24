@@ -19,6 +19,10 @@ type ImageManager struct {
 	cli *client.Client
 }
 
+type readOnlyReader struct {
+	io.Reader
+}
+
 // NewImageManager 构造函数
 func NewImageManager() (*ImageManager, error) {
 	cli, err := initDockerClient()
@@ -75,7 +79,7 @@ func (im *ImageManager) Load(inputFile string) error {
 		}
 	}()
 
-	resp, err := im.cli.ImageLoad(ctx, file, client.ImageLoadWithQuiet(false))
+	resp, err := im.cli.ImageLoad(ctx, readOnlyReader{Reader: file}, client.ImageLoadWithQuiet(false))
 	if err != nil {
 		return err
 	}
