@@ -58,6 +58,7 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 	rootCmd.AddCommand(newSaveCommandWithDefaults(func() string { return cfg.OutputDir }))
 	rootCmd.AddCommand(newBackupCommand())
 	rootCmd.AddCommand(newRestoreCommand())
+	rootCmd.AddCommand(newPruneReportCommand())
 	rootCmd.AddCommand(reverse.NewReverseCommand())
 	rootCmd.AddCommand(pull.NewPullCommandWithDefaults(func() pull.CommandDefaults {
 		return pull.CommandDefaults{
