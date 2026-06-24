@@ -115,10 +115,49 @@ func TestMergePortRanges(t *testing.T) {
 	}
 }
 
+func TestCommandFormatterIncludesLabels(t *testing.T) {
+	cmd := CommandFormatter{}.Format(&ContainerSpec{
+		Image:         "busybox:latest",
+		ContainerName: "demo",
+		Labels: map[string]string{
+			"com.example.role": "worker node",
+			"owner":            "team-a",
+		},
+	}, ReverseOptions{})
+
+	got := strings.Join(cmd, " ")
+	want := "docker run -d --name demo --label com.example.role=worker node --label owner=team-a --__SPLIT__ busybox:latest"
+	if got != want {
+		t.Fatalf("CommandFormatter labels = %q, want %q", got, want)
+	}
+}
+
+func TestCommandFormatterIncludesNetworkResolution(t *testing.T) {
+	cmd := CommandFormatter{}.Format(&ContainerSpec{
+		Image:         "busybox:latest",
+		ContainerName: "demo",
+		DNS:           []string{"1.1.1.1", "8.8.8.8"},
+		DNSSearch:     []string{"svc.local"},
+		ExtraHosts:    []string{"api.local:10.0.0.8"},
+	}, ReverseOptions{})
+
+	got := strings.Join(cmd, " ")
+	want := "docker run -d --name demo --dns 1.1.1.1 --dns 8.8.8.8 --dns-search svc.local --add-host api.local:10.0.0.8 --__SPLIT__ busybox:latest"
+	if got != want {
+		t.Fatalf("CommandFormatter network resolution = %q, want %q", got, want)
+	}
+}
+
 func TestComposeFormatterFormat(t *testing.T) {
 	service := ComposeFormatter{}.Format(&ContainerSpec{
 		Image:         "busybox:latest",
 		ContainerName: "demo",
+		Labels: map[string]string{
+			"com.example.role": "worker",
+		},
+		DNS:           []string{"1.1.1.1"},
+		DNSSearch:     []string{"svc.local"},
+		ExtraHosts:    []string{"api.local:10.0.0.8"},
 		RestartPolicy: "on-failure:3",
 		Envs:          []string{"GREETING=hello"},
 		Mounts:        []string{"/tmp:/host_tmp:ro"},
@@ -140,5 +179,17 @@ func TestComposeFormatterFormat(t *testing.T) {
 	}
 	if len(service.Command) != 3 || service.Command[2] != "sleep 300" {
 		t.Fatalf("Command = %#v, want shell command", service.Command)
+	}
+	if service.Labels["com.example.role"] != "worker" {
+		t.Fatalf("Labels = %#v, want com.example.role=worker", service.Labels)
+	}
+	if len(service.DNS) != 1 || service.DNS[0] != "1.1.1.1" {
+		t.Fatalf("DNS = %#v, want 1.1.1.1", service.DNS)
+	}
+	if len(service.DNSSearch) != 1 || service.DNSSearch[0] != "svc.local" {
+		t.Fatalf("DNSSearch = %#v, want svc.local", service.DNSSearch)
+	}
+	if len(service.ExtraHosts) != 1 || service.ExtraHosts[0] != "api.local:10.0.0.8" {
+		t.Fatalf("ExtraHosts = %#v, want api.local:10.0.0.8", service.ExtraHosts)
 	}
 }

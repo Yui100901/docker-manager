@@ -13,6 +13,10 @@ import (
 type ContainerSpec struct {
 	Image           string
 	ContainerName   string
+	Labels          map[string]string
+	DNS             []string
+	DNSSearch       []string
+	ExtraHosts      []string
 	Privileged      bool
 	PublishAllPorts bool
 	AutoRemove      bool
@@ -55,6 +59,10 @@ func (p *Parser) ToSpec() *ContainerSpec {
 	return &ContainerSpec{
 		Image:           p.ci.Config.Image,
 		ContainerName:   strings.TrimPrefix(p.ci.Name, "/"),
+		Labels:          copyStringMap(p.ci.Config.Labels),
+		DNS:             copyStringSlice(p.ci.HostConfig.DNS),
+		DNSSearch:       copyStringSlice(p.ci.HostConfig.DNSSearch),
+		ExtraHosts:      copyStringSlice(p.ci.HostConfig.ExtraHosts),
 		Privileged:      p.ci.HostConfig.Privileged,
 		PublishAllPorts: p.ci.HostConfig.PublishAllPorts,
 		AutoRemove:      p.ci.HostConfig.AutoRemove,
@@ -199,6 +207,18 @@ func (f CommandFormatter) Format(spec *ContainerSpec, opts ReverseOptions) []str
 	if spec.NetworkMode != "" && spec.NetworkMode != "default" {
 		add("--network", spec.NetworkMode)
 	}
+	for _, label := range formatLabels(spec.Labels) {
+		add("--label", label)
+	}
+	for _, dns := range spec.DNS {
+		add("--dns", dns)
+	}
+	for _, search := range spec.DNSSearch {
+		add("--dns-search", search)
+	}
+	for _, host := range spec.ExtraHosts {
+		add("--add-host", host)
+	}
 	for _, e := range spec.Envs {
 		add("-e", e)
 	}
@@ -312,6 +332,10 @@ func (f ComposeFormatter) Format(spec *ContainerSpec) ComposeService {
 	return ComposeService{
 		Image:         spec.Image,
 		ContainerName: spec.ContainerName,
+		Labels:        spec.Labels,
+		DNS:           spec.DNS,
+		DNSSearch:     spec.DNSSearch,
+		ExtraHosts:    spec.ExtraHosts,
 		Privileged:    spec.Privileged,
 		Restart:       restart,
 		User:          spec.User,
@@ -337,6 +361,41 @@ func (p *Parser) ToResult() ParsedResult {
 		Command: cmdFormatter.Format(spec, p.options),
 		Compose: composeFormatter.Format(spec),
 	}
+}
+
+func copyStringMap(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
+}
+
+func copyStringSlice(src []string) []string {
+	if len(src) == 0 {
+		return nil
+	}
+	return append([]string(nil), src...)
+}
+
+func formatLabels(labels map[string]string) []string {
+	if len(labels) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(labels))
+	for key := range labels {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	result := make([]string, 0, len(keys))
+	for _, key := range keys {
+		result = append(result, fmt.Sprintf("%s=%s", key, labels[key]))
+	}
+	return result
 }
 
 func trimContainerName(name string) string {
