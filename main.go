@@ -61,6 +61,7 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 	rootCmd.AddCommand(newPruneReportCommand())
 	rootCmd.AddCommand(newNetworkCommand())
 	rootCmd.AddCommand(newHealthCommand())
+	rootCmd.AddCommand(newInspectDiffCommand())
 	rootCmd.AddCommand(reverse.NewReverseCommand())
 	rootCmd.AddCommand(pull.NewPullCommandWithDefaults(func() pull.CommandDefaults {
 		return pull.CommandDefaults{
