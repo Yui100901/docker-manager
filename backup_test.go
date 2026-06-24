@@ -140,6 +140,59 @@ func TestBackupContainerWritesBundle(t *testing.T) {
 	}
 }
 
+func TestBackupContainerWritesOfflineBundleArtifacts(t *testing.T) {
+	fake := &fakeBackupDockerService{
+		inspect: container.InspectResponse{
+			ContainerJSONBase: &container.ContainerJSONBase{
+				Name:       "/demo",
+				HostConfig: &container.HostConfig{},
+			},
+			Config: &container.Config{Image: "busybox:latest"},
+		},
+	}
+	restoreFactory := replaceBackupServiceFactory(fake)
+	defer restoreFactory()
+
+	root := t.TempDir()
+	dir := filepath.Join(root, "bundle")
+	archive := filepath.Join(root, "demo-offline.tar.gz")
+	if _, err := backupContainer(context.Background(), "demo", BackupOptions{
+		OutputDir:    dir,
+		IncludeImage: true,
+		Bundle:       true,
+		BundleOutput: archive,
+	}); err != nil {
+		t.Fatalf("backupContainer() error = %v", err)
+	}
+
+	for _, name := range []string{backupReadmeName, backupRestoreName, backupChecksumName} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Fatalf("expected bundle artifact %s: %v", name, err)
+		}
+	}
+	if _, err := os.Stat(archive); err != nil {
+		t.Fatalf("expected archive %s: %v", archive, err)
+	}
+	checksums, err := os.ReadFile(filepath.Join(dir, backupChecksumName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(checksums), backupManifestName) || strings.Contains(string(checksums), backupChecksumName) {
+		t.Fatalf("checksums = %q, want manifest and no checksums self-entry", string(checksums))
+	}
+
+	extracted := filepath.Join(root, "extracted")
+	if err := os.MkdirAll(extracted, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := extractBackupArchive(archive, extracted); err != nil {
+		t.Fatalf("extractBackupArchive() error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(extracted, backupManifestName)); err != nil {
+		t.Fatalf("archive missing manifest: %v", err)
+	}
+}
+
 func TestRestoreBackupRejectsExistingContainerWithoutReplace(t *testing.T) {
 	dir := t.TempDir()
 	writeTestJSON(t, filepath.Join(dir, backupManifestName), BackupManifest{
@@ -169,6 +222,44 @@ func TestRestoreBackupRejectsExistingContainerWithoutReplace(t *testing.T) {
 	}
 	if hasCallPrefix(fake.calls, "create-container:") {
 		t.Fatalf("calls = %#v, create-container should not run", fake.calls)
+	}
+}
+
+func TestRestoreBackupSupportsTarGzArchive(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "bundle")
+	writeTestJSON(t, filepath.Join(dir, backupManifestName), BackupManifest{
+		Version:       1,
+		ContainerName: "demo",
+		InspectFile:   backupInspectName,
+		ComposeFile:   backupComposeName,
+	})
+	writeTestJSON(t, filepath.Join(dir, backupInspectName), container.InspectResponse{
+		ContainerJSONBase: &container.ContainerJSONBase{
+			Name:       "/demo",
+			HostConfig: &container.HostConfig{},
+		},
+		Config: &container.Config{Image: "busybox:latest"},
+	})
+	archive := filepath.Join(root, "bundle.tar.gz")
+	if err := createBackupArchive(dir, archive); err != nil {
+		t.Fatalf("createBackupArchive() error = %v", err)
+	}
+
+	fake := &fakeBackupDockerService{}
+	restoreFactory := replaceBackupServiceFactory(fake)
+	defer restoreFactory()
+
+	if err := restoreBackup(context.Background(), archive, RestoreOptions{NoStart: true}); err != nil {
+		t.Fatalf("restoreBackup() error = %v", err)
+	}
+	for _, want := range []string{"container-exists:demo", "create-container:demo"} {
+		if !hasCall(fake.calls, want) {
+			t.Fatalf("calls = %#v, want %s", fake.calls, want)
+		}
+	}
+	if hasCallPrefix(fake.calls, "start-container:") {
+		t.Fatalf("calls = %#v, start-container should not run with NoStart", fake.calls)
 	}
 }
 
@@ -223,6 +314,12 @@ func TestRestoreBackupReplaceCreatesAndStartsContainer(t *testing.T) {
 		if !hasCall(fake.calls, want) {
 			t.Fatalf("calls = %#v, want %s", fake.calls, want)
 		}
+	}
+}
+
+func TestSafeExtractPathRejectsTraversal(t *testing.T) {
+	if _, err := safeExtractPath(t.TempDir(), "../evil"); err == nil {
+		t.Fatal("safeExtractPath() error = nil, want traversal error")
 	}
 }
 

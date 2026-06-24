@@ -1,7 +1,11 @@
 package main
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -25,6 +29,9 @@ const (
 	backupManifestName = "manifest.json"
 	backupInspectName  = "container.inspect.json"
 	backupComposeName  = "docker-compose.yml"
+	backupReadmeName   = "README.md"
+	backupRestoreName  = "restore.sh"
+	backupChecksumName = "checksums.txt"
 	backupRoot         = "docker-backups"
 )
 
@@ -58,6 +65,8 @@ type BackupOptions struct {
 	OutputDir    string
 	IncludeImage bool
 	DryRun       bool
+	Bundle       bool
+	BundleOutput string
 }
 
 type RestoreOptions struct {
@@ -115,14 +124,16 @@ func newBackupContainerCommand() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&opts.IncludeImage, "include-image", true, "导出容器镜像 tar")
 	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", false, "只预览备份动作，不写入文件")
+	cmd.Flags().BoolVar(&opts.Bundle, "bundle", false, "生成离线迁移包 tar.gz，并附带 README、restore 脚本和 checksums")
+	cmd.Flags().StringVar(&opts.BundleOutput, "output", "", "离线迁移包输出路径，默认 <backup-dir>.tar.gz")
 	return cmd
 }
 
 func newRestoreCommand() *cobra.Command {
 	opts := RestoreOptions{}
 	cmd := &cobra.Command{
-		Use:   "restore <backup-dir>",
-		Short: "从 backup container 生成的目录恢复镜像、网络、volume 和容器",
+		Use:   "restore <backup-dir-or-archive>",
+		Short: "从 backup container 生成的目录或 tar.gz 离线包恢复镜像、网络、volume 和容器",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := restoreBackup(cmd.Context(), args[0], opts); err != nil {
@@ -212,11 +223,33 @@ func backupContainer(ctx context.Context, name string, opts BackupOptions) (stri
 	if err := writeJSONFile(filepath.Join(outputDir, backupManifestName), manifest); err != nil {
 		return "", fmt.Errorf("write manifest: %w", err)
 	}
+	if opts.Bundle {
+		if err := writeBackupBundleArtifacts(outputDir, manifest); err != nil {
+			return "", err
+		}
+		archivePath := opts.BundleOutput
+		if archivePath == "" {
+			archivePath = outputDir + ".tar.gz"
+		}
+		if err := createBackupArchive(outputDir, archivePath); err != nil {
+			return "", err
+		}
+		log.Printf("Backup bundle: %s", archivePath)
+	}
 	log.Printf("Backup summary: container=%s output=%s image=%v networks=%d volumes=%d", containerName, outputDir, manifest.ImageArchive != "", len(manifest.Networks), len(manifest.Volumes))
 	return outputDir, nil
 }
 
 func restoreBackup(ctx context.Context, backupDir string, opts RestoreOptions) error {
+	resolvedDir, cleanup, err := resolveRestoreBackupDir(backupDir)
+	if err != nil {
+		return err
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+	backupDir = resolvedDir
+
 	svc, err := newBackupDockerService()
 	if err != nil {
 		return err
@@ -387,6 +420,264 @@ func writeJSONFile(path string, value interface{}) error {
 		return err
 	}
 	return os.WriteFile(path, append(data, '\n'), 0644)
+}
+
+func writeBackupBundleArtifacts(outputDir string, manifest BackupManifest) error {
+	if err := writeBackupReadme(filepath.Join(outputDir, backupReadmeName), manifest); err != nil {
+		return fmt.Errorf("write readme: %w", err)
+	}
+	if err := writeRestoreScript(filepath.Join(outputDir, backupRestoreName)); err != nil {
+		return fmt.Errorf("write restore script: %w", err)
+	}
+	if err := writeChecksums(outputDir); err != nil {
+		return fmt.Errorf("write checksums: %w", err)
+	}
+	return nil
+}
+
+func writeBackupReadme(path string, manifest BackupManifest) error {
+	var sb strings.Builder
+	sb.WriteString("# docker-manager offline backup\n\n")
+	sb.WriteString("## Contents\n\n")
+	sb.WriteString("- `manifest.json`: backup manifest\n")
+	sb.WriteString("- `container.inspect.json`: Docker inspect JSON\n")
+	sb.WriteString("- `docker-compose.yml`: compose generated from the container\n")
+	if manifest.ImageArchive != "" {
+		sb.WriteString("- `" + manifest.ImageArchive + "`: image archive\n")
+	}
+	if len(manifest.Networks) > 0 {
+		sb.WriteString("- `networks/`: network metadata\n")
+	}
+	if len(manifest.Volumes) > 0 {
+		sb.WriteString("- `volumes/`: volume metadata\n")
+	}
+	sb.WriteString("- `checksums.txt`: SHA256 checksums\n")
+	sb.WriteString("- `restore.sh`: helper restore script\n\n")
+	sb.WriteString("## Restore\n\n")
+	sb.WriteString("```bash\n")
+	sb.WriteString("dm restore .\n")
+	sb.WriteString("# or restore directly from the archive:\n")
+	sb.WriteString("dm restore <backup>.tar.gz\n")
+	sb.WriteString("```\n\n")
+	sb.WriteString("Container: `" + manifest.ContainerName + "`\n\n")
+	if manifest.Image != "" {
+		sb.WriteString("Image: `" + manifest.Image + "`\n\n")
+	}
+	sb.WriteString("Created at: `" + manifest.CreatedAt + "`\n")
+	return os.WriteFile(path, []byte(sb.String()), 0644)
+}
+
+func writeRestoreScript(path string) error {
+	content := "#!/usr/bin/env sh\nset -eu\nDIR=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\ndm restore \"$DIR\" \"$@\"\n"
+	if err := os.WriteFile(path, []byte(content), 0755); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0755)
+}
+
+func writeChecksums(root string) error {
+	var lines []string
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if rel == backupChecksumName {
+			return nil
+		}
+		sum, err := fileSHA256(path)
+		if err != nil {
+			return err
+		}
+		lines = append(lines, fmt.Sprintf("%s  %s", sum, rel))
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	sort.Strings(lines)
+	return os.WriteFile(filepath.Join(root, backupChecksumName), []byte(strings.Join(lines, "\n")+"\n"), 0644)
+}
+
+func fileSHA256(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func createBackupArchive(sourceDir, archivePath string) error {
+	if err := os.MkdirAll(filepath.Dir(archivePath), 0755); err != nil {
+		return err
+	}
+	archiveAbs, _ := filepath.Abs(archivePath)
+	file, err := os.Create(archivePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	gz := gzip.NewWriter(file)
+	defer gz.Close()
+	tw := tar.NewWriter(gz)
+	defer tw.Close()
+
+	return filepath.WalkDir(sourceDir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		pathAbs, _ := filepath.Abs(path)
+		if archiveAbs != "" && pathAbs == archiveAbs {
+			return nil
+		}
+		rel, err := filepath.Rel(sourceDir, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		header, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+		header.Name = filepath.ToSlash(rel)
+		if err := tw.WriteHeader(header); err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		in, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer in.Close()
+		_, err = io.Copy(tw, in)
+		return err
+	})
+}
+
+func resolveRestoreBackupDir(path string) (string, func(), error) {
+	if !isBackupArchive(path) {
+		return path, nil, nil
+	}
+	tempDir, err := os.MkdirTemp("", "dm-restore-*")
+	if err != nil {
+		return "", nil, err
+	}
+	cleanup := func() { _ = os.RemoveAll(tempDir) }
+	if err := extractBackupArchive(path, tempDir); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	root, err := findExtractedBackupRoot(tempDir)
+	if err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	return root, cleanup, nil
+}
+
+func isBackupArchive(path string) bool {
+	lower := strings.ToLower(path)
+	return strings.HasSuffix(lower, ".tar.gz") || strings.HasSuffix(lower, ".tgz")
+}
+
+func extractBackupArchive(archivePath, destDir string) error {
+	file, err := os.Open(archivePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	gz, err := gzip.NewReader(file)
+	if err != nil {
+		return err
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		target, err := safeExtractPath(destDir, header.Name)
+		if err != nil {
+			return err
+		}
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(target, 0755); err != nil {
+				return err
+			}
+		case tar.TypeReg, tar.TypeRegA:
+			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+				return err
+			}
+			out, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(header.Mode))
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(out, tr); err != nil {
+				_ = out.Close()
+				return err
+			}
+			if err := out.Close(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func safeExtractPath(root, name string) (string, error) {
+	clean := filepath.Clean(filepath.FromSlash(name))
+	if clean == "." || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("invalid archive path %q", name)
+	}
+	return filepath.Join(root, clean), nil
+}
+
+func findExtractedBackupRoot(tempDir string) (string, error) {
+	if _, err := os.Stat(filepath.Join(tempDir, backupManifestName)); err == nil {
+		return tempDir, nil
+	}
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		return "", err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		candidate := filepath.Join(tempDir, entry.Name())
+		if _, err := os.Stat(filepath.Join(candidate, backupManifestName)); err == nil {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("archive does not contain %s", backupManifestName)
 }
 
 func readBackupManifest(backupDir string) (BackupManifest, error) {
