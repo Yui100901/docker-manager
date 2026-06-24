@@ -148,6 +148,23 @@ func TestCommandFormatterIncludesNetworkResolution(t *testing.T) {
 	}
 }
 
+func TestCommandFormatterIncludesSecurityOptions(t *testing.T) {
+	cmd := CommandFormatter{}.Format(&ContainerSpec{
+		Image:         "busybox:latest",
+		ContainerName: "demo",
+		Privileged:    true,
+		CapAdd:        []string{"NET_ADMIN", "SYS_TIME"},
+		CapDrop:       []string{"MKNOD"},
+		SecurityOpt:   []string{"no-new-privileges:true"},
+	}, ReverseOptions{})
+
+	got := strings.Join(cmd, " ")
+	want := "docker run -d --name demo --privileged --cap-add NET_ADMIN --cap-add SYS_TIME --cap-drop MKNOD --security-opt no-new-privileges:true --__SPLIT__ busybox:latest"
+	if got != want {
+		t.Fatalf("CommandFormatter security options = %q, want %q", got, want)
+	}
+}
+
 func TestComposeFormatterFormat(t *testing.T) {
 	service := ComposeFormatter{}.Format(&ContainerSpec{
 		Image:         "busybox:latest",
@@ -158,6 +175,10 @@ func TestComposeFormatterFormat(t *testing.T) {
 		DNS:           []string{"1.1.1.1"},
 		DNSSearch:     []string{"svc.local"},
 		ExtraHosts:    []string{"api.local:10.0.0.8"},
+		Privileged:    true,
+		CapAdd:        []string{"NET_ADMIN"},
+		CapDrop:       []string{"MKNOD"},
+		SecurityOpt:   []string{"no-new-privileges:true"},
 		RestartPolicy: "on-failure:3",
 		Envs:          []string{"GREETING=hello"},
 		Mounts:        []string{"/tmp:/host_tmp:ro"},
@@ -191,5 +212,17 @@ func TestComposeFormatterFormat(t *testing.T) {
 	}
 	if len(service.ExtraHosts) != 1 || service.ExtraHosts[0] != "api.local:10.0.0.8" {
 		t.Fatalf("ExtraHosts = %#v, want api.local:10.0.0.8", service.ExtraHosts)
+	}
+	if !service.Privileged {
+		t.Fatal("Privileged = false, want true")
+	}
+	if len(service.CapAdd) != 1 || service.CapAdd[0] != "NET_ADMIN" {
+		t.Fatalf("CapAdd = %#v, want NET_ADMIN", service.CapAdd)
+	}
+	if len(service.CapDrop) != 1 || service.CapDrop[0] != "MKNOD" {
+		t.Fatalf("CapDrop = %#v, want MKNOD", service.CapDrop)
+	}
+	if len(service.SecurityOpt) != 1 || service.SecurityOpt[0] != "no-new-privileges:true" {
+		t.Fatalf("SecurityOpt = %#v, want no-new-privileges:true", service.SecurityOpt)
 	}
 }

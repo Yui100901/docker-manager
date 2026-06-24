@@ -18,6 +18,9 @@ type ComposeService struct {
 	DNS           []string          `yaml:"dns,omitempty"`
 	DNSSearch     []string          `yaml:"dns_search,omitempty"`
 	ExtraHosts    []string          `yaml:"extra_hosts,omitempty"`
+	CapAdd        []string          `yaml:"cap_add,omitempty"`
+	CapDrop       []string          `yaml:"cap_drop,omitempty"`
+	SecurityOpt   []string          `yaml:"security_opt,omitempty"`
 	Privileged    bool              `yaml:"privileged,omitempty"`
 	Restart       string            `yaml:"restart,omitempty"`
 	User          string            `yaml:"user,omitempty"`

@@ -17,6 +17,9 @@ type ContainerSpec struct {
 	DNS             []string
 	DNSSearch       []string
 	ExtraHosts      []string
+	CapAdd          []string
+	CapDrop         []string
+	SecurityOpt     []string
 	Privileged      bool
 	PublishAllPorts bool
 	AutoRemove      bool
@@ -63,6 +66,9 @@ func (p *Parser) ToSpec() *ContainerSpec {
 		DNS:             copyStringSlice(p.ci.HostConfig.DNS),
 		DNSSearch:       copyStringSlice(p.ci.HostConfig.DNSSearch),
 		ExtraHosts:      copyStringSlice(p.ci.HostConfig.ExtraHosts),
+		CapAdd:          copyStringSlice(p.ci.HostConfig.CapAdd),
+		CapDrop:         copyStringSlice(p.ci.HostConfig.CapDrop),
+		SecurityOpt:     copyStringSlice(p.ci.HostConfig.SecurityOpt),
 		Privileged:      p.ci.HostConfig.Privileged,
 		PublishAllPorts: p.ci.HostConfig.PublishAllPorts,
 		AutoRemove:      p.ci.HostConfig.AutoRemove,
@@ -219,6 +225,15 @@ func (f CommandFormatter) Format(spec *ContainerSpec, opts ReverseOptions) []str
 	for _, host := range spec.ExtraHosts {
 		add("--add-host", host)
 	}
+	for _, cap := range spec.CapAdd {
+		add("--cap-add", cap)
+	}
+	for _, cap := range spec.CapDrop {
+		add("--cap-drop", cap)
+	}
+	for _, opt := range spec.SecurityOpt {
+		add("--security-opt", opt)
+	}
 	for _, e := range spec.Envs {
 		add("-e", e)
 	}
@@ -336,6 +351,9 @@ func (f ComposeFormatter) Format(spec *ContainerSpec) ComposeService {
 		DNS:           spec.DNS,
 		DNSSearch:     spec.DNSSearch,
 		ExtraHosts:    spec.ExtraHosts,
+		CapAdd:        spec.CapAdd,
+		CapDrop:       spec.CapDrop,
+		SecurityOpt:   spec.SecurityOpt,
 		Privileged:    spec.Privileged,
 		Restart:       restart,
 		User:          spec.User,
