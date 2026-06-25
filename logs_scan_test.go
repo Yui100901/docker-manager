@@ -121,7 +121,7 @@ func TestLogsScanTargetsRunningOnlyFiltersContainers(t *testing.T) {
 			{ID: "old", Names: []string{"/old"}, State: "exited"},
 		},
 	}
-	targets, err := logsScanTargets(context.Background(), fake, nil, LogsScanOptions{RunningOnly: true})
+	targets, err := logsScanTargets(context.Background(), fake, LogsScanOptions{RunningOnly: true})
 	if err != nil {
 		t.Fatalf("logsScanTargets() error = %v", err)
 	}
@@ -148,24 +148,47 @@ func TestReadContainerLogTextPassesTailAndSince(t *testing.T) {
 	}
 }
 
+func TestLogsScanTargetsFiltersByWildcard(t *testing.T) {
+	fake := &fakeLogsScanDockerService{
+		containers: []container.Summary{
+			{ID: "api-id", Names: []string{"/api-1"}, Image: "demo/api:latest", State: "running"},
+			{ID: "db-id", Names: []string{"/db-1"}, Image: "demo/db:latest", State: "exited"},
+		},
+	}
+	targets, err := logsScanTargets(context.Background(), fake, LogsScanOptions{Filters: []string{"api-*"}})
+	if err != nil {
+		t.Fatalf("logsScanTargets() error = %v", err)
+	}
+	if !fake.allFlag {
+		t.Fatal("ListContainers all = false, want true when filtering explicit targets")
+	}
+	if len(targets) != 1 || firstContainerName(targets[0].Names) != "api-1" {
+		t.Fatalf("targets = %#v, want api-1", targets)
+	}
+}
+
 func TestValidateLogsScanArgsRejectsInvalidCombinations(t *testing.T) {
 	tests := []struct {
 		name string
-		args []string
 		opts LogsScanOptions
 	}{
 		{name: "missing target", opts: LogsScanOptions{Tail: 1}},
 		{name: "all and running", opts: LogsScanOptions{All: true, RunningOnly: true, Tail: 1}},
-		{name: "target and all", args: []string{"api"}, opts: LogsScanOptions{All: true, Tail: 1}},
-		{name: "bad context", args: []string{"api"}, opts: LogsScanOptions{Tail: 1, Context: -1}},
-		{name: "bad tail", args: []string{"api"}, opts: LogsScanOptions{Tail: 0}},
+		{name: "bad context", opts: LogsScanOptions{Filters: []string{"api"}, Tail: 1, Context: -1}},
+		{name: "bad tail", opts: LogsScanOptions{Filters: []string{"api"}, Tail: 0}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if err := validateLogsScanArgs(tt.args, tt.opts); err == nil {
+			if err := validateLogsScanArgs(tt.opts); err == nil {
 				t.Fatal("validateLogsScanArgs() error = nil, want error")
 			}
 		})
+	}
+}
+
+func TestValidateLogsScanArgsAllowsFiltersWithRunningOnly(t *testing.T) {
+	if err := validateLogsScanArgs(LogsScanOptions{Filters: []string{"api*"}, RunningOnly: true, Tail: 1}); err != nil {
+		t.Fatalf("validateLogsScanArgs() error = %v, want nil", err)
 	}
 }
 

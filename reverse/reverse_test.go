@@ -77,3 +77,22 @@ func TestRunningContainerNamesFiltersAndSortsRunningContainers(t *testing.T) {
 		t.Fatalf("runningContainerNames() = %#v, want %#v", got, want)
 	}
 }
+
+func TestMatchingContainerNamesSupportsWildcard(t *testing.T) {
+	got := matchingContainerNames([]container.Summary{
+		{ID: "id-api", Names: []string{"/api-2"}, Image: "demo/api:latest"},
+		{ID: "id-db", Names: []string{"/db-1"}, Image: "demo/db:latest"},
+		{ID: "id-api-worker", Names: []string{"/api-1"}, Image: "demo/api:latest"},
+	}, "api-*")
+	want := []string{"api-1", "api-2"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("matchingContainerNames() = %#v, want %#v", got, want)
+	}
+}
+
+func TestReverseContainerMatchesPatternByImage(t *testing.T) {
+	c := container.Summary{ID: "id-api", Names: []string{"/api"}, Image: "registry.local/team/api:latest"}
+	if !reverseContainerMatchesPattern(c, "*/team/api:*") {
+		t.Fatal("reverseContainerMatchesPattern() = false, want true")
+	}
+}

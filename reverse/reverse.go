@@ -2,6 +2,7 @@ package reverse
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -71,6 +72,12 @@ func NewReverseCommand() *cobra.Command {
 				}
 				if len(names) == 0 {
 					return fmt.Errorf("没有正在运行的容器")
+				}
+				args = names
+			} else {
+				names, err := expandContainerNamePatterns(args)
+				if err != nil {
+					return err
 				}
 				args = names
 			}
@@ -167,4 +174,114 @@ func runningContainerNames(containers []container.Summary) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+func expandContainerNamePatterns(args []string) ([]string, error) {
+	hasWildcard := false
+	for _, arg := range args {
+		if strings.ContainsAny(arg, "*?") {
+			hasWildcard = true
+			break
+		}
+	}
+	if !hasWildcard {
+		return args, nil
+	}
+	if err := ensureContainerManager(); err != nil {
+		return nil, err
+	}
+	containers, err := containerManager.ListAll()
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	var expanded []string
+	for _, arg := range args {
+		if !strings.ContainsAny(arg, "*?") {
+			if !seen[arg] {
+				seen[arg] = true
+				expanded = append(expanded, arg)
+			}
+			continue
+		}
+		matches := matchingContainerNames(containers, arg)
+		if len(matches) == 0 {
+			return nil, fmt.Errorf("容器通配符 %q 未匹配任何容器", arg)
+		}
+		for _, name := range matches {
+			if !seen[name] {
+				seen[name] = true
+				expanded = append(expanded, name)
+			}
+		}
+	}
+	return expanded, nil
+}
+
+func matchingContainerNames(containers []container.Summary, pattern string) []string {
+	var names []string
+	for _, c := range containers {
+		if !reverseContainerMatchesPattern(c, pattern) {
+			continue
+		}
+		name := reverseContainerDisplayName(c)
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+func reverseContainerMatchesPattern(c container.Summary, pattern string) bool {
+	for _, candidate := range reverseContainerCandidates(c) {
+		if wildcardMatch(pattern, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func reverseContainerCandidates(c container.Summary) []string {
+	candidates := []string{c.ID}
+	if len(c.ID) > 12 {
+		candidates = append(candidates, c.ID[:12])
+	}
+	for _, name := range c.Names {
+		candidates = append(candidates, strings.TrimPrefix(name, "/"))
+	}
+	if c.Image != "" {
+		candidates = append(candidates, c.Image)
+	}
+	return candidates
+}
+
+func reverseContainerDisplayName(c container.Summary) string {
+	if len(c.Names) > 0 {
+		return strings.TrimPrefix(c.Names[0], "/")
+	}
+	return c.ID
+}
+
+func wildcardMatch(pattern, value string) bool {
+	re, err := regexp.Compile("^" + wildcardToRegex(pattern) + "$")
+	if err != nil {
+		return false
+	}
+	return re.MatchString(value)
+}
+
+func wildcardToRegex(pattern string) string {
+	var sb strings.Builder
+	for _, r := range pattern {
+		switch r {
+		case '*':
+			sb.WriteString(".*")
+		case '?':
+			sb.WriteByte('.')
+		default:
+			sb.WriteString(regexp.QuoteMeta(string(r)))
+		}
+	}
+	return sb.String()
 }

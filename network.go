@@ -33,7 +33,8 @@ type dockerNetworkService struct {
 }
 
 type NetworkOptions struct {
-	RunningOnly bool
+	RunningOnly      bool
+	ContainerFilters []string
 	ReportFormatOptions
 }
 
@@ -84,20 +85,22 @@ type NetworkRisk struct {
 func newNetworkCommand() *cobra.Command {
 	opts := NetworkOptions{}
 	cmd := &cobra.Command{
-		Use:   "network",
+		Use:   "network [container-pattern...]",
 		Short: "查看容器网络关系、端口映射和网络风险",
-		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			report, err := runNetworkReport(cmd.Context(), opts)
+			runOpts := opts
+			runOpts.ContainerFilters = append(append([]string(nil), opts.ContainerFilters...), args...)
+			report, err := runNetworkReport(cmd.Context(), runOpts)
 			if err != nil {
 				return fmt.Errorf("生成网络报告失败: %w", err)
 			}
-			return printReport(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
+			return printReport(cmd.OutOrStdout(), runOpts.Format, report, func(w io.Writer) {
 				printNetworkReport(w, report)
 			})
 		},
 	}
 	cmd.Flags().BoolVar(&opts.RunningOnly, "running-only", false, "只查看正在运行的容器")
+	cmd.Flags().StringArrayVarP(&opts.ContainerFilters, "filter", "f", nil, "筛选容器，支持名称/ID/镜像和 * ? 通配符，可重复指定")
 	addReportFormatFlag(cmd, &opts.Format)
 	return cmd
 }
@@ -111,11 +114,35 @@ func runNetworkReport(ctx context.Context, opts NetworkOptions) (NetworkReport, 
 	if err != nil {
 		return NetworkReport{}, err
 	}
+	hasContainerFilter := len(opts.ContainerFilters) > 0
+	containers = filterContainerSummaries(containers, opts.ContainerFilters)
 	networks, err := svc.ListNetworks(ctx)
 	if err != nil {
 		return NetworkReport{}, err
 	}
+	if hasContainerFilter {
+		networks = filterNetworksForContainers(networks, containers)
+	}
 	return buildNetworkReport(containers, networks), nil
+}
+
+func filterNetworksForContainers(networks []network.Summary, containers []container.Summary) []network.Summary {
+	used := map[string]bool{}
+	for _, c := range containers {
+		if c.NetworkSettings == nil {
+			continue
+		}
+		for name := range c.NetworkSettings.Networks {
+			used[name] = true
+		}
+	}
+	var filtered []network.Summary
+	for _, net := range networks {
+		if used[net.Name] {
+			filtered = append(filtered, net)
+		}
+	}
+	return filtered
 }
 
 func buildNetworkReport(containers []container.Summary, networks []network.Summary) NetworkReport {

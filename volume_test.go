@@ -86,6 +86,19 @@ func TestBuildVolumeReportAllIncludesUsedVolumeContainers(t *testing.T) {
 	}
 }
 
+func TestBuildVolumeReportFiltersVolumesByWildcard(t *testing.T) {
+	report := buildVolumeReport(volume.ListResponse{
+		Volumes: []*volume.Volume{
+			{Name: "app_data", Driver: "local", UsageData: &volume.UsageData{RefCount: 0, Size: 1024}},
+			{Name: "db_data", Driver: "local", UsageData: &volume.UsageData{RefCount: 0, Size: 2048}},
+		},
+	}, nil, VolumeOptions{Filters: []string{"app_*"}})
+
+	if report.Summary.Total != 1 || len(report.Volumes) != 1 || report.Volumes[0].Name != "app_data" {
+		t.Fatalf("report = %#v, want only app_data", report)
+	}
+}
+
 func TestRunVolumeReportListsAllContainers(t *testing.T) {
 	fake := &fakeVolumeDockerService{}
 	restore := replaceVolumeServiceFactory(fake)

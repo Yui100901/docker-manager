@@ -42,6 +42,7 @@ type HealthOptions struct {
 	LogTail          int
 	RestartThreshold int
 	Keywords         []string
+	ContainerFilters []string
 	RedactSecrets    bool
 	ReportFormatOptions
 }
@@ -98,15 +99,16 @@ func newHealthCommand() *cobra.Command {
 		Keywords:         []string{"error", "panic", "exception", "fatal", "oom", "killed"},
 	}
 	cmd := &cobra.Command{
-		Use:   "health",
+		Use:   "health [container-pattern...]",
 		Short: "输出本机 Docker 体检报告",
-		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			report, err := runHealthReport(cmd.Context(), opts)
+			runOpts := opts
+			runOpts.ContainerFilters = append(append([]string(nil), opts.ContainerFilters...), args...)
+			report, err := runHealthReport(cmd.Context(), runOpts)
 			if err != nil {
 				return fmt.Errorf("生成体检报告失败: %w", err)
 			}
-			return printReport(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
+			return printReport(cmd.OutOrStdout(), runOpts.Format, report, func(w io.Writer) {
 				printHealthReport(w, report)
 			})
 		},
@@ -116,6 +118,7 @@ func newHealthCommand() *cobra.Command {
 	cmd.Flags().IntVar(&opts.LogTail, "log-tail", opts.LogTail, "每个容器扫描最近日志行数")
 	cmd.Flags().IntVar(&opts.RestartThreshold, "restart-threshold", opts.RestartThreshold, "restart 次数达到该阈值时报告风险")
 	cmd.Flags().StringArrayVar(&opts.Keywords, "keyword", opts.Keywords, "日志扫描关键词，可重复指定")
+	cmd.Flags().StringArrayVarP(&opts.ContainerFilters, "filter", "f", nil, "筛选容器，支持名称/ID/镜像和 * ? 通配符，可重复指定")
 	cmd.Flags().BoolVar(&opts.RedactSecrets, "redact-secrets", false, "脱敏日志命中行中的疑似敏感信息，便于分享输出")
 	addReportFormatFlag(cmd, &opts.Format)
 	return cmd
@@ -130,6 +133,7 @@ func runHealthReport(ctx context.Context, opts HealthOptions) (HealthReport, err
 	if err != nil {
 		return HealthReport{}, err
 	}
+	containers = filterContainerSummaries(containers, opts.ContainerFilters)
 	return buildHealthReport(ctx, svc, containers, opts), nil
 }
 

@@ -35,6 +35,7 @@ type dockerVolumeService struct {
 type VolumeOptions struct {
 	All     bool
 	NoTrunc bool
+	Filters []string
 	ReportFormatOptions
 }
 
@@ -88,21 +89,23 @@ func newVolumeCommand() *cobra.Command {
 func newVolumeListUnusedCommand() *cobra.Command {
 	opts := VolumeOptions{}
 	cmd := &cobra.Command{
-		Use:   "ls-unused",
+		Use:   "ls-unused [volume-pattern...]",
 		Short: "查找疑似未使用 volume，并输出关联容器信息",
-		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			report, err := runVolumeReport(cmd.Context(), opts)
+			runOpts := opts
+			runOpts.Filters = append(append([]string(nil), opts.Filters...), args...)
+			report, err := runVolumeReport(cmd.Context(), runOpts)
 			if err != nil {
 				return fmt.Errorf("生成 volume 报告失败: %w", err)
 			}
-			return printReport(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
-				printVolumeReport(w, report, opts)
+			return printReport(cmd.OutOrStdout(), runOpts.Format, report, func(w io.Writer) {
+				printVolumeReport(w, report, runOpts)
 			})
 		},
 	}
 	cmd.Flags().BoolVar(&opts.All, "all", false, "显示所有 volume，包括仍被容器引用的 volume")
 	cmd.Flags().BoolVar(&opts.NoTrunc, "no-trunc", false, "显示完整 volume 名称和挂载点")
+	cmd.Flags().StringArrayVarP(&opts.Filters, "filter", "f", nil, "筛选 volume，支持名称/driver/mountpoint/label 和 * ? 通配符，可重复指定")
 	addReportFormatFlag(cmd, &opts.Format)
 	return cmd
 }
@@ -127,7 +130,7 @@ func buildVolumeReport(volumes volume.ListResponse, containers []container.Summa
 	refsByVolume := volumeContainerRefs(containers)
 	report := VolumeReport{Warnings: append([]string(nil), volumes.Warnings...)}
 
-	for _, vol := range volumes.Volumes {
+	for _, vol := range filterVolumesByPatterns(volumes.Volumes, opts.Filters) {
 		if vol == nil {
 			continue
 		}

@@ -121,6 +121,32 @@ func TestRunHealthReportRunningOnlyPassesContainerListFlag(t *testing.T) {
 	}
 }
 
+func TestRunHealthReportFiltersContainersByWildcard(t *testing.T) {
+	fake := &fakeHealthDockerService{
+		containers: []container.Summary{
+			{ID: "api-id", Names: []string{"/api-1"}, Image: "demo/api:latest", State: "running"},
+			{ID: "db-id", Names: []string{"/db-1"}, Image: "demo/db:latest", State: "running"},
+		},
+		inspects: map[string]container.InspectResponse{
+			"api-id": {ContainerJSONBase: &container.ContainerJSONBase{Name: "/api-1", State: &container.State{Status: "running"}}},
+		},
+		logs: map[string]string{"api-id": "ok\n"},
+	}
+	restore := replaceHealthServiceFactory(fake)
+	defer restore()
+
+	report, err := runHealthReport(context.Background(), HealthOptions{
+		ContainerFilters: []string{"api-*"},
+		NoLogs:           true,
+	})
+	if err != nil {
+		t.Fatalf("runHealthReport() error = %v", err)
+	}
+	if len(report.Containers) != 1 || report.Containers[0].Name != "api-1" {
+		t.Fatalf("Containers = %#v, want api-1", report.Containers)
+	}
+}
+
 func TestBuildHealthReportRedactsLogSecretsWhenRequested(t *testing.T) {
 	fake := &fakeHealthDockerService{
 		containers: []container.Summary{{

@@ -87,6 +87,48 @@ func TestRunNetworkReportRunningOnlyPassesContainerListFlag(t *testing.T) {
 	}
 }
 
+func TestRunNetworkReportFiltersContainersAndRelatedNetworks(t *testing.T) {
+	fake := &fakeNetworkDockerService{
+		containers: []container.Summary{
+			{
+				ID:    "api-id",
+				Names: []string{"/api-1"},
+				Image: "demo/api",
+				State: "running",
+				NetworkSettings: &container.NetworkSettingsSummary{
+					Networks: map[string]*network.EndpointSettings{"app_net": {IPAddress: "172.20.0.2"}},
+				},
+			},
+			{
+				ID:    "db-id",
+				Names: []string{"/db-1"},
+				Image: "demo/db",
+				State: "running",
+				NetworkSettings: &container.NetworkSettingsSummary{
+					Networks: map[string]*network.EndpointSettings{"db_net": {IPAddress: "172.21.0.2"}},
+				},
+			},
+		},
+		networks: []network.Summary{
+			{Name: "app_net", Driver: "bridge"},
+			{Name: "db_net", Driver: "bridge"},
+		},
+	}
+	restore := replaceNetworkServiceFactory(fake)
+	defer restore()
+
+	report, err := runNetworkReport(context.Background(), NetworkOptions{ContainerFilters: []string{"api-*"}})
+	if err != nil {
+		t.Fatalf("runNetworkReport() error = %v", err)
+	}
+	if len(report.Containers) != 1 || report.Containers[0].Name != "api-1" {
+		t.Fatalf("Containers = %#v, want api-1", report.Containers)
+	}
+	if len(report.Networks) != 1 || report.Networks[0].Name != "app_net" {
+		t.Fatalf("Networks = %#v, want only app_net", report.Networks)
+	}
+}
+
 func TestPrintNetworkReportIncludesSections(t *testing.T) {
 	var out bytes.Buffer
 	printNetworkReport(&out, NetworkReport{

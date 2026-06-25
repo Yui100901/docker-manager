@@ -41,6 +41,7 @@ type LogsScanOptions struct {
 	Context       int
 	Since         string
 	Keywords      []string
+	Filters       []string
 	RedactSecrets bool
 	ReportFormatOptions
 }
@@ -83,17 +84,19 @@ func newLogsScanCommand() *cobra.Command {
 		Keywords: []string{"error", "panic", "exception", "fatal", "oom", "killed"},
 	}
 	cmd := &cobra.Command{
-		Use:   "logs-scan [container...]",
+		Use:   "logs-scan [container-pattern...]",
 		Short: "扫描容器最近日志中的错误关键词",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := validateLogsScanArgs(args, opts); err != nil {
+			runOpts := opts
+			runOpts.Filters = append(append([]string(nil), opts.Filters...), args...)
+			if err := validateLogsScanArgs(runOpts); err != nil {
 				return err
 			}
-			report, err := runLogsScan(cmd.Context(), args, opts)
+			report, err := runLogsScan(cmd.Context(), runOpts)
 			if err != nil {
 				return fmt.Errorf("扫描日志失败: %w", err)
 			}
-			return printReport(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
+			return printReport(cmd.OutOrStdout(), runOpts.Format, report, func(w io.Writer) {
 				printLogsScanReport(w, report)
 			})
 		},
@@ -104,20 +107,18 @@ func newLogsScanCommand() *cobra.Command {
 	cmd.Flags().IntVar(&opts.Context, "context", opts.Context, "命中日志前后各输出多少行上下文")
 	cmd.Flags().StringVar(&opts.Since, "since", "", "只扫描该时间之后的日志，例如 30m、2h 或 RFC3339 时间")
 	cmd.Flags().StringArrayVar(&opts.Keywords, "keyword", opts.Keywords, "日志扫描关键词，可重复指定")
+	cmd.Flags().StringArrayVarP(&opts.Filters, "filter", "f", nil, "筛选容器，支持名称/ID/镜像和 * ? 通配符，可重复指定")
 	cmd.Flags().BoolVar(&opts.RedactSecrets, "redact-secrets", false, "脱敏日志命中行和上下文中的疑似敏感信息，便于分享输出")
 	addReportFormatFlag(cmd, &opts.Format)
 	return cmd
 }
 
-func validateLogsScanArgs(args []string, opts LogsScanOptions) error {
+func validateLogsScanArgs(opts LogsScanOptions) error {
 	if opts.All && opts.RunningOnly {
 		return fmt.Errorf("不能同时指定 --all 和 --running-only")
 	}
-	if len(args) == 0 && !opts.All && !opts.RunningOnly {
-		return fmt.Errorf("必须指定至少一个容器，或使用 --all/--running-only")
-	}
-	if len(args) > 0 && (opts.All || opts.RunningOnly) {
-		return fmt.Errorf("不能同时指定容器名称和 --all/--running-only")
+	if len(opts.Filters) == 0 && !opts.All && !opts.RunningOnly {
+		return fmt.Errorf("必须指定至少一个容器筛选条件，或使用 --all/--running-only")
 	}
 	if opts.Context < 0 {
 		return fmt.Errorf("--context 不能小于 0")
@@ -128,27 +129,21 @@ func validateLogsScanArgs(args []string, opts LogsScanOptions) error {
 	return nil
 }
 
-func runLogsScan(ctx context.Context, args []string, opts LogsScanOptions) (LogsScanReport, error) {
+func runLogsScan(ctx context.Context, opts LogsScanOptions) (LogsScanReport, error) {
 	svc, err := newLogsScanDockerService()
 	if err != nil {
 		return LogsScanReport{}, err
 	}
-	targets, err := logsScanTargets(ctx, svc, args, opts)
+	targets, err := logsScanTargets(ctx, svc, opts)
 	if err != nil {
 		return LogsScanReport{}, err
 	}
 	return buildLogsScanReport(ctx, svc, targets, opts), nil
 }
 
-func logsScanTargets(ctx context.Context, svc logsScanDockerService, args []string, opts LogsScanOptions) ([]container.Summary, error) {
-	if len(args) > 0 {
-		targets := make([]container.Summary, 0, len(args))
-		for _, arg := range args {
-			targets = append(targets, container.Summary{ID: arg, Names: []string{"/" + arg}})
-		}
-		return targets, nil
-	}
-	containers, err := svc.ListContainers(ctx, opts.All)
+func logsScanTargets(ctx context.Context, svc logsScanDockerService, opts LogsScanOptions) ([]container.Summary, error) {
+	listAll := opts.All || (len(opts.Filters) > 0 && !opts.RunningOnly)
+	containers, err := svc.ListContainers(ctx, listAll)
 	if err != nil {
 		return nil, err
 	}
@@ -161,6 +156,7 @@ func logsScanTargets(ctx context.Context, svc logsScanDockerService, args []stri
 		}
 		containers = running
 	}
+	containers = filterContainerSummaries(containers, opts.Filters)
 	sort.Slice(containers, func(i, j int) bool {
 		return firstContainerName(containers[i].Names) < firstContainerName(containers[j].Names)
 	})
