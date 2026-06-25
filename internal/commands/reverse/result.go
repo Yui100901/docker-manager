@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"docker-manager/docker"
+	"docker-manager/internal/docker"
 
 	"github.com/Yui100901/MyGo/command"
 	"gopkg.in/yaml.v3"

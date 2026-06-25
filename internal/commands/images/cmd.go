@@ -2,7 +2,7 @@ package images
 
 import (
 	"context"
-	"docker-manager/docker"
+	"docker-manager/internal/docker"
 	"errors"
 	"fmt"
 	"io"

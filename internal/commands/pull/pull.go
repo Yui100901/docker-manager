@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"io"
 
-	"docker-manager/docker"
+	"docker-manager/internal/docker"
 
 	"github.com/Yui100901/MyGo/file_utils"
 	"github.com/Yui100901/MyGo/network/http_utils"

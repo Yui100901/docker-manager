@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"docker-manager/docker"
 	"docker-manager/internal/completion"
+	"docker-manager/internal/docker"
 	rpt "docker-manager/internal/report"
 
 	"github.com/docker/docker/api/types/container"

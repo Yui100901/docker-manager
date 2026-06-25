@@ -4,10 +4,10 @@ import (
 	"docker-manager/internal/commands/backup"
 	"docker-manager/internal/commands/diagnostics"
 	"docker-manager/internal/commands/images"
+	"docker-manager/internal/commands/pull"
+	"docker-manager/internal/commands/reverse"
 	"docker-manager/internal/completion"
 	"docker-manager/internal/version"
-	"docker-manager/pull"
-	"docker-manager/reverse"
 
 	"github.com/spf13/cobra"
 )

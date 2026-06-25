@@ -20,10 +20,10 @@ import (
 	"strings"
 	"time"
 
-	"docker-manager/docker"
+	"docker-manager/internal/commands/reverse"
 	"docker-manager/internal/completion"
+	"docker-manager/internal/docker"
 	"docker-manager/internal/version"
-	"docker-manager/reverse"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
