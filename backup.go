@@ -14,6 +14,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -84,9 +85,11 @@ type RestoreOptions struct {
 }
 
 type BackupManifest struct {
-	Version    int                       `json:"version"`
-	CreatedAt  string                    `json:"created_at"`
-	Containers []BackupContainerManifest `json:"containers,omitempty"`
+	Version        int                       `json:"version"`
+	CreatedAt      string                    `json:"created_at"`
+	Tool           VersionInfo               `json:"tool,omitempty"`
+	SourcePlatform string                    `json:"source_platform,omitempty"`
+	Containers     []BackupContainerManifest `json:"containers,omitempty"`
 
 	ContainerName string              `json:"container_name,omitempty"`
 	SourceName    string              `json:"source_name,omitempty"`
@@ -239,8 +242,10 @@ func backupContainersMerged(ctx context.Context, targets []string, opts BackupOp
 		root = defaultBackupBatchDir(time.Now())
 	}
 	manifest := BackupManifest{
-		Version:   1,
-		CreatedAt: time.Now().Format(time.RFC3339),
+		Version:        1,
+		CreatedAt:      time.Now().Format(time.RFC3339),
+		Tool:           currentVersionInfo(),
+		SourcePlatform: currentSourcePlatform(),
 	}
 	for _, target := range targets {
 		childRel := filepath.ToSlash(filepath.Join("containers", safeBackupName(target)))
@@ -448,9 +453,11 @@ func backupContainer(ctx context.Context, name string, opts BackupOptions) (stri
 	containerManifest.Volumes = volumes
 
 	manifest := BackupManifest{
-		Version:    1,
-		CreatedAt:  createdAt,
-		Containers: []BackupContainerManifest{containerManifest},
+		Version:        1,
+		CreatedAt:      createdAt,
+		Tool:           currentVersionInfo(),
+		SourcePlatform: currentSourcePlatform(),
+		Containers:     []BackupContainerManifest{containerManifest},
 	}
 	if err := writeJSONFile(filepath.Join(outputDir, backupManifestName), manifest); err != nil {
 		return "", fmt.Errorf("write manifest: %w", err)
@@ -716,6 +723,12 @@ func writeBackupBundleArtifacts(outputDir string, manifest BackupManifest) error
 func writeBackupReadme(path string, manifest BackupManifest) error {
 	var sb strings.Builder
 	sb.WriteString("# docker-manager offline backup\n\n")
+	sb.WriteString("## Backup metadata\n\n")
+	sb.WriteString("- Created at: `" + manifest.CreatedAt + "`\n")
+	sb.WriteString("- Created by: `dm " + valueOrUnknown(manifest.Tool.Version) + "`\n")
+	sb.WriteString("- Source commit: `" + valueOrUnknown(manifest.Tool.Commit) + "`\n")
+	sb.WriteString("- Source build date: `" + valueOrUnknown(manifest.Tool.BuildDate) + "`\n")
+	sb.WriteString("- Source platform: `" + valueOrUnknown(manifest.SourcePlatform) + "`\n\n")
 	sb.WriteString("## Contents\n\n")
 	sb.WriteString("- `manifest.json`: migration manifest; `containers` contains one or more container entries\n")
 	if len(manifest.Containers) == 1 && manifest.Containers[0].Path == "" {
@@ -735,6 +748,13 @@ func writeBackupReadme(path string, manifest BackupManifest) error {
 	}
 	sb.WriteString("- `checksums.txt`: SHA256 checksums\n")
 	sb.WriteString("- `restore.sh`: helper restore script\n\n")
+	sb.WriteString("## Prerequisites\n\n")
+	sb.WriteString("- Install `dm` on the target host and make sure it is available in `PATH`.\n")
+	sb.WriteString("- The target host must be able to reach a running Docker daemon with permission to load images and create networks, volumes and containers.\n")
+	sb.WriteString("- Review container names, ports, bind mounts, named volumes and custom networks before using `--replace`.\n")
+	sb.WriteString("- If this backup contains bind mounts, the target host must already have compatible host paths and permissions.\n\n")
+	sb.WriteString("## Checksum verification\n\n")
+	sb.WriteString("`dm restore` verifies `checksums.txt` by default before it touches Docker. If verification fails, restore stops before loading images or creating resources. Use `--skip-checksum` only after manually confirming the package integrity.\n\n")
 	sb.WriteString("## Restore\n\n")
 	sb.WriteString("```bash\n")
 	sb.WriteString("dm restore .\n")
@@ -753,16 +773,47 @@ func writeBackupReadme(path string, manifest BackupManifest) error {
 		}
 		sb.WriteString(line + "\n")
 	}
-	sb.WriteString("\nCreated at: `" + manifest.CreatedAt + "`\n")
 	return os.WriteFile(path, []byte(sb.String()), 0644)
 }
 
 func writeRestoreScript(path string) error {
-	content := "#!/usr/bin/env sh\nset -eu\nDIR=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\ndm restore \"$DIR\" \"$@\"\n"
+	content := `#!/usr/bin/env sh
+set -eu
+
+DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+if ! command -v dm >/dev/null 2>&1; then
+  echo "Error: dm is not available in PATH. Install docker-manager on the target host first." >&2
+  exit 127
+fi
+
+echo "docker-manager restore helper"
+dm version || true
+echo "Backup directory: $DIR"
+echo "Prerequisite: Docker daemon must be reachable and the current user must be allowed to manage Docker resources."
+if [ -f "$DIR/checksums.txt" ]; then
+  echo "Checksum: dm restore will verify checksums.txt by default. Use --skip-checksum only after manual verification."
+else
+  echo "Checksum: checksums.txt not found; dm restore will skip checksum verification."
+fi
+
+dm restore "$DIR" "$@"
+`
 	if err := os.WriteFile(path, []byte(content), 0755); err != nil {
 		return err
 	}
 	return os.Chmod(path, 0755)
+}
+
+func currentSourcePlatform() string {
+	return runtime.GOOS + "/" + runtime.GOARCH
+}
+
+func valueOrUnknown(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "unknown"
+	}
+	return value
 }
 
 func writeChecksums(root string) error {

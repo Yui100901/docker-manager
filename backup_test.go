@@ -188,6 +188,29 @@ func TestBackupContainerWritesOfflineBundleArtifacts(t *testing.T) {
 			t.Fatalf("expected bundle artifact %s: %v", name, err)
 		}
 	}
+	var manifest BackupManifest
+	readTestJSON(t, filepath.Join(dir, backupManifestName), &manifest)
+	if manifest.Tool.Version == "" || manifest.SourcePlatform == "" {
+		t.Fatalf("manifest metadata = %#v, want tool and source platform", manifest)
+	}
+	readme, err := os.ReadFile(filepath.Join(dir, backupReadmeName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Backup metadata", "Source platform", "Prerequisites", "Checksum verification", "`dm restore` verifies `checksums.txt` by default"} {
+		if !strings.Contains(string(readme), want) {
+			t.Fatalf("README = %q, want %q", string(readme), want)
+		}
+	}
+	restoreScript, err := os.ReadFile(filepath.Join(dir, backupRestoreName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"dm version", "Docker daemon must be reachable", "checksums.txt"} {
+		if !strings.Contains(string(restoreScript), want) {
+			t.Fatalf("restore.sh = %q, want %q", string(restoreScript), want)
+		}
+	}
 	if _, err := os.Stat(archive); err != nil {
 		t.Fatalf("expected archive %s: %v", archive, err)
 	}
