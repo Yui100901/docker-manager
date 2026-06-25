@@ -67,6 +67,7 @@ func newInspectDiffCommand() *cobra.Command {
 				printInspectDiffReport(w, report)
 			})
 		},
+		ValidArgsFunction: completeLocalContainers,
 	}
 	cmd.Flags().BoolVar(&opts.RedactSecrets, "redact-secrets", false, "脱敏 env/label 中疑似敏感字段，便于分享输出")
 	addReportFormatFlag(cmd, &opts.Format)

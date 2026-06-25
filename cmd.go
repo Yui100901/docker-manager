@@ -109,6 +109,7 @@ func newSaveCommandWithDefaults(defaultOutputDir func() string) *cobra.Command {
 	cmd.Flags().BoolVarP(&all, "all", "a", false, "导出所有镜像，包括无 tag 镜像")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "仅预览将导出的镜像，不写入文件")
 	cmd.Flags().StringArrayVarP(&filters, "filter", "f", nil, "筛选要导出的镜像，支持镜像名/tag/ID和通配符，可重复指定")
+	_ = cmd.RegisterFlagCompletionFunc("filter", completeLocalImages)
 	return cmd
 }
 

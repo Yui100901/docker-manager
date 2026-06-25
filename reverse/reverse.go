@@ -140,8 +140,20 @@ func NewReverseCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&confirm, "confirm", false, "确认执行 --rerun 的停止、删除并重建容器操作")
 	cmd.Flags().BoolVar(&running, "running", false, "反向解析当前正在运行的所有容器；未指定 --reverse-type 时默认输出 compose")
 	cmd.Flags().BoolVar(&redactSecrets, "redact-secrets", false, "脱敏 env/label 中疑似敏感字段，便于分享输出")
+	_ = cmd.RegisterFlagCompletionFunc("reverse-type", completeReverseTypes)
 
 	return cmd
+}
+
+func completeReverseTypes(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	values := []string{string(ReverseCmd), string(ReverseCompose), string(ReverseAll)}
+	var suggestions []string
+	for _, value := range values {
+		if strings.HasPrefix(value, toComplete) {
+			suggestions = append(suggestions, value)
+		}
+	}
+	return suggestions, cobra.ShellCompDirectiveNoFileComp
 }
 
 func listRunningContainerNames() ([]string, error) {

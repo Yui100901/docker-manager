@@ -19,6 +19,7 @@ type ReportFormatOptions struct {
 
 func addReportFormatFlag(cmd *cobra.Command, format *string) {
 	cmd.Flags().StringVar(format, "format", reportFormatText, "输出格式: text | json")
+	_ = cmd.RegisterFlagCompletionFunc("format", completeFixedValues(reportFormatText, reportFormatJSON))
 }
 
 func printReport(w io.Writer, format string, report interface{}, printText func(io.Writer)) error {

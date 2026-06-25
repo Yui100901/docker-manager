@@ -112,6 +112,7 @@ func newHealthCommand() *cobra.Command {
 				printHealthReport(w, report)
 			})
 		},
+		ValidArgsFunction: completeLocalContainers,
 	}
 	cmd.Flags().BoolVar(&opts.RunningOnly, "running-only", false, "只检查正在运行的容器")
 	cmd.Flags().BoolVar(&opts.NoLogs, "no-logs", false, "不扫描容器日志")
@@ -120,6 +121,7 @@ func newHealthCommand() *cobra.Command {
 	cmd.Flags().StringArrayVar(&opts.Keywords, "keyword", opts.Keywords, "日志扫描关键词，可重复指定")
 	cmd.Flags().StringArrayVarP(&opts.ContainerFilters, "filter", "f", nil, "筛选容器，支持名称/ID/镜像和 * ? 通配符，可重复指定")
 	cmd.Flags().BoolVar(&opts.RedactSecrets, "redact-secrets", false, "脱敏日志命中行中的疑似敏感信息，便于分享输出")
+	_ = cmd.RegisterFlagCompletionFunc("filter", completeLocalContainers)
 	addReportFormatFlag(cmd, &opts.Format)
 	return cmd
 }

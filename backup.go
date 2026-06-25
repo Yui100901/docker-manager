@@ -143,6 +143,7 @@ func newBackupContainerCommand() *cobra.Command {
 			}
 			return nil
 		},
+		ValidArgsFunction: completeLocalContainers,
 	}
 	cmd.Flags().BoolVar(&opts.IncludeImage, "include-image", true, "导出容器镜像 tar")
 	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", false, "只预览备份动作，不写入文件")

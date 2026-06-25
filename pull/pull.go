@@ -179,7 +179,21 @@ func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command 
 	cmd.Flags().StringVar(&to, "to", "", "pull 后导入 Docker、tag 并 push 到目标 registry/repository")
 	cmd.Flags().StringVar(&dockerConfig, "docker-config", "", "Docker config.json 路径，默认使用 DOCKER_CONFIG/config.json 或 ~/.docker/config.json")
 	cmd.Flags().BoolVar(&plainHTTP, "plain-http", false, "使用 http:// 拉取 registry，适用于未启用 TLS 的内网 registry")
+	_ = cmd.RegisterFlagCompletionFunc("os", completePullValues("linux", "windows"))
+	_ = cmd.RegisterFlagCompletionFunc("arch", completePullValues("amd64", "arm64", "arm", "386", "ppc64le", "s390x"))
 	return cmd
+}
+
+func completePullValues(values ...string) cobra.CompletionFunc {
+	return func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		var suggestions []string
+		for _, value := range values {
+			if strings.HasPrefix(value, toComplete) {
+				suggestions = append(suggestions, value)
+			}
+		}
+		return suggestions, cobra.ShellCompDirectiveNoFileComp
+	}
 }
 
 func applyCommandDefaults(cmd *cobra.Command, defaults func() CommandDefaults, proxy, targetOS, arch, outputDir *string) {

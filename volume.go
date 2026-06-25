@@ -102,10 +102,12 @@ func newVolumeListUnusedCommand() *cobra.Command {
 				printVolumeReport(w, report, runOpts)
 			})
 		},
+		ValidArgsFunction: completeLocalVolumes,
 	}
 	cmd.Flags().BoolVar(&opts.All, "all", false, "显示所有 volume，包括仍被容器引用的 volume")
 	cmd.Flags().BoolVar(&opts.NoTrunc, "no-trunc", false, "显示完整 volume 名称和挂载点")
 	cmd.Flags().StringArrayVarP(&opts.Filters, "filter", "f", nil, "筛选 volume，支持名称/driver/mountpoint/label 和 * ? 通配符，可重复指定")
+	_ = cmd.RegisterFlagCompletionFunc("filter", completeLocalVolumes)
 	addReportFormatFlag(cmd, &opts.Format)
 	return cmd
 }
