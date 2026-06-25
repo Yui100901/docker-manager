@@ -97,7 +97,7 @@ dm completion powershell | Out-String | Invoke-Expression
 
 ## 端到端集成测试
 
-仓库提供 `scripts/e2e.sh`，用于在有 Docker 的测试机上启动临时 registry，并覆盖 `registry-login-check --plain-http`、`pull --to`、`backup container --bundle` 和 `restore <archive>`。
+仓库提供 `scripts/e2e.sh`，用于在有 Docker 的测试机上启动临时 registry，并覆盖 `registry-login-check --plain-http`、`pull --plain-http --output`、`pull --plain-http --load`、`pull --to`、`backup container --bundle` 和 `restore <archive>`。
 
 ```bash
 bash scripts/e2e.sh
@@ -106,11 +106,14 @@ bash scripts/e2e.sh
 可通过环境变量调整测试参数:
 
 ```bash
-DM_E2E_REGISTRY_PORT=5050 DM_E2E_IMAGE=busybox:latest bash scripts/e2e.sh
+DM_E2E_IMAGE=busybox:latest bash scripts/e2e.sh
+DM_E2E_GOFLAGS=-mod=vendor bash scripts/e2e.sh
+DM_E2E_DM_BIN=/root/dm bash scripts/e2e.sh
+DM_E2E_OFFLINE=1 bash scripts/e2e.sh
 DM_E2E_KEEP_WORKDIR=1 bash scripts/e2e.sh
 ```
 
-脚本会创建并清理临时 registry 容器、测试容器、恢复容器和临时工作目录。执行前请确认当前 Docker 环境适合运行集成测试。
+脚本会使用 Docker 随机绑定本地 registry 端口，避免端口冲突。默认测试镜像为 `busybox:latest`、registry 镜像为 `registry:2`；如果本地没有这些镜像，脚本会尝试 `docker pull`。离线测试机可先预拉镜像并设置 `DM_E2E_OFFLINE=1`，有 `vendor/` 目录时脚本会默认使用 `-mod=vendor` 构建，也可通过 `DM_E2E_GOFLAGS` 显式指定。若测试机没有 Go，可先上传已编译的 `dm` 并设置 `DM_E2E_DM_BIN=/path/to/dm` 跳过构建。脚本会创建并清理临时 registry 容器、测试容器、恢复容器和临时工作目录。执行前请确认当前 Docker 环境适合运行集成测试。
 
 ## 命令速查
 
