@@ -85,7 +85,7 @@ func newImageTreeCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			report, err := runImageTree(cmd.Context(), args[0], opts)
 			if err != nil {
-				return fmt.Errorf("image tree failed: %w", err)
+				return fmt.Errorf("生成镜像层报告失败: %w", err)
 			}
 			return printReport(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
 				printImageTreeReport(w, report, opts)
@@ -157,27 +157,27 @@ func buildImageTreeReport(imageRef string, inspect imageapi.InspectResponse, his
 }
 
 func printImageTreeReport(w io.Writer, report ImageTreeReport, opts ImageTreeOptions) {
-	fmt.Fprintf(w, "Image tree: %s\n", report.ImageRef)
+	fmt.Fprintf(w, "镜像层报告: %s\n", report.ImageRef)
 	fmt.Fprintf(w, "ID: %s\n", displayLayerText(report.ID, opts.NoTrunc, 20))
-	fmt.Fprintf(w, "Platform: %s\n", report.Platform)
-	fmt.Fprintf(w, "Size: %s history_size=%s filesystem_layers=%d history_entries=%d metadata_entries=%d\n", humanBytes(uint64FromInt64(report.Size)), humanBytes(uint64FromInt64(report.HistorySize)), len(report.RootFSLayers), len(report.History), report.MetadataCount)
+	fmt.Fprintf(w, "平台: %s\n", report.Platform)
+	fmt.Fprintf(w, "大小: %s history_size=%s 文件系统层=%d history 条目=%d 元数据条目=%d\n", humanBytes(uint64FromInt64(report.Size)), humanBytes(uint64FromInt64(report.HistorySize)), len(report.RootFSLayers), len(report.History), report.MetadataCount)
 	if len(report.RepoTags) > 0 {
-		fmt.Fprintf(w, "Tags: %s\n", strings.Join(report.RepoTags, ", "))
+		fmt.Fprintf(w, "Tag: %s\n", strings.Join(report.RepoTags, ", "))
 	}
 	if len(report.RepoDigests) > 0 {
-		fmt.Fprintf(w, "Digests: %s\n", strings.Join(report.RepoDigests, ", "))
+		fmt.Fprintf(w, "Digest: %s\n", strings.Join(report.RepoDigests, ", "))
 	}
 
 	if opts.Top > 0 && len(report.LargestLayers) > 0 {
-		fmt.Fprintf(w, "\nLargest layers:\n")
+		fmt.Fprintf(w, "\n最大 layer:\n")
 		for _, layer := range report.LargestLayers {
 			fmt.Fprintf(w, "  - #%d %s %.1f%% %s\n", layer.Index, humanBytes(uint64FromInt64(layer.Size)), layer.SizePercent, displayLayerText(layer.CreatedBy, opts.NoTrunc, 120))
 		}
 	}
 
-	fmt.Fprintf(w, "\nHistory (base -> top):\n")
+	fmt.Fprintf(w, "\n构建历史 (base -> top):\n")
 	if len(report.History) == 0 {
-		fmt.Fprintln(w, "  none")
+		fmt.Fprintln(w, "  无")
 		return
 	}
 	for _, layer := range report.History {

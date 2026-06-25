@@ -96,7 +96,7 @@ func TestPrintNetworkReportIncludesSections(t *testing.T) {
 	})
 
 	got := out.String()
-	for _, want := range []string{"Docker network report", "Networks: 1", "Port mappings:", "Risks:", "public-bind"} {
+	for _, want := range []string{"Docker 网络报告", "网络=1", "端口映射:", "风险:", "public-bind"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("output = %q, want %q", got, want)
 		}

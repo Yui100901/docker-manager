@@ -121,9 +121,9 @@ func newBackupContainerCommand() *cobra.Command {
 			}
 			outputDir, err := backupContainer(cmd.Context(), args[0], opts)
 			if err != nil {
-				return fmt.Errorf("backup container failed: %w", err)
+				return fmt.Errorf("备份容器失败: %w", err)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Backup created: %s\n", outputDir)
+			fmt.Fprintf(cmd.OutOrStdout(), "备份已创建: %s\n", outputDir)
 			return nil
 		},
 	}
@@ -143,9 +143,9 @@ func newRestoreCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.Output = cmd.OutOrStdout()
 			if err := restoreBackup(cmd.Context(), args[0], opts); err != nil {
-				return fmt.Errorf("restore failed: %w", err)
+				return fmt.Errorf("恢复失败: %w", err)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Restore completed: %s\n", args[0])
+			fmt.Fprintf(cmd.OutOrStdout(), "恢复完成: %s\n", args[0])
 			return nil
 		},
 	}

@@ -45,7 +45,7 @@ func TestPrintReportRejectsUnknownFormat(t *testing.T) {
 	if err == nil {
 		t.Fatal("printReport() error = nil, want unsupported format")
 	}
-	if !strings.Contains(err.Error(), "unsupported report format") {
+	if !strings.Contains(err.Error(), "不支持的输出格式") {
 		t.Fatalf("error = %v", err)
 	}
 }

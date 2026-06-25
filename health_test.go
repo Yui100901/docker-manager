@@ -188,7 +188,7 @@ func TestPrintHealthReportIncludesSummaryIssuesAndContainers(t *testing.T) {
 	})
 
 	got := out.String()
-	for _, want := range []string{"Docker health report", "Containers: total=1", "Issues:", "public-port", "public_port=0.0.0.0:8080->80/tcp"} {
+	for _, want := range []string{"Docker 体检报告", "容器: 总数=1", "问题:", "public-port", "公网端口=0.0.0.0:8080->80/tcp"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("output = %q, want %q", got, want)
 		}

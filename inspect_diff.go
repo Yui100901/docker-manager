@@ -61,7 +61,7 @@ func newInspectDiffCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			report, err := runInspectDiff(cmd.Context(), args[0], args[1], opts)
 			if err != nil {
-				return fmt.Errorf("inspect diff failed: %w", err)
+				return fmt.Errorf("对比容器 inspect 失败: %w", err)
 			}
 			return printReport(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
 				printInspectDiffReport(w, report)
@@ -270,15 +270,15 @@ func sortInspectDiffEntries(entries []InspectDiffEntry) {
 
 func printInspectDiffReport(w io.Writer, report InspectDiffReport) {
 	total := len(report.Added) + len(report.Removed) + len(report.Changed)
-	fmt.Fprintf(w, "Container inspect diff: %s -> %s\n", report.LeftName, report.RightName)
-	fmt.Fprintf(w, "Summary: changed=%d added=%d removed=%d total=%d\n\n", len(report.Changed), len(report.Added), len(report.Removed), total)
+	fmt.Fprintf(w, "容器 inspect 差异: %s -> %s\n", report.LeftName, report.RightName)
+	fmt.Fprintf(w, "摘要: 变更=%d 新增=%d 删除=%d 总计=%d\n\n", len(report.Changed), len(report.Added), len(report.Removed), total)
 	if total == 0 {
-		fmt.Fprintln(w, "No comparable differences found.")
+		fmt.Fprintln(w, "未发现可对比差异。")
 		return
 	}
-	printInspectDiffSection(w, "Changed", report.Changed, true)
-	printInspectDiffSection(w, "Added in right", report.Added, false)
-	printInspectDiffSection(w, "Removed from right", report.Removed, false)
+	printInspectDiffSection(w, "变更", report.Changed, true)
+	printInspectDiffSection(w, "右侧新增", report.Added, false)
+	printInspectDiffSection(w, "右侧删除", report.Removed, false)
 }
 
 func printInspectDiffSection(w io.Writer, title string, entries []InspectDiffEntry, changed bool) {
@@ -289,12 +289,12 @@ func printInspectDiffSection(w io.Writer, title string, entries []InspectDiffEnt
 	for _, entry := range entries {
 		fmt.Fprintf(w, "  - %s\n", entry.Path)
 		if changed {
-			fmt.Fprintf(w, "      left:  %s\n", entry.Left)
-			fmt.Fprintf(w, "      right: %s\n", entry.Right)
+			fmt.Fprintf(w, "      左侧: %s\n", entry.Left)
+			fmt.Fprintf(w, "      右侧: %s\n", entry.Right)
 		} else if entry.Right != "" {
-			fmt.Fprintf(w, "      value: %s\n", entry.Right)
+			fmt.Fprintf(w, "      值: %s\n", entry.Right)
 		} else {
-			fmt.Fprintf(w, "      value: %s\n", entry.Left)
+			fmt.Fprintf(w, "      值: %s\n", entry.Left)
 		}
 	}
 	fmt.Fprintln(w)

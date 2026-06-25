@@ -104,7 +104,7 @@ func newHealthCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			report, err := runHealthReport(cmd.Context(), opts)
 			if err != nil {
-				return fmt.Errorf("health report failed: %w", err)
+				return fmt.Errorf("生成体检报告失败: %w", err)
 			}
 			return printReport(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
 				printHealthReport(w, report)
@@ -170,7 +170,7 @@ func buildHealthReport(ctx context.Context, svc healthDockerService, containers 
 				Severity:  "error",
 				Container: name,
 				Type:      "inspect-failed",
-				Message:   fmt.Sprintf("inspect failed: %v", err),
+				Message:   fmt.Sprintf("inspect 失败: %v", err),
 			})
 			report.Containers = append(report.Containers, item)
 			continue
@@ -195,7 +195,7 @@ func buildHealthReport(ctx context.Context, svc healthDockerService, containers 
 					Severity:  "warn",
 					Container: item.Name,
 					Type:      "logs-unavailable",
-					Message:   fmt.Sprintf("scan logs failed: %v", err),
+					Message:   fmt.Sprintf("扫描日志失败: %v", err),
 				})
 			} else if len(matches) > 0 {
 				item.LogMatches = matches
@@ -390,13 +390,13 @@ func normalizeKeywords(keywords []string) []string {
 }
 
 func printHealthReport(w io.Writer, report HealthReport) {
-	fmt.Fprintf(w, "Docker health report (%s)\n", report.GeneratedAt)
-	fmt.Fprintf(w, "Containers: total=%d running=%d stopped=%d restarting=%d unhealthy=%d\n", report.Summary.Total, report.Summary.Running, report.Summary.Stopped, report.Summary.Restarting, report.Summary.Unhealthy)
-	fmt.Fprintf(w, "Warnings: restarts=%d logs=%d public_bindings=%d issues=%d\n\n", report.Summary.RestartWarnings, report.Summary.LogWarnings, report.Summary.PublicBindings, len(report.Issues))
+	fmt.Fprintf(w, "Docker 体检报告 (%s)\n", report.GeneratedAt)
+	fmt.Fprintf(w, "容器: 总数=%d 运行中=%d 已停止=%d 重启中=%d 不健康=%d\n", report.Summary.Total, report.Summary.Running, report.Summary.Stopped, report.Summary.Restarting, report.Summary.Unhealthy)
+	fmt.Fprintf(w, "风险: 重启=%d 日志=%d 公网端口=%d 问题=%d\n\n", report.Summary.RestartWarnings, report.Summary.LogWarnings, report.Summary.PublicBindings, len(report.Issues))
 
-	fmt.Fprintln(w, "Issues:")
+	fmt.Fprintln(w, "问题:")
 	if len(report.Issues) == 0 {
-		fmt.Fprintln(w, "  none")
+		fmt.Fprintln(w, "  无")
 	} else {
 		for _, issue := range report.Issues {
 			containerName := ""
@@ -407,18 +407,18 @@ func printHealthReport(w io.Writer, report HealthReport) {
 		}
 	}
 
-	fmt.Fprintln(w, "\nContainers:")
+	fmt.Fprintln(w, "\n容器:")
 	for _, c := range report.Containers {
 		health := c.HealthStatus
 		if health == "" {
 			health = "none"
 		}
-		fmt.Fprintf(w, "  - %s state=%s health=%s restarts=%d image=%s\n", c.Name, c.State, health, c.RestartCount, c.Image)
+		fmt.Fprintf(w, "  - %s 状态=%s 健康=%s 重启次数=%d 镜像=%s\n", c.Name, c.State, health, c.RestartCount, c.Image)
 		for _, port := range c.PublicPorts {
-			fmt.Fprintf(w, "      public_port=%s\n", port)
+			fmt.Fprintf(w, "      公网端口=%s\n", port)
 		}
 		for _, match := range c.LogMatches {
-			fmt.Fprintf(w, "      log[%s] %s\n", strings.Join(match.Keywords, ","), match.Line)
+			fmt.Fprintf(w, "      日志[%s] %s\n", strings.Join(match.Keywords, ","), match.Line)
 		}
 	}
 }

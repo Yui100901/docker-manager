@@ -136,10 +136,10 @@ func TestPrintPruneReportIncludesSectionsAndApplyResult(t *testing.T) {
 
 	got := out.String()
 	for _, want := range []string{
-		"Stopped containers: 1",
-		"Estimated reclaimable: 1.0 KiB",
-		"Apply result:",
-		"space reclaimed: 2.0 KiB",
+		"已停止容器: 1",
+		"预计可回收空间: 1.0 KiB",
+		"执行结果:",
+		"已回收空间: 2.0 KiB",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("output = %q, want %q", got, want)

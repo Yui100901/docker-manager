@@ -114,7 +114,7 @@ func TestPrintVolumeReportIncludesSummaryAndContainers(t *testing.T) {
 	}, VolumeOptions{})
 
 	got := out.String()
-	for _, want := range []string{"Docker volume report", "unused=1", "reclaimable=1.0 KiB", "containers=none"} {
+	for _, want := range []string{"Docker volume 报告", "未使用=1", "可回收=1.0 KiB", "容器=无"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("output = %q, want %q", got, want)
 		}

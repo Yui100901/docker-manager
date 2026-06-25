@@ -549,7 +549,7 @@ func TestCompletePulledImagePreflightFailureSkipsDockerActions(t *testing.T) {
 	if err == nil {
 		t.Fatal("completePulledImage() error = nil, want preflight error")
 	}
-	if !strings.Contains(err.Error(), "push target registry check failed") {
+	if !strings.Contains(err.Error(), "推送前检查失败") {
 		t.Fatalf("completePulledImage() error = %q, want registry check failure", err.Error())
 	}
 	if called {
@@ -581,7 +581,7 @@ func TestCompletePulledImagePreflightAuthRequiredSkipsDockerActions(t *testing.T
 	if err == nil {
 		t.Fatal("completePulledImage() error = nil, want auth-required error")
 	}
-	if !strings.Contains(err.Error(), "requires auth") || !strings.Contains(err.Error(), "docker login") {
+	if !strings.Contains(err.Error(), "需要认证") || !strings.Contains(err.Error(), "docker login") {
 		t.Fatalf("completePulledImage() error = %q, want clear auth guidance", err.Error())
 	}
 	if called {

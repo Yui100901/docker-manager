@@ -122,12 +122,12 @@ func NewReverseCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().BoolVarP(&rerun, "rerun", "r", false, "逆向解析完成后删除原有容器并重新创建容器（谨慎使用），cmd模式下会调用docker api而不是运行命令行")
+	cmd.Flags().BoolVarP(&rerun, "rerun", "r", false, "逆向解析完成后删除原有容器并重新创建容器（谨慎使用），cmd 模式下会调用 Docker API 而不是运行命令行")
 	cmd.Flags().BoolVarP(&save, "save", "s", false, "保存输出到文件")
 	cmd.Flags().StringVarP(&reverseType, "reverse-type", "t", "cmd", "输出类型: cmd | compose | all")
 	cmd.Flags().BoolVar(&preserveVolumes, "preserve-volumes", false, "是否保留匿名卷名称（默认关闭）")
 	cmd.Flags().BoolVar(&filterDefaultEnvs, "filter-default-envs", true, "是否过滤掉 Docker 默认环境变量（默认开启）")
-	cmd.Flags().BoolVar(&mergePorts, "merge-ports", true, "命令是否合并连续端口，compose无法合并（默认开启）")
+	cmd.Flags().BoolVar(&mergePorts, "merge-ports", true, "命令是否合并连续端口，compose 无法合并（默认开启）")
 	cmd.Flags().BoolVar(&prettyFormat, "pretty", false, "是否格式化输出 docker run 命令（默认关闭）")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "仅打印将要执行的操作，不实际重新运行容器（用于审计/确认）")
 	cmd.Flags().BoolVar(&confirm, "confirm", false, "确认执行 --rerun 的停止、删除并重建容器操作")

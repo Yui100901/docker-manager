@@ -140,7 +140,7 @@ func TestPrintRegistryLoginCheckReportIncludesSections(t *testing.T) {
 		DockerLogin:  CheckResult{Status: "ok", Message: "Login Succeeded"},
 	})
 	got := out.String()
-	for _, want := range []string{"Docker registry login check", "registry.local:5000", "Credential:", "Registry ping:", "Docker login:"} {
+	for _, want := range []string{"Docker registry 登录检查", "registry.local:5000", "凭据:", "Registry 连通性:", "Docker 登录:"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("output = %q, want %q", got, want)
 		}

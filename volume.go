@@ -94,7 +94,7 @@ func newVolumeListUnusedCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			report, err := runVolumeReport(cmd.Context(), opts)
 			if err != nil {
-				return fmt.Errorf("volume report failed: %w", err)
+				return fmt.Errorf("生成 volume 报告失败: %w", err)
 			}
 			return printReport(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
 				printVolumeReport(w, report, opts)
@@ -217,8 +217,8 @@ func volumeUsageStatus(ref VolumeRef) string {
 }
 
 func printVolumeReport(w io.Writer, report VolumeReport, opts VolumeOptions) {
-	fmt.Fprintln(w, "Docker volume report")
-	fmt.Fprintf(w, "Volumes: total=%d listed=%d unused=%d suspected_unused=%d used=%d unknown_size=%d reclaimable=%s\n\n",
+	fmt.Fprintln(w, "Docker volume 报告")
+	fmt.Fprintf(w, "Volume: 总数=%d 已列出=%d 未使用=%d 疑似未使用=%d 使用中=%d 未知大小=%d 可回收=%s\n\n",
 		report.Summary.Total,
 		len(report.Volumes),
 		report.Summary.Unused,
@@ -228,38 +228,38 @@ func printVolumeReport(w io.Writer, report VolumeReport, opts VolumeOptions) {
 		humanBytes(uint64FromInt64(report.Summary.ReclaimableSize)),
 	)
 	if len(report.Warnings) > 0 {
-		fmt.Fprintln(w, "Warnings:")
+		fmt.Fprintln(w, "警告:")
 		for _, warning := range report.Warnings {
 			fmt.Fprintf(w, "  - %s\n", warning)
 		}
 		fmt.Fprintln(w)
 	}
 
-	fmt.Fprintln(w, "Volumes:")
+	fmt.Fprintln(w, "Volume:")
 	if len(report.Volumes) == 0 {
-		fmt.Fprintln(w, "  none")
+		fmt.Fprintln(w, "  无")
 		return
 	}
 	for _, vol := range report.Volumes {
 		name := displayLayerText(vol.Name, opts.NoTrunc, 48)
 		mountpoint := displayLayerText(vol.Mountpoint, opts.NoTrunc, 72)
-		fmt.Fprintf(w, "  - %s status=%s driver=%s refs=%d size=%s anonymous=%v\n", name, vol.Status, vol.Driver, vol.RefCount, volumeSizeText(vol.Size), vol.Anonymous)
+		fmt.Fprintf(w, "  - %s 状态=%s driver=%s 引用=%d 大小=%s 匿名=%v\n", name, vol.Status, vol.Driver, vol.RefCount, volumeSizeText(vol.Size), vol.Anonymous)
 		if mountpoint != "" {
 			fmt.Fprintf(w, "      mountpoint=%s\n", mountpoint)
 		}
 		if len(vol.Containers) == 0 {
-			fmt.Fprintln(w, "      containers=none")
+			fmt.Fprintln(w, "      容器=无")
 			continue
 		}
 		for _, c := range vol.Containers {
-			fmt.Fprintf(w, "      container=%s state=%s dest=%s rw=%v mode=%s\n", c.Name, c.State, c.Destination, c.RW, c.Mode)
+			fmt.Fprintf(w, "      容器=%s 状态=%s 挂载点=%s 可写=%v 模式=%s\n", c.Name, c.State, c.Destination, c.RW, c.Mode)
 		}
 	}
 }
 
 func volumeSizeText(size int64) string {
 	if size < 0 {
-		return "unknown"
+		return "未知"
 	}
 	return humanBytes(uint64FromInt64(size))
 }

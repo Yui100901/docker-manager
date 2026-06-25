@@ -90,7 +90,7 @@ func newNetworkCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			report, err := runNetworkReport(cmd.Context(), opts)
 			if err != nil {
-				return fmt.Errorf("network report failed: %w", err)
+				return fmt.Errorf("生成网络报告失败: %w", err)
 			}
 			return printReport(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
 				printNetworkReport(w, report)
@@ -181,7 +181,7 @@ func buildNetworkReport(containers []container.Summary, networks []network.Summa
 				mapping.Risks = append(mapping.Risks, "public-bind")
 				report.Risks = append(report.Risks, NetworkRisk{
 					Type:    "public-bind",
-					Message: fmt.Sprintf("%s exposes %s:%d/%s to public interfaces", name, hostIP, port.PublicPort, port.Type),
+					Message: fmt.Sprintf("%s 将 %s:%d/%s 暴露到公网监听地址", name, hostIP, port.PublicPort, port.Type),
 				})
 			}
 			report.Ports = append(report.Ports, mapping)
@@ -216,7 +216,7 @@ func addPortConflictRisks(report *NetworkReport) {
 		sort.Strings(containers)
 		report.Risks = append(report.Risks, NetworkRisk{
 			Type:    "port-conflict",
-			Message: fmt.Sprintf("%s:%d/%s is used by %s", k.ip, k.port, k.proto, strings.Join(containers, ",")),
+			Message: fmt.Sprintf("%s:%d/%s 被多个容器使用: %s", k.ip, k.port, k.proto, strings.Join(containers, ",")),
 		})
 	}
 
@@ -233,7 +233,7 @@ func addPortConflictRisks(report *NetworkReport) {
 				report.Ports[j].Risks = appendUnique(report.Ports[j].Risks, "wildcard-overlap")
 				report.Risks = append(report.Risks, NetworkRisk{
 					Type:    "wildcard-overlap",
-					Message: fmt.Sprintf("%d/%s has wildcard and specific host bindings across %s,%s", report.Ports[i].HostPort, report.Ports[i].Protocol, report.Ports[i].Container, report.Ports[j].Container),
+					Message: fmt.Sprintf("%d/%s 同时存在通配监听和指定地址监听: %s,%s", report.Ports[i].HostPort, report.Ports[i].Protocol, report.Ports[i].Container, report.Ports[j].Container),
 				})
 			}
 		}
@@ -241,21 +241,21 @@ func addPortConflictRisks(report *NetworkReport) {
 }
 
 func printNetworkReport(w io.Writer, report NetworkReport) {
-	fmt.Fprintln(w, "Docker network report")
-	fmt.Fprintf(w, "Networks: %d Containers: %d Port mappings: %d Risks: %d\n\n", len(report.Networks), len(report.Containers), len(report.Ports), len(report.Risks))
+	fmt.Fprintln(w, "Docker 网络报告")
+	fmt.Fprintf(w, "网络=%d 容器=%d 端口映射=%d 风险=%d\n\n", len(report.Networks), len(report.Containers), len(report.Ports), len(report.Risks))
 
-	fmt.Fprintln(w, "Networks:")
+	fmt.Fprintln(w, "网络:")
 	for _, net := range report.Networks {
-		fmt.Fprintf(w, "  - %s driver=%s scope=%s containers=%d\n", net.Name, net.Driver, net.Scope, len(net.Containers))
+		fmt.Fprintf(w, "  - %s driver=%s scope=%s 容器=%d\n", net.Name, net.Driver, net.Scope, len(net.Containers))
 		for _, ep := range net.Containers {
 			fmt.Fprintf(w, "      %s ip=%s aliases=%s\n", ep.Container, ep.IPAddress, strings.Join(ep.Aliases, ","))
 		}
 	}
 	if len(report.Networks) == 0 {
-		fmt.Fprintln(w, "  none")
+		fmt.Fprintln(w, "  无")
 	}
 
-	fmt.Fprintln(w, "\nPort mappings:")
+	fmt.Fprintln(w, "\n端口映射:")
 	for _, p := range report.Ports {
 		risks := ""
 		if len(p.Risks) > 0 {
@@ -264,15 +264,15 @@ func printNetworkReport(w io.Writer, report NetworkReport) {
 		fmt.Fprintf(w, "  - %s %s:%d -> %d/%s%s\n", p.Container, p.HostIP, p.HostPort, p.ContainerPort, p.Protocol, risks)
 	}
 	if len(report.Ports) == 0 {
-		fmt.Fprintln(w, "  none")
+		fmt.Fprintln(w, "  无")
 	}
 
-	fmt.Fprintln(w, "\nRisks:")
+	fmt.Fprintln(w, "\n风险:")
 	for _, risk := range report.Risks {
 		fmt.Fprintf(w, "  - [%s] %s\n", risk.Type, risk.Message)
 	}
 	if len(report.Risks) == 0 {
-		fmt.Fprintln(w, "  none")
+		fmt.Fprintln(w, "  无")
 	}
 }
 

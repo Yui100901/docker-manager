@@ -91,7 +91,7 @@ func TestPrintInspectDiffReportIncludesSummaryAndChangedFields(t *testing.T) {
 	})
 
 	got := out.String()
-	for _, want := range []string{"Container inspect diff: a -> b", "Summary: changed=1", "Changed:", "config.image"} {
+	for _, want := range []string{"容器 inspect 差异: a -> b", "摘要: 变更=1", "变更:", "config.image"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("output = %q, want %q", got, want)
 		}

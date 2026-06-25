@@ -115,7 +115,7 @@ func newRegistryLoginCheckCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			report, err := runRegistryLoginCheck(cmd.Context(), args[0], opts)
 			if err != nil {
-				return fmt.Errorf("registry login check failed: %w", err)
+				return fmt.Errorf("检查 registry 登录失败: %w", err)
 			}
 			return printReport(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
 				printRegistryLoginCheckReport(w, report)
@@ -331,14 +331,14 @@ func pingRegistryV2(ctx context.Context, registryName string, plainHTTP bool, cr
 
 	switch resp.StatusCode {
 	case http.StatusOK:
-		return CheckResult{Status: "ok", HTTPStatus: resp.StatusCode, Message: "registry /v2/ reachable"}
+		return CheckResult{Status: "ok", HTTPStatus: resp.StatusCode, Message: "registry /v2/ 可访问"}
 	case http.StatusUnauthorized:
 		if cred.Found {
-			return CheckResult{Status: "failed", HTTPStatus: resp.StatusCode, Message: "registry requires auth and configured credential was not accepted by /v2/"}
+			return CheckResult{Status: "failed", HTTPStatus: resp.StatusCode, Message: "registry 需要认证，但已配置凭据未被 /v2/ 接受"}
 		}
-		return CheckResult{Status: "warning", HTTPStatus: resp.StatusCode, Message: "registry reachable but requires authentication"}
+		return CheckResult{Status: "warning", HTTPStatus: resp.StatusCode, Message: "registry 可访问但需要认证"}
 	case http.StatusForbidden:
-		return CheckResult{Status: "failed", HTTPStatus: resp.StatusCode, Message: "registry denied access"}
+		return CheckResult{Status: "failed", HTTPStatus: resp.StatusCode, Message: "registry 拒绝访问"}
 	default:
 		if resp.StatusCode >= 200 && resp.StatusCode < 400 {
 			return CheckResult{Status: "ok", HTTPStatus: resp.StatusCode, Message: resp.Status}
@@ -349,7 +349,7 @@ func pingRegistryV2(ctx context.Context, registryName string, plainHTTP bool, cr
 
 func dockerRegistryLogin(ctx context.Context, registryName string, cred registryCredential) CheckResult {
 	if !cred.Found {
-		return CheckResult{Status: "skipped", Message: "no credential available for Docker RegistryLogin"}
+		return CheckResult{Status: "skipped", Message: "没有可用于 Docker RegistryLogin 的凭据"}
 	}
 	svc, err := newRegistryLoginDockerService()
 	if err != nil {
@@ -368,7 +368,7 @@ func dockerRegistryLogin(ctx context.Context, registryName string, cred registry
 	if resp.Status != "" {
 		return CheckResult{Status: "ok", Message: resp.Status}
 	}
-	return CheckResult{Status: "ok", Message: "Docker registry login accepted"}
+	return CheckResult{Status: "ok", Message: "Docker registry 登录已接受"}
 }
 
 func buildCredentialReport(cred registryCredential, configErr error) CredentialReport {
@@ -403,35 +403,35 @@ func registryLoginRecommendations(report RegistryLoginCheckReport) []string {
 }
 
 func printRegistryLoginCheckReport(w io.Writer, report RegistryLoginCheckReport) {
-	fmt.Fprintln(w, "Docker registry login check")
+	fmt.Fprintln(w, "Docker registry 登录检查")
 	fmt.Fprintf(w, "Registry: %s\n", report.Registry)
-	fmt.Fprintf(w, "Docker config: %s found=%v\n", report.DockerConfig, report.ConfigFound)
-	fmt.Fprintf(w, "Credential: found=%v source=%s", report.Credential.Found, valueOr(report.Credential.Source, "none"))
+	fmt.Fprintf(w, "Docker config: %s 已找到=%v\n", report.DockerConfig, report.ConfigFound)
+	fmt.Fprintf(w, "凭据: 已找到=%v 来源=%s", report.Credential.Found, valueOr(report.Credential.Source, "无"))
 	if report.Credential.Helper != "" {
 		fmt.Fprintf(w, " helper=%s", report.Credential.Helper)
 	}
 	if report.Credential.Username != "" {
-		fmt.Fprintf(w, " username=%s", report.Credential.Username)
+		fmt.Fprintf(w, " 用户=%s", report.Credential.Username)
 	}
 	if report.Credential.Message != "" {
-		fmt.Fprintf(w, " message=%s", report.Credential.Message)
+		fmt.Fprintf(w, " 信息=%s", report.Credential.Message)
 	}
 	fmt.Fprintln(w)
-	fmt.Fprintf(w, "Registry ping: %s", report.RegistryPing.Status)
+	fmt.Fprintf(w, "Registry 连通性: %s", checkStatusText(report.RegistryPing.Status))
 	if report.RegistryPing.HTTPStatus != 0 {
 		fmt.Fprintf(w, " http=%d", report.RegistryPing.HTTPStatus)
 	}
 	if report.RegistryPing.Message != "" {
-		fmt.Fprintf(w, " message=%s", report.RegistryPing.Message)
+		fmt.Fprintf(w, " 信息=%s", report.RegistryPing.Message)
 	}
 	fmt.Fprintln(w)
-	fmt.Fprintf(w, "Docker login: %s", report.DockerLogin.Status)
+	fmt.Fprintf(w, "Docker 登录: %s", checkStatusText(report.DockerLogin.Status))
 	if report.DockerLogin.Message != "" {
-		fmt.Fprintf(w, " message=%s", report.DockerLogin.Message)
+		fmt.Fprintf(w, " 信息=%s", report.DockerLogin.Message)
 	}
 	fmt.Fprintln(w)
 	if len(report.Recommendations) > 0 {
-		fmt.Fprintln(w, "\nRecommendations:")
+		fmt.Fprintln(w, "\n建议:")
 		for _, tip := range report.Recommendations {
 			fmt.Fprintf(w, "  - %s\n", tip)
 		}
@@ -443,6 +443,21 @@ func valueOr(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func checkStatusText(status string) string {
+	switch status {
+	case "ok":
+		return "通过"
+	case "warning":
+		return "警告"
+	case "failed":
+		return "失败"
+	case "skipped":
+		return "跳过"
+	default:
+		return status
+	}
 }
 
 func uniqueStrings(values []string) []string {

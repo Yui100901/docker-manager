@@ -28,7 +28,7 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 	configPath := defaultConfigPath
 	rootCmd := &cobra.Command{
 		Use:           "dm <command>",
-		Short:         "Docker manager helper\nAuthor:Yui",
+		Short:         "Docker 运维辅助工具",
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
@@ -49,10 +49,10 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 	opts.Verbose = cfg.Verbose
 	opts.Quiet = cfg.Quiet
 	opts.JSON = cfg.JSON
-	rootCmd.PersistentFlags().StringVar(&configPath, "config", defaultConfigPath, "config file path")
-	rootCmd.PersistentFlags().BoolVar(&opts.Verbose, "verbose", opts.Verbose, "enable verbose logs")
-	rootCmd.PersistentFlags().BoolVar(&opts.Quiet, "quiet", opts.Quiet, "suppress info logs")
-	rootCmd.PersistentFlags().BoolVar(&opts.JSON, "json", opts.JSON, "emit machine-readable JSON logs and errors")
+	rootCmd.PersistentFlags().StringVar(&configPath, "config", defaultConfigPath, "配置文件路径")
+	rootCmd.PersistentFlags().BoolVar(&opts.Verbose, "verbose", opts.Verbose, "输出详细日志")
+	rootCmd.PersistentFlags().BoolVar(&opts.Quiet, "quiet", opts.Quiet, "隐藏信息日志")
+	rootCmd.PersistentFlags().BoolVar(&opts.JSON, "json", opts.JSON, "以 JSON 输出日志和错误")
 
 	rootCmd.AddCommand(newLoadCommand())
 	rootCmd.AddCommand(newSaveCommandWithDefaults(func() string { return cfg.OutputDir }))

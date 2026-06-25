@@ -31,6 +31,6 @@ func printReport(w io.Writer, format string, report interface{}, printText func(
 		encoder.SetIndent("", "  ")
 		return encoder.Encode(report)
 	default:
-		return fmt.Errorf("unsupported report format %q, want text or json", format)
+		return fmt.Errorf("不支持的输出格式 %q，请使用 text 或 json", format)
 	}
 }

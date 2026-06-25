@@ -124,10 +124,10 @@ func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command 
 	var verboseHTTP bool
 	cmd := &cobra.Command{
 		Use:   "pull <images...>",
-		Short: "无需docker客户端，下载docker镜像",
-		Long: `无需docker客户端，下载docker镜像，从官方镜像源拉取。
+		Short: "无需 Docker 客户端下载 Docker 镜像",
+		Long: `无需 Docker 客户端下载 Docker 镜像，从官方镜像源拉取。
 默认使用 HTTP_PROXY/HTTPS_PROXY 环境变量代理；未设置则直连。可通过 --proxy 强制指定代理。
-默认拉取linux/amd64镜像。`,
+默认拉取 linux/amd64 镜像。`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
 			defer stop()
@@ -358,14 +358,14 @@ func (r *PullRunner) checkPushTargetRegistry(ctx context.Context, target string,
 		return nil
 	case registryPingAuthRequired:
 		if credErr != nil {
-			return fmt.Errorf("push target registry %s requires auth, but Docker credential lookup failed: %w", registryName, credErr)
+			return fmt.Errorf("目标 registry %s 需要认证，但读取 Docker 凭据失败: %w", registryName, credErr)
 		}
-		return fmt.Errorf("push target registry %s requires auth, but no Docker credential was found; run docker login %s or pass --docker-config", registryName, registryName)
+		return fmt.Errorf("目标 registry %s 需要认证，但未找到 Docker 凭据；请先执行 docker login %s，或通过 --docker-config 指定配置", registryName, registryName)
 	default:
 		if credErr != nil {
-			return fmt.Errorf("push target registry check failed for %s: %s; Docker credential lookup also failed: %w", registryName, result.message, credErr)
+			return fmt.Errorf("目标 registry %s 推送前检查失败: %s；同时读取 Docker 凭据失败: %w", registryName, result.message, credErr)
 		}
-		return fmt.Errorf("push target registry check failed for %s: %s", registryName, result.message)
+		return fmt.Errorf("目标 registry %s 推送前检查失败: %s", registryName, result.message)
 	}
 }
 
@@ -397,7 +397,7 @@ func (r *PullRunner) pingRegistryV2(ctx context.Context, registryName string, op
 		return result
 	}
 	if !cred.Found {
-		return registryPingResult{status: registryPingAuthRequired, httpStatus: result.httpStatus, message: "registry reachable but requires authentication"}
+		return registryPingResult{status: registryPingAuthRequired, httpStatus: result.httpStatus, message: "registry 可访问但需要认证"}
 	}
 	auth, err := r.resolveRegistryAuth(ctx, result.message, info, opts)
 	if err != nil {
@@ -407,7 +407,7 @@ func (r *PullRunner) pingRegistryV2(ctx context.Context, registryName string, op
 	if retry.status == registryPingOK {
 		return retry
 	}
-	return registryPingResult{status: registryPingFailed, httpStatus: retry.httpStatus, message: "configured credential was not accepted by registry /v2/: " + retry.message}
+	return registryPingResult{status: registryPingFailed, httpStatus: retry.httpStatus, message: "已配置凭据未被 registry /v2/ 接受: " + retry.message}
 }
 
 func (r *PullRunner) pingRegistryV2Once(ctx context.Context, rawURL string, auth *pullRegistryAuth) registryPingResult {
@@ -922,7 +922,7 @@ func readQuotedChallengeValue(input string) (string, string) {
 func (r *PullRunner) fetchBearerToken(ctx context.Context, challenge authChallenge, info *ImageInfo, cred pullRegistryCredential) (string, error) {
 	realm := challenge.Params["realm"]
 	if realm == "" {
-		return "", fmt.Errorf("Bearer challenge missing realm")
+		return "", fmt.Errorf("Bearer challenge 缺少 realm")
 	}
 	query := map[string]string{}
 	if service := challenge.Params["service"]; service != "" {
@@ -1474,7 +1474,7 @@ func verifyFileDigest(path string, expected digest.Digest) error {
 		return err
 	}
 	if !verifier.Verified() {
-		return fmt.Errorf("digest mismatch for %s: expected %s", path, expected)
+		return fmt.Errorf("digest 校验失败 %s: 期望 %s", path, expected)
 	}
 	return nil
 }

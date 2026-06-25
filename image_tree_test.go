@@ -89,7 +89,7 @@ func TestPrintImageTreeReportIncludesSummaryLargestAndHistory(t *testing.T) {
 	}, ImageTreeOptions{Top: 5})
 
 	got := out.String()
-	for _, want := range []string{"Image tree: demo:latest", "Largest layers:", "History (base -> top):", "RUN install"} {
+	for _, want := range []string{"镜像层报告: demo:latest", "最大 layer:", "构建历史 (base -> top):", "RUN install"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("output = %q, want %q", got, want)
 		}

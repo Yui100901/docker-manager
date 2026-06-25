@@ -56,14 +56,14 @@ type imageExportTarget struct {
 func newLoadCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "load [path]",
-		Short: "导入Docker镜像，默认从images，以及所有子目录寻找镜像",
+		Short: "导入 Docker 镜像，默认递归扫描 images 目录",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := "images"
 			if len(args) > 0 {
 				path = args[0]
 			}
 			if err := loadImages(cmd.Context(), path, cmd.OutOrStdout()); err != nil {
-				return fmt.Errorf("import failed: %w", err)
+				return fmt.Errorf("导入镜像失败: %w", err)
 			}
 			return nil
 		},
@@ -82,7 +82,7 @@ func newSaveCommandWithDefaults(defaultOutputDir func() string) *cobra.Command {
 	var filters []string
 	cmd := &cobra.Command{
 		Use:   "save [path] [options]",
-		Short: "导出Docker镜像，默认为当前路径下的images。",
+		Short: "导出 Docker 镜像，默认输出到 images 目录",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := defaultSavePath(defaultOutputDir)
 			if len(args) > 0 {
@@ -90,7 +90,7 @@ func newSaveCommandWithDefaults(defaultOutputDir func() string) *cobra.Command {
 			}
 			if !dryRun {
 				if _, err := file_utils.CreateDirectory(path); err != nil {
-					return fmt.Errorf("create directory failed: %w", err)
+					return fmt.Errorf("创建输出目录失败: %w", err)
 				}
 			}
 			opts := SaveOptions{
@@ -100,13 +100,13 @@ func newSaveCommandWithDefaults(defaultOutputDir func() string) *cobra.Command {
 				Filters: filters,
 			}
 			if err := saveImagesWithOptions(cmd.Context(), path, opts); err != nil {
-				return fmt.Errorf("export failed: %w", err)
+				return fmt.Errorf("导出镜像失败: %w", err)
 			}
 			return nil
 		},
 	}
-	cmd.Flags().BoolVarP(&merge, "merge", "m", false, "合并成一个文件images.tar")
-	cmd.Flags().BoolVarP(&all, "all", "a", false, "导出所有镜像，包括无tag镜像")
+	cmd.Flags().BoolVarP(&merge, "merge", "m", false, "合并为一个 images.tar 文件")
+	cmd.Flags().BoolVarP(&all, "all", "a", false, "导出所有镜像，包括无 tag 镜像")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "仅预览将导出的镜像，不写入文件")
 	cmd.Flags().StringArrayVarP(&filters, "filter", "f", nil, "筛选要导出的镜像，支持镜像名/tag/ID和通配符，可重复指定")
 	return cmd
@@ -381,7 +381,7 @@ func ensureImageManager() error {
 	}
 	manager, err := newImageManager()
 	if err != nil {
-		return fmt.Errorf("init Docker image manager: %w", err)
+		return fmt.Errorf("初始化 Docker 镜像管理器失败: %w", err)
 	}
 	imageManager = manager
 	return nil

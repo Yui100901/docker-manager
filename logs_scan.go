@@ -91,7 +91,7 @@ func newLogsScanCommand() *cobra.Command {
 			}
 			report, err := runLogsScan(cmd.Context(), args, opts)
 			if err != nil {
-				return fmt.Errorf("logs scan failed: %w", err)
+				return fmt.Errorf("扫描日志失败: %w", err)
 			}
 			return printReport(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
 				printLogsScanReport(w, report)
@@ -191,7 +191,7 @@ func buildLogsScanReport(ctx context.Context, svc logsScanDockerService, targets
 
 		inspect, err := svc.InspectContainer(ctx, ref)
 		if err != nil {
-			item.Error = fmt.Sprintf("inspect failed: %v", err)
+			item.Error = fmt.Sprintf("inspect 失败: %v", err)
 			report.Summary.Errors++
 			report.Containers = append(report.Containers, item)
 			continue
@@ -200,7 +200,7 @@ func buildLogsScanReport(ctx context.Context, svc logsScanDockerService, targets
 
 		text, err := readContainerLogText(ctx, svc, ref, inspect, opts)
 		if err != nil {
-			item.Error = fmt.Sprintf("read logs failed: %v", err)
+			item.Error = fmt.Sprintf("读取日志失败: %v", err)
 			report.Summary.Errors++
 			report.Containers = append(report.Containers, item)
 			continue
@@ -328,28 +328,28 @@ func surroundingLines(lines []string, start, end int) []string {
 }
 
 func printLogsScanReport(w io.Writer, report LogsScanReport) {
-	fmt.Fprintf(w, "Docker logs scan (%s)\n", report.GeneratedAt)
-	fmt.Fprintf(w, "Keywords: %s\n", strings.Join(report.Keywords, ", "))
-	fmt.Fprintf(w, "Summary: scanned=%d matched_containers=%d matches=%d errors=%d\n\n", report.Summary.ScannedContainers, report.Summary.ContainersMatched, report.Summary.TotalMatches, report.Summary.Errors)
+	fmt.Fprintf(w, "Docker 日志扫描 (%s)\n", report.GeneratedAt)
+	fmt.Fprintf(w, "关键词: %s\n", strings.Join(report.Keywords, ", "))
+	fmt.Fprintf(w, "摘要: 已扫描=%d 命中容器=%d 命中行=%d 错误=%d\n\n", report.Summary.ScannedContainers, report.Summary.ContainersMatched, report.Summary.TotalMatches, report.Summary.Errors)
 
 	for _, c := range report.Containers {
-		status := fmt.Sprintf("matches=%d", len(c.Matches))
+		status := fmt.Sprintf("命中=%d", len(c.Matches))
 		if c.Error != "" {
-			status += " error=" + c.Error
+			status += " 错误=" + c.Error
 		}
-		fmt.Fprintf(w, "%s state=%s image=%s %s\n", c.Name, c.State, c.Image, status)
+		fmt.Fprintf(w, "%s 状态=%s 镜像=%s %s\n", c.Name, c.State, c.Image, status)
 		for _, match := range c.Matches {
 			for _, before := range match.Before {
 				fmt.Fprintf(w, "    | %s\n", before)
 			}
-			fmt.Fprintf(w, "  > line %d [%s] %s\n", match.LineNumber, strings.Join(match.Keywords, ","), match.Line)
+			fmt.Fprintf(w, "  > 第 %d 行 [%s] %s\n", match.LineNumber, strings.Join(match.Keywords, ","), match.Line)
 			for _, after := range match.After {
 				fmt.Fprintf(w, "    | %s\n", after)
 			}
 		}
 	}
 	if len(report.Containers) == 0 {
-		fmt.Fprintln(w, "No containers scanned.")
+		fmt.Fprintln(w, "未扫描任何容器。")
 	}
 }
 

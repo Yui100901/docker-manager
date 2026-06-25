@@ -189,7 +189,7 @@ func TestPrintLogsScanReportIncludesMatches(t *testing.T) {
 		}},
 	})
 	got := out.String()
-	for _, want := range []string{"Docker logs scan", "Summary: scanned=1", "line 2 [error] ERROR failed", "| before", "| after"} {
+	for _, want := range []string{"Docker 日志扫描", "摘要: 已扫描=1", "第 2 行 [error] ERROR failed", "| before", "| after"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("output = %q, want %q", got, want)
 		}
