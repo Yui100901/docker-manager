@@ -458,7 +458,17 @@ func TestResolvePushTargetRejectsInvalidTarget(t *testing.T) {
 
 func TestCompletePulledImageMirrorsWhenToSet(t *testing.T) {
 	var calls []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/" {
+			t.Fatalf("path = %q, want /v2/", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	targetRegistry := strings.TrimPrefix(server.URL, "http://")
 	runner := newTestPullRunner()
+	runner.httpClient = &http_utils.HTTPClient{Client: server.Client()}
 	runner.loadPulledImage = func(path string) error {
 		calls = append(calls, "load:"+path)
 		return nil
@@ -472,14 +482,14 @@ func TestCompletePulledImageMirrorsWhenToSet(t *testing.T) {
 		return nil
 	}
 
-	err := runner.completePulledImage("busybox.tar", testBusyboxInfo(), PullOptions{To: "registry.local:5000"})
+	err := runner.completePulledImage("busybox.tar", testBusyboxInfo(), PullOptions{To: targetRegistry, PlainHTTP: true})
 	if err != nil {
 		t.Fatalf("completePulledImage() error = %v", err)
 	}
 	want := []string{
 		"load:busybox.tar",
-		"tag:library/busybox:latest->registry.local:5000/library/busybox:latest",
-		"push:registry.local:5000/library/busybox:latest",
+		"tag:library/busybox:latest->" + targetRegistry + "/library/busybox:latest",
+		"push:" + targetRegistry + "/library/busybox:latest",
 	}
 	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("calls = %#v, want %#v", calls, want)
@@ -488,17 +498,145 @@ func TestCompletePulledImageMirrorsWhenToSet(t *testing.T) {
 
 func TestCompletePulledImageReturnsPushError(t *testing.T) {
 	pushErr := errors.New("push failed")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/" {
+			t.Fatalf("path = %q, want /v2/", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	targetRegistry := strings.TrimPrefix(server.URL, "http://")
 	runner := newTestPullRunner()
+	runner.httpClient = &http_utils.HTTPClient{Client: server.Client()}
 	runner.loadPulledImage = func(path string) error { return nil }
 	runner.tagPulledImage = func(ctx context.Context, source, target string) error { return nil }
 	runner.pushPulledImage = func(ctx context.Context, target string) error { return pushErr }
 
-	err := runner.completePulledImage("busybox.tar", testBusyboxInfo(), PullOptions{To: "registry.local:5000"})
+	err := runner.completePulledImage("busybox.tar", testBusyboxInfo(), PullOptions{To: targetRegistry, PlainHTTP: true})
 	if err == nil {
 		t.Fatal("completePulledImage() error = nil, want push error")
 	}
 	if !errors.Is(err, pushErr) {
 		t.Fatalf("completePulledImage() error = %v, want wrapped %v", err, pushErr)
+	}
+}
+
+func TestCompletePulledImagePreflightFailureSkipsDockerActions(t *testing.T) {
+	var called bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	targetRegistry := strings.TrimPrefix(server.URL, "http://")
+	runner := newTestPullRunner()
+	runner.httpClient = &http_utils.HTTPClient{Client: server.Client()}
+	runner.loadPulledImage = func(path string) error {
+		called = true
+		return nil
+	}
+	runner.tagPulledImage = func(ctx context.Context, source, target string) error {
+		called = true
+		return nil
+	}
+	runner.pushPulledImage = func(ctx context.Context, target string) error {
+		called = true
+		return nil
+	}
+
+	err := runner.completePulledImage("busybox.tar", testBusyboxInfo(), PullOptions{To: targetRegistry, PlainHTTP: true})
+	if err == nil {
+		t.Fatal("completePulledImage() error = nil, want preflight error")
+	}
+	if !strings.Contains(err.Error(), "push target registry check failed") {
+		t.Fatalf("completePulledImage() error = %q, want registry check failure", err.Error())
+	}
+	if called {
+		t.Fatal("Docker action was called after failed preflight")
+	}
+}
+
+func TestCompletePulledImagePreflightAuthRequiredSkipsDockerActions(t *testing.T) {
+	var called bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("WWW-Authenticate", `Basic realm="private"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	targetRegistry := strings.TrimPrefix(server.URL, "http://")
+	runner := newTestPullRunner()
+	runner.httpClient = &http_utils.HTTPClient{Client: server.Client()}
+	runner.loadPulledImage = func(path string) error {
+		called = true
+		return nil
+	}
+
+	err := runner.completePulledImage("busybox.tar", testBusyboxInfo(), PullOptions{
+		To:           targetRegistry,
+		PlainHTTP:    true,
+		DockerConfig: filepath.Join(t.TempDir(), "missing-config.json"),
+	})
+	if err == nil {
+		t.Fatal("completePulledImage() error = nil, want auth-required error")
+	}
+	if !strings.Contains(err.Error(), "requires auth") || !strings.Contains(err.Error(), "docker login") {
+		t.Fatalf("completePulledImage() error = %q, want clear auth guidance", err.Error())
+	}
+	if called {
+		t.Fatal("Docker load was called after failed auth preflight")
+	}
+}
+
+func TestCompletePulledImagePreflightUsesBasicCredentialFromDockerConfig(t *testing.T) {
+	wantAuth := basicAuthHeader("demo", "secret")
+	var authorizedPing bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/" {
+			t.Fatalf("path = %q, want /v2/", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != wantAuth {
+			w.Header().Set("WWW-Authenticate", `Basic realm="private"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		authorizedPing = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	var calls []string
+	targetRegistry := strings.TrimPrefix(server.URL, "http://")
+	runner := newTestPullRunner()
+	runner.httpClient = &http_utils.HTTPClient{Client: server.Client()}
+	runner.loadPulledImage = func(path string) error {
+		calls = append(calls, "load")
+		return nil
+	}
+	runner.tagPulledImage = func(ctx context.Context, source, target string) error {
+		calls = append(calls, "tag")
+		return nil
+	}
+	runner.pushPulledImage = func(ctx context.Context, target string) error {
+		calls = append(calls, "push")
+		return nil
+	}
+
+	configPath := writePullDockerConfig(t, targetRegistry, "demo", "secret")
+	err := runner.completePulledImage("busybox.tar", testBusyboxInfo(), PullOptions{
+		To:           targetRegistry,
+		PlainHTTP:    true,
+		DockerConfig: configPath,
+	})
+	if err != nil {
+		t.Fatalf("completePulledImage() error = %v", err)
+	}
+	if !authorizedPing {
+		t.Fatal("registry /v2/ was not retried with Basic auth")
+	}
+	if strings.Join(calls, ",") != "load,tag,push" {
+		t.Fatalf("calls = %#v, want load/tag/push", calls)
 	}
 }
 

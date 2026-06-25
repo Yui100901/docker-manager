@@ -288,6 +288,18 @@ func (r *PullRunner) completePulledImage(outputFile string, info *ImageInfo, opt
 		return nil
 	}
 
+	var target string
+	if opts.To != "" {
+		var err error
+		target, err = resolvePushTarget(info, opts.To)
+		if err != nil {
+			return err
+		}
+		if err := r.checkPushTargetRegistry(opts.Context, target, opts); err != nil {
+			return err
+		}
+	}
+
 	log.Printf("Load pulled image: %s", outputFile)
 	if err := r.loadPulledImage(outputFile); err != nil {
 		return fmt.Errorf("导入镜像失败: %w", err)
@@ -296,10 +308,6 @@ func (r *PullRunner) completePulledImage(outputFile string, info *ImageInfo, opt
 
 	if opts.To == "" {
 		return nil
-	}
-	target, err := resolvePushTarget(info, opts.To)
-	if err != nil {
-		return err
 	}
 	source := localImageRef(info)
 	ctx := opts.Context
@@ -322,6 +330,96 @@ func (r *PullRunner) completePulledImage(outputFile string, info *ImageInfo, opt
 	}
 	log.Printf("镜像推送成功: %s", target)
 	return nil
+}
+
+func (r *PullRunner) checkPushTargetRegistry(ctx context.Context, target string, opts PullOptions) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	info, err := parseImageInfo(target)
+	if err != nil {
+		return fmt.Errorf("解析目标 registry 失败: %w", err)
+	}
+	registryName := info.Registry
+	cred, credErr := r.loadPullRegistryCredential(ctx, registryName, opts.DockerConfig)
+	result := r.pingRegistryV2(ctx, registryName, opts, cred, info)
+	switch result.status {
+	case registryPingOK:
+		log.Printf("Push target registry check passed: registry=%s credential=%v", registryName, cred.Found)
+		return nil
+	case registryPingAuthRequired:
+		if credErr != nil {
+			return fmt.Errorf("push target registry %s requires auth, but Docker credential lookup failed: %w", registryName, credErr)
+		}
+		return fmt.Errorf("push target registry %s requires auth, but no Docker credential was found; run docker login %s or pass --docker-config", registryName, registryName)
+	default:
+		if credErr != nil {
+			return fmt.Errorf("push target registry check failed for %s: %s; Docker credential lookup also failed: %w", registryName, result.message, credErr)
+		}
+		return fmt.Errorf("push target registry check failed for %s: %s", registryName, result.message)
+	}
+}
+
+type registryPingStatus string
+
+const (
+	registryPingOK           registryPingStatus = "ok"
+	registryPingAuthRequired registryPingStatus = "auth-required"
+	registryPingFailed       registryPingStatus = "failed"
+)
+
+type registryPingResult struct {
+	status     registryPingStatus
+	message    string
+	httpStatus int
+}
+
+func (r *PullRunner) pingRegistryV2(ctx context.Context, registryName string, opts PullOptions, cred pullRegistryCredential, info *ImageInfo) registryPingResult {
+	scheme := "https"
+	if opts.PlainHTTP {
+		scheme = "http"
+	}
+	rawURL := fmt.Sprintf("%s://%s/v2/", scheme, registryName)
+	result := r.pingRegistryV2Once(ctx, rawURL, nil)
+	if result.status == registryPingOK {
+		return result
+	}
+	if result.httpStatus != http.StatusUnauthorized {
+		return result
+	}
+	if !cred.Found {
+		return registryPingResult{status: registryPingAuthRequired, httpStatus: result.httpStatus, message: "registry reachable but requires authentication"}
+	}
+	auth, err := r.resolveRegistryAuth(ctx, result.message, info, opts)
+	if err != nil {
+		return registryPingResult{status: registryPingFailed, httpStatus: result.httpStatus, message: err.Error()}
+	}
+	retry := r.pingRegistryV2Once(ctx, rawURL, auth)
+	if retry.status == registryPingOK {
+		return retry
+	}
+	return registryPingResult{status: registryPingFailed, httpStatus: retry.httpStatus, message: "configured credential was not accepted by registry /v2/: " + retry.message}
+}
+
+func (r *PullRunner) pingRegistryV2Once(ctx context.Context, rawURL string, auth *pullRegistryAuth) registryPingResult {
+	req, err := buildGETRequest(ctx, rawURL, authHeaders(nil, auth), nil)
+	if err != nil {
+		return registryPingResult{status: registryPingFailed, message: err.Error()}
+	}
+	resp, err := r.httpClient.Client.Do(req)
+	if err != nil {
+		return registryPingResult{status: registryPingFailed, message: err.Error()}
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
+		return registryPingResult{status: registryPingOK, httpStatus: resp.StatusCode, message: resp.Status}
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		return registryPingResult{status: registryPingAuthRequired, httpStatus: resp.StatusCode, message: resp.Header.Get("WWW-Authenticate")}
+	}
+	return registryPingResult{status: registryPingFailed, httpStatus: resp.StatusCode, message: resp.Status}
 }
 
 func localImageRef(info *ImageInfo) string {
