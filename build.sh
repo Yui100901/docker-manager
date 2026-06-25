@@ -1,9 +1,17 @@
 #!/bin/bash
+set -euo pipefail
 
-echo "Build for Linux "
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o ./bin/dm
+VERSION=${VERSION:-dev}
+COMMIT=${COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}
+BUILD_DATE=${BUILD_DATE:-$(date -u +"%Y-%m-%dT%H:%M:%SZ")}
+LDFLAGS="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.buildDate=${BUILD_DATE}"
 
-echo "Build for Windows "
-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o ./bin/dm.exe
+mkdir -p ./bin/linux ./bin/windows
+
+echo "Build for Linux ${VERSION} ${COMMIT}"
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "${LDFLAGS}" -o ./bin/linux/dm .
+
+echo "Build for Windows ${VERSION} ${COMMIT}"
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "${LDFLAGS}" -o ./bin/windows/dm.exe .
 
 echo "Build completed"

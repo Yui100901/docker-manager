@@ -67,6 +67,7 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 	rootCmd.AddCommand(newLogsScanCommand())
 	rootCmd.AddCommand(newRegistryLoginCheckCommand())
 	rootCmd.AddCommand(newCompletionCommand())
+	rootCmd.AddCommand(newVersionCommand())
 	rootCmd.AddCommand(reverse.NewReverseCommand())
 	rootCmd.AddCommand(pull.NewPullCommandWithDefaults(func() pull.CommandDefaults {
 		return pull.CommandDefaults{
