@@ -4,7 +4,7 @@ set -euo pipefail
 VERSION=${VERSION:-dev}
 COMMIT=${COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}
 BUILD_DATE=${BUILD_DATE:-$(date -u +"%Y-%m-%dT%H:%M:%SZ")}
-LDFLAGS="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.buildDate=${BUILD_DATE}"
+LDFLAGS="-s -w -X docker-manager/internal/cli.version=${VERSION} -X docker-manager/internal/cli.commit=${COMMIT} -X docker-manager/internal/cli.buildDate=${BUILD_DATE}"
 
 mkdir -p ./bin/linux ./bin/windows
 

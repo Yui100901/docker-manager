@@ -4,7 +4,7 @@ if "%VERSION%"=="" set VERSION=dev
 if "%COMMIT%"=="" for /f %%i in ('git rev-parse --short HEAD 2^>nul') do set COMMIT=%%i
 if "%COMMIT%"=="" set COMMIT=unknown
 if "%BUILD_DATE%"=="" for /f %%i in ('powershell -NoProfile -Command "Get-Date -AsUTC -Format yyyy-MM-ddTHH:mm:ssZ"') do set BUILD_DATE=%%i
-set LDFLAGS=-s -w -X main.version=%VERSION% -X main.commit=%COMMIT% -X main.buildDate=%BUILD_DATE%
+set LDFLAGS=-s -w -X docker-manager/internal/cli.version=%VERSION% -X docker-manager/internal/cli.commit=%COMMIT% -X docker-manager/internal/cli.buildDate=%BUILD_DATE%
 
 echo Build for Linux ...
 set GOOS=linux
