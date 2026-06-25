@@ -56,8 +56,6 @@ type targetPlatform struct {
 	targetArch string
 }
 
-var platform targetPlatform
-
 type ImageInfo struct {
 	Registry   string
 	Repository string
@@ -83,17 +81,28 @@ type CommandDefaults struct {
 	OutputDir string
 }
 
-var httpClient *http_utils.HTTPClient
-var loadPulledImage = loadImageTar
-var tagPulledImage = tagImage
-var pushPulledImage = pushImage
-var runPullCredentialHelper = defaultRunPullCredentialHelper
+type PullRunner struct {
+	platform            targetPlatform
+	httpClient          *http_utils.HTTPClient
+	loadPulledImage     func(path string) error
+	tagPulledImage      func(ctx context.Context, source, target string) error
+	pushPulledImage     func(ctx context.Context, target string) error
+	runCredentialHelper func(ctx context.Context, helper, server string) (pullRegistryCredential, error)
+}
 
-func init() {
-	configureHTTPLogging(false)
-	if err := initHTTPClient(""); err != nil {
-		log.Fatalf("初始化 HTTP 客户端失败: %v", err)
+func NewPullRunner(proxy, targetOS, arch string) (*PullRunner, error) {
+	client, err := newPullHTTPClient(proxy)
+	if err != nil {
+		return nil, err
 	}
+	return &PullRunner{
+		platform:            targetPlatform{targetOS: targetOS, targetArch: arch},
+		httpClient:          client,
+		loadPulledImage:     loadImageTar,
+		tagPulledImage:      tagImage,
+		pushPulledImage:     pushImage,
+		runCredentialHelper: defaultRunPullCredentialHelper,
+	}, nil
 }
 
 func NewPullCommand() *cobra.Command {
@@ -123,10 +132,9 @@ func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command 
 			defer stop()
 
 			applyCommandDefaults(cmd, defaults, &proxy, &targetOS, &arch, &outputDir)
-			platform.targetOS = targetOS
-			platform.targetArch = arch
 			configureHTTPLogging(verboseHTTP)
-			if err := initHTTPClient(proxy); err != nil {
+			runner, err := NewPullRunner(proxy, targetOS, arch)
+			if err != nil {
 				return fmt.Errorf("配置代理失败: %w", err)
 			}
 			if output != "" && len(args) > 1 {
@@ -148,7 +156,7 @@ func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command 
 			log.Printf("Pull images: total=%d os=%s arch=%s output=%s outputDir=%s to=%s plainHTTP=%v", total, targetOS, arch, output, outputDir, to, plainHTTP)
 			for i, imageName := range imageNameList {
 				log.Printf("Pull image [%d/%d]: %s", i+1, total, imageName)
-				if err := getImage(imageName, opts); err != nil {
+				if err := runner.getImage(imageName, opts); err != nil {
 					log.Printf("%s 拉取失败: %v", imageName, err)
 					pullErrs = append(pullErrs, fmt.Errorf("%s: %w", imageName, err))
 					continue
@@ -192,7 +200,7 @@ func applyCommandDefaults(cmd *cobra.Command, defaults func() CommandDefaults, p
 	}
 }
 
-func getImage(imageName string, opts PullOptions) error {
+func (r *PullRunner) getImage(imageName string, opts PullOptions) error {
 	ctx := opts.Context
 	if ctx == nil {
 		ctx = context.Background()
@@ -205,7 +213,7 @@ func getImage(imageName string, opts PullOptions) error {
 	if err != nil {
 		return fmt.Errorf("镜像名称解析失败: %w", err)
 	}
-	log.Printf("获取镜像%s:%s,目标平台%s/%s", imageInfo.Image, imageInfo.Tag, platform.targetOS, platform.targetArch)
+	log.Printf("获取镜像%s:%s,目标平台%s/%s", imageInfo.Image, imageInfo.Tag, r.platform.targetOS, r.platform.targetArch)
 
 	if err := ctx.Err(); err != nil {
 		return err
@@ -221,7 +229,7 @@ func getImage(imageName string, opts PullOptions) error {
 		}
 	}()
 
-	manifest, auth, err := fetchManifest(ctx, imageInfo, opts)
+	manifest, auth, err := r.fetchManifest(ctx, imageInfo, opts)
 	log.Println(manifest)
 	if err != nil {
 		return fmt.Errorf("获取清单失败: %w", err)
@@ -236,12 +244,12 @@ func getImage(imageName string, opts PullOptions) error {
 		return fmt.Errorf("创建清单文件失败: %w", err)
 	}
 
-	err = downloadConfig(ctx, imageInfo, manifest, auth, opts, tempDir)
+	err = r.downloadConfig(ctx, imageInfo, manifest, auth, opts, tempDir)
 	if err != nil {
 		return fmt.Errorf("下载配置文件失败: %w", err)
 	}
 
-	err = downloadLayers(ctx, imageInfo, manifest, auth, opts, tempDir)
+	err = r.downloadLayers(ctx, imageInfo, manifest, auth, opts, tempDir)
 	if err != nil {
 		return fmt.Errorf("下载镜像层失败: %w", err)
 	}
@@ -263,7 +271,7 @@ func getImage(imageName string, opts PullOptions) error {
 		return err
 	}
 
-	return completePulledImage(outputFile, imageInfo, opts)
+	return r.completePulledImage(outputFile, imageInfo, opts)
 }
 
 func configureHTTPLogging(verbose bool) {
@@ -274,14 +282,14 @@ func configureHTTPLogging(verbose bool) {
 	http_utils.Logger.SetOutput(io.Discard)
 }
 
-func completePulledImage(outputFile string, info *ImageInfo, opts PullOptions) error {
+func (r *PullRunner) completePulledImage(outputFile string, info *ImageInfo, opts PullOptions) error {
 	log.Printf("镜像拉取成功: %s", outputFile)
 	if !opts.Load && opts.To == "" {
 		return nil
 	}
 
 	log.Printf("Load pulled image: %s", outputFile)
-	if err := loadPulledImage(outputFile); err != nil {
+	if err := r.loadPulledImage(outputFile); err != nil {
 		return fmt.Errorf("导入镜像失败: %w", err)
 	}
 	log.Printf("镜像导入成功: %s", outputFile)
@@ -302,14 +310,14 @@ func completePulledImage(outputFile string, info *ImageInfo, opts PullOptions) e
 		return err
 	}
 	log.Printf("Tag pulled image: %s -> %s", source, target)
-	if err := tagPulledImage(ctx, source, target); err != nil {
+	if err := r.tagPulledImage(ctx, source, target); err != nil {
 		return fmt.Errorf("tag 镜像失败: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	log.Printf("Push pulled image: %s", target)
-	if err := pushPulledImage(ctx, target); err != nil {
+	if err := r.pushPulledImage(ctx, target); err != nil {
 		return fmt.Errorf("push 镜像失败: %w", err)
 	}
 	log.Printf("镜像推送成功: %s", target)
@@ -362,20 +370,19 @@ func validateImageRef(ref string) (string, error) {
 	return ref, nil
 }
 
-func initHTTPClient(proxy string) error {
+func newPullHTTPClient(proxy string) (*http_utils.HTTPClient, error) {
 	proxyFunc, err := proxyFuncFromSetting(proxy)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	transport := &http.Transport{Proxy: proxyFunc}
-	httpClient = &http_utils.HTTPClient{
+	return &http_utils.HTTPClient{
 		Client: &http.Client{
 			Transport: transport,
 			Timeout:   600 * time.Second,
 		},
-	}
-	return nil
+	}, nil
 }
 
 func parseImageInfo(imageName string) (*ImageInfo, error) {
@@ -407,7 +414,7 @@ func parseImageInfo(imageName string) (*ImageInfo, error) {
 	return spec, nil
 }
 
-func fetchManifest(ctx context.Context, info *ImageInfo, opts PullOptions) (*ocispec.Manifest, *pullRegistryAuth, error) {
+func (r *PullRunner) fetchManifest(ctx context.Context, info *ImageInfo, opts PullOptions) (*ocispec.Manifest, *pullRegistryAuth, error) {
 	manifestURL := registryAPIURL(opts, info, "manifests", getReference(info))
 	headers := map[string]string{
 		"Accept": strings.Join([]string{
@@ -418,7 +425,7 @@ func fetchManifest(ctx context.Context, info *ImageInfo, opts PullOptions) (*oci
 		}, ", "),
 	}
 
-	respBytes, auth, err := fetchRegistryBytesWithRetry(ctx, manifestURL, headers, nil, info, opts, nil)
+	respBytes, auth, err := r.fetchRegistryBytesWithRetry(ctx, manifestURL, headers, nil, info, opts, nil)
 	if err != nil {
 		return nil, auth, fmt.Errorf("获取清单失败: %w", err)
 	}
@@ -432,7 +439,7 @@ func fetchManifest(ctx context.Context, info *ImageInfo, opts PullOptions) (*oci
 		if err != nil {
 			return nil, auth, fmt.Errorf("解析多架构清单失败: %w", err)
 		}
-		return handleOCIIndex(ctx, info, index, auth, opts)
+		return r.handleOCIIndex(ctx, info, index, auth, opts)
 	}
 
 	manifest, err := struct_utils.UnmarshalData[ocispec.Manifest](respBytes, struct_utils.JSON)
@@ -446,21 +453,21 @@ func getReference(info *ImageInfo) string {
 	return info.Tag
 }
 
-func handleOCIIndex(ctx context.Context, info *ImageInfo, index *ocispec.Index, auth *pullRegistryAuth, opts PullOptions) (*ocispec.Manifest, *pullRegistryAuth, error) {
+func (r *PullRunner) handleOCIIndex(ctx context.Context, info *ImageInfo, index *ocispec.Index, auth *pullRegistryAuth, opts PullOptions) (*ocispec.Manifest, *pullRegistryAuth, error) {
 	log.Println("[+] 检测到多架构镜像索引")
 	var selectedDigest string
 
 	for _, m := range index.Manifests {
 		if m.Platform != nil &&
-			m.Platform.OS == platform.targetOS &&
-			m.Platform.Architecture == platform.targetArch {
+			m.Platform.OS == r.platform.targetOS &&
+			m.Platform.Architecture == r.platform.targetArch {
 			selectedDigest = string(m.Digest)
 			break
 		}
 	}
 
 	if selectedDigest == "" {
-		return nil, auth, fmt.Errorf("未找到匹配的平台: %s/%s", platform.targetOS, platform.targetArch)
+		return nil, auth, fmt.Errorf("未找到匹配的平台: %s/%s", r.platform.targetOS, r.platform.targetArch)
 	}
 
 	manifestURL := registryAPIURL(opts, info, "manifests", selectedDigest)
@@ -471,7 +478,7 @@ func handleOCIIndex(ctx context.Context, info *ImageInfo, index *ocispec.Index, 
 		}, ", "),
 	}
 
-	resp, auth, err := fetchRegistryBytesWithRetry(ctx, manifestURL, headers, nil, info, opts, auth)
+	resp, auth, err := r.fetchRegistryBytesWithRetry(ctx, manifestURL, headers, nil, info, opts, auth)
 	if err != nil {
 		return nil, auth, fmt.Errorf("获取架构清单失败: %w", err)
 	}
@@ -486,7 +493,7 @@ func prepareWorkspace(info *ImageInfo) (string, error) {
 }
 
 // 改进版：使用 errgroup 管理并发下载，加入并发上限
-func downloadLayers(ctx context.Context, info *ImageInfo, manifest *ocispec.Manifest, auth *pullRegistryAuth, opts PullOptions, tempDir string) error {
+func (r *PullRunner) downloadLayers(ctx context.Context, info *ImageInfo, manifest *ocispec.Manifest, auth *pullRegistryAuth, opts PullOptions, tempDir string) error {
 	g, ctx := errgroup.WithContext(ctx)
 	sem := make(chan struct{}, maxLayerConcurrency)
 
@@ -500,7 +507,7 @@ func downloadLayers(ctx context.Context, info *ImageInfo, manifest *ocispec.Mani
 		}
 		g.Go(func() error {
 			defer func() { <-sem }()
-			return downloadLayer(ctx, info, l, auth, opts, tempDir)
+			return r.downloadLayer(ctx, info, l, auth, opts, tempDir)
 		})
 	}
 
@@ -511,7 +518,7 @@ func downloadLayers(ctx context.Context, info *ImageInfo, manifest *ocispec.Mani
 	return nil
 }
 
-func downloadConfig(ctx context.Context, info *ImageInfo, manifest *ocispec.Manifest, auth *pullRegistryAuth, opts PullOptions, tempDir string) error {
+func (r *PullRunner) downloadConfig(ctx context.Context, info *ImageInfo, manifest *ocispec.Manifest, auth *pullRegistryAuth, opts PullOptions, tempDir string) error {
 	configURL := registryAPIURL(opts, info, "blobs", string(manifest.Config.Digest))
 	digest := strings.TrimPrefix(string(manifest.Config.Digest), "sha256:")
 	if digest == string(manifest.Config.Digest) {
@@ -520,11 +527,11 @@ func downloadConfig(ctx context.Context, info *ImageInfo, manifest *ocispec.Mani
 	}
 	configPath := filepath.Join(tempDir, digest+".json")
 
-	_, err := saveRegistryFileWithRetry(ctx, configURL, nil, nil, info, opts, auth, configPath)
+	_, err := r.saveRegistryFileWithRetry(ctx, configURL, nil, nil, info, opts, auth, configPath)
 	return err
 }
 
-func downloadLayer(ctx context.Context, info *ImageInfo, layer ocispec.Descriptor, auth *pullRegistryAuth, opts PullOptions, tempDir string) error {
+func (r *PullRunner) downloadLayer(ctx context.Context, info *ImageInfo, layer ocispec.Descriptor, auth *pullRegistryAuth, opts PullOptions, tempDir string) error {
 	layerURL := registryAPIURL(opts, info, "blobs", string(layer.Digest))
 	layerID := sha256Hash(string(layer.Digest))
 	layerDir := filepath.Join(tempDir, layerID)
@@ -535,7 +542,7 @@ func downloadLayer(ctx context.Context, info *ImageInfo, layer ocispec.Descripto
 	// 下载层文件
 	gzPath := filepath.Join(layerDir, "layer.tar.gz")
 
-	if _, err := saveRegistryFileWithRetry(ctx, layerURL, nil, nil, info, opts, auth, gzPath); err != nil {
+	if _, err := r.saveRegistryFileWithRetry(ctx, layerURL, nil, nil, info, opts, auth, gzPath); err != nil {
 		return fmt.Errorf("下载层失败: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
@@ -611,7 +618,7 @@ func registryAPIURL(opts PullOptions, info *ImageInfo, kind, ref string) string 
 	return fmt.Sprintf("%s://%s/v2/%s/%s/%s", scheme, info.Registry, imagePath(info), kind, ref)
 }
 
-func fetchRegistryBytesWithRetry(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, info *ImageInfo, opts PullOptions, auth *pullRegistryAuth) ([]byte, *pullRegistryAuth, error) {
+func (r *PullRunner) fetchRegistryBytesWithRetry(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, info *ImageInfo, opts PullOptions, auth *pullRegistryAuth) ([]byte, *pullRegistryAuth, error) {
 	var lastErr error
 	currentAuth := auth
 	backoff := initialBackoff
@@ -619,7 +626,7 @@ func fetchRegistryBytesWithRetry(ctx context.Context, rawURL string, headers map
 		if err := ctx.Err(); err != nil {
 			return nil, currentAuth, err
 		}
-		body, nextAuth, err := fetchRegistryBytesOnce(ctx, rawURL, headers, query, info, opts, currentAuth)
+		body, nextAuth, err := r.fetchRegistryBytesOnce(ctx, rawURL, headers, query, info, opts, currentAuth)
 		if err == nil {
 			return body, nextAuth, nil
 		}
@@ -634,8 +641,8 @@ func fetchRegistryBytesWithRetry(ctx context.Context, rawURL string, headers map
 	return nil, currentAuth, lastErr
 }
 
-func fetchRegistryBytesOnce(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, info *ImageInfo, opts PullOptions, auth *pullRegistryAuth) ([]byte, *pullRegistryAuth, error) {
-	body, err := httpGetBytesWithStatus(ctx, rawURL, authHeaders(headers, auth), query)
+func (r *PullRunner) fetchRegistryBytesOnce(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, info *ImageInfo, opts PullOptions, auth *pullRegistryAuth) ([]byte, *pullRegistryAuth, error) {
+	body, err := r.httpGetBytesWithStatus(ctx, rawURL, authHeaders(headers, auth), query)
 	if err == nil {
 		return body, auth, nil
 	}
@@ -643,18 +650,18 @@ func fetchRegistryBytesOnce(ctx context.Context, rawURL string, headers map[stri
 	if !ok || statusErr.StatusCode != http.StatusUnauthorized {
 		return nil, auth, err
 	}
-	nextAuth, err := resolveRegistryAuth(ctx, statusErr.Header.Get("WWW-Authenticate"), info, opts)
+	nextAuth, err := r.resolveRegistryAuth(ctx, statusErr.Header.Get("WWW-Authenticate"), info, opts)
 	if err != nil {
 		return nil, auth, err
 	}
-	body, err = httpGetBytesWithStatus(ctx, rawURL, authHeaders(headers, nextAuth), query)
+	body, err = r.httpGetBytesWithStatus(ctx, rawURL, authHeaders(headers, nextAuth), query)
 	if err != nil {
 		return nil, nextAuth, err
 	}
 	return body, nextAuth, nil
 }
 
-func saveRegistryFileWithRetry(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, info *ImageInfo, opts PullOptions, auth *pullRegistryAuth, outputPath string) (*pullRegistryAuth, error) {
+func (r *PullRunner) saveRegistryFileWithRetry(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, info *ImageInfo, opts PullOptions, auth *pullRegistryAuth, outputPath string) (*pullRegistryAuth, error) {
 	var lastErr error
 	currentAuth := auth
 	backoff := initialBackoff
@@ -663,7 +670,7 @@ func saveRegistryFileWithRetry(ctx context.Context, rawURL string, headers map[s
 			_ = removePartialDownload(outputPath)
 			return currentAuth, err
 		}
-		nextAuth, err := saveRegistryFileOnce(ctx, rawURL, headers, query, info, opts, currentAuth, outputPath)
+		nextAuth, err := r.saveRegistryFileOnce(ctx, rawURL, headers, query, info, opts, currentAuth, outputPath)
 		if err == nil {
 			return nextAuth, nil
 		}
@@ -680,8 +687,8 @@ func saveRegistryFileWithRetry(ctx context.Context, rawURL string, headers map[s
 	return currentAuth, lastErr
 }
 
-func saveRegistryFileOnce(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, info *ImageInfo, opts PullOptions, auth *pullRegistryAuth, outputPath string) (*pullRegistryAuth, error) {
-	err := httpSaveToFileWithStatus(ctx, rawURL, authHeaders(headers, auth), query, outputPath)
+func (r *PullRunner) saveRegistryFileOnce(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, info *ImageInfo, opts PullOptions, auth *pullRegistryAuth, outputPath string) (*pullRegistryAuth, error) {
+	err := r.httpSaveToFileWithStatus(ctx, rawURL, authHeaders(headers, auth), query, outputPath)
 	if err == nil {
 		return auth, nil
 	}
@@ -689,11 +696,11 @@ func saveRegistryFileOnce(ctx context.Context, rawURL string, headers map[string
 	if !ok || statusErr.StatusCode != http.StatusUnauthorized {
 		return auth, err
 	}
-	nextAuth, err := resolveRegistryAuth(ctx, statusErr.Header.Get("WWW-Authenticate"), info, opts)
+	nextAuth, err := r.resolveRegistryAuth(ctx, statusErr.Header.Get("WWW-Authenticate"), info, opts)
 	if err != nil {
 		return auth, err
 	}
-	err = httpSaveToFileWithStatus(ctx, rawURL, authHeaders(headers, nextAuth), query, outputPath)
+	err = r.httpSaveToFileWithStatus(ctx, rawURL, authHeaders(headers, nextAuth), query, outputPath)
 	return nextAuth, err
 }
 
@@ -708,12 +715,12 @@ func authHeaders(headers map[string]string, auth *pullRegistryAuth) map[string]s
 	return result
 }
 
-func resolveRegistryAuth(ctx context.Context, header string, info *ImageInfo, opts PullOptions) (*pullRegistryAuth, error) {
+func (r *PullRunner) resolveRegistryAuth(ctx context.Context, header string, info *ImageInfo, opts PullOptions) (*pullRegistryAuth, error) {
 	challenge := parseAuthChallenge(header)
-	cred, credErr := loadPullRegistryCredential(ctx, info.Registry, opts.DockerConfig)
+	cred, credErr := r.loadPullRegistryCredential(ctx, info.Registry, opts.DockerConfig)
 	switch strings.ToLower(challenge.Scheme) {
 	case "bearer":
-		token, err := fetchBearerToken(ctx, challenge, info, cred)
+		token, err := r.fetchBearerToken(ctx, challenge, info, cred)
 		if err != nil {
 			if credErr != nil {
 				return nil, fmt.Errorf("获取 Bearer token 失败: %w；读取 Docker 凭据也失败: %v", err, credErr)
@@ -805,7 +812,7 @@ func readQuotedChallengeValue(input string) (string, string) {
 	return sb.String(), ""
 }
 
-func fetchBearerToken(ctx context.Context, challenge authChallenge, info *ImageInfo, cred pullRegistryCredential) (string, error) {
+func (r *PullRunner) fetchBearerToken(ctx context.Context, challenge authChallenge, info *ImageInfo, cred pullRegistryCredential) (string, error) {
 	realm := challenge.Params["realm"]
 	if realm == "" {
 		return "", fmt.Errorf("Bearer challenge missing realm")
@@ -825,7 +832,7 @@ func fetchBearerToken(ctx context.Context, challenge authChallenge, info *ImageI
 	} else if cred.Username != "" || cred.Password != "" {
 		headers["Authorization"] = basicAuthHeader(cred.Username, cred.Password)
 	}
-	respBytes, err := fetchWithRetry(ctx, realm, headers, query)
+	respBytes, err := r.fetchWithRetry(ctx, realm, headers, query)
 	if err != nil {
 		return "", fmt.Errorf("认证请求失败: %w", err)
 	}
@@ -845,7 +852,7 @@ func fetchBearerToken(ctx context.Context, challenge authChallenge, info *ImageI
 	return "", fmt.Errorf("认证响应不包含 token")
 }
 
-func loadPullRegistryCredential(ctx context.Context, registryName, configPath string) (pullRegistryCredential, error) {
+func (r *PullRunner) loadPullRegistryCredential(ctx context.Context, registryName, configPath string) (pullRegistryCredential, error) {
 	if configPath == "" {
 		configPath = defaultPullDockerConfigPath()
 	}
@@ -855,7 +862,7 @@ func loadPullRegistryCredential(ctx context.Context, registryName, configPath st
 	}
 	keys := pullRegistryConfigKeys(registryName)
 	if helper, server := findPullCredentialHelper(cfg, keys); helper != "" {
-		cred, err := runPullCredentialHelper(ctx, helper, server)
+		cred, err := r.runCredentialHelper(ctx, helper, server)
 		if err != nil {
 			return pullRegistryCredential{Source: "credential-helper", Message: err.Error()}, err
 		}
@@ -992,22 +999,30 @@ func uniquePullStrings(values []string) []string {
 
 // fetchWithRetry 会带简单的重试和指数退避，返回 body bytes
 func fetchWithRetry(ctx context.Context, url string, headers map[string]string, query map[string]string) ([]byte, error) {
-	return fetchWithRetryContext(ctx, url, headers, query)
+	runner, err := NewPullRunner("", "linux", "amd64")
+	if err != nil {
+		return nil, err
+	}
+	return runner.fetchWithRetry(ctx, url, headers, query)
 }
 
 // saveWithRetry 将 GET 请求的响应直接保存到文件，带重试
 func saveWithRetry(ctx context.Context, url string, headers map[string]string, query map[string]string, outputPath string) error {
-	return saveWithRetryContext(ctx, url, headers, query, outputPath)
+	runner, err := NewPullRunner("", "linux", "amd64")
+	if err != nil {
+		return err
+	}
+	return runner.saveWithRetry(ctx, url, headers, query, outputPath)
 }
 
-func fetchWithRetryContext(ctx context.Context, url string, headers map[string]string, query map[string]string) ([]byte, error) {
+func (r *PullRunner) fetchWithRetry(ctx context.Context, url string, headers map[string]string, query map[string]string) ([]byte, error) {
 	var lastErr error
 	backoff := initialBackoff
 	for i := 0; i < maxHTTPRetries; i++ {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		resp, err := httpGetBytes(ctx, url, headers, query)
+		resp, err := r.httpGetBytes(ctx, url, headers, query)
 		if err == nil {
 			return resp, nil
 		}
@@ -1021,7 +1036,7 @@ func fetchWithRetryContext(ctx context.Context, url string, headers map[string]s
 	return nil, lastErr
 }
 
-func saveWithRetryContext(ctx context.Context, url string, headers map[string]string, query map[string]string, outputPath string) error {
+func (r *PullRunner) saveWithRetry(ctx context.Context, url string, headers map[string]string, query map[string]string, outputPath string) error {
 	var lastErr error
 	backoff := initialBackoff
 	for i := 0; i < maxHTTPRetries; i++ {
@@ -1029,7 +1044,7 @@ func saveWithRetryContext(ctx context.Context, url string, headers map[string]st
 			_ = removePartialDownload(outputPath)
 			return err
 		}
-		if err := httpSaveToFile(ctx, url, headers, query, outputPath); err == nil {
+		if err := r.httpSaveToFile(ctx, url, headers, query, outputPath); err == nil {
 			return nil
 		} else {
 			_ = removePartialDownload(outputPath)
@@ -1045,16 +1060,16 @@ func saveWithRetryContext(ctx context.Context, url string, headers map[string]st
 	return lastErr
 }
 
-func httpGetBytes(ctx context.Context, rawURL string, headers map[string]string, query map[string]string) ([]byte, error) {
-	return httpGetBytesWithStatus(ctx, rawURL, headers, query)
+func (r *PullRunner) httpGetBytes(ctx context.Context, rawURL string, headers map[string]string, query map[string]string) ([]byte, error) {
+	return r.httpGetBytesWithStatus(ctx, rawURL, headers, query)
 }
 
-func httpGetBytesWithStatus(ctx context.Context, rawURL string, headers map[string]string, query map[string]string) ([]byte, error) {
+func (r *PullRunner) httpGetBytesWithStatus(ctx context.Context, rawURL string, headers map[string]string, query map[string]string) ([]byte, error) {
 	req, err := buildGETRequest(ctx, rawURL, headers, query)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := httpClient.Client.Do(req)
+	resp, err := r.httpClient.Client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -1069,16 +1084,16 @@ func httpGetBytesWithStatus(ctx context.Context, rawURL string, headers map[stri
 	return io.ReadAll(resp.Body)
 }
 
-func httpSaveToFile(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, outputPath string) error {
-	return httpSaveToFileWithStatus(ctx, rawURL, headers, query, outputPath)
+func (r *PullRunner) httpSaveToFile(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, outputPath string) error {
+	return r.httpSaveToFileWithStatus(ctx, rawURL, headers, query, outputPath)
 }
 
-func httpSaveToFileWithStatus(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, outputPath string) error {
+func (r *PullRunner) httpSaveToFileWithStatus(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, outputPath string) error {
 	req, err := buildGETRequest(ctx, rawURL, headers, query)
 	if err != nil {
 		return err
 	}
-	resp, err := httpClient.Client.Do(req)
+	resp, err := r.httpClient.Client.Do(req)
 	if err != nil {
 		return err
 	}

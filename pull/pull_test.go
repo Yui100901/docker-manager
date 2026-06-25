@@ -377,16 +377,13 @@ func TestPullCommandReturnsImageParseError(t *testing.T) {
 
 func TestCompletePulledImageLoadsWhenRequested(t *testing.T) {
 	var loadedPath string
-	previous := loadPulledImage
-	loadPulledImage = func(path string) error {
+	runner := newTestPullRunner()
+	runner.loadPulledImage = func(path string) error {
 		loadedPath = path
 		return nil
 	}
-	t.Cleanup(func() {
-		loadPulledImage = previous
-	})
 
-	if err := completePulledImage("busybox.tar", testBusyboxInfo(), PullOptions{Load: true}); err != nil {
+	if err := runner.completePulledImage("busybox.tar", testBusyboxInfo(), PullOptions{Load: true}); err != nil {
 		t.Fatalf("completePulledImage() error = %v", err)
 	}
 	if loadedPath != "busybox.tar" {
@@ -396,15 +393,12 @@ func TestCompletePulledImageLoadsWhenRequested(t *testing.T) {
 
 func TestCompletePulledImageReturnsLoadError(t *testing.T) {
 	loadErr := errors.New("load failed")
-	previous := loadPulledImage
-	loadPulledImage = func(path string) error {
+	runner := newTestPullRunner()
+	runner.loadPulledImage = func(path string) error {
 		return loadErr
 	}
-	t.Cleanup(func() {
-		loadPulledImage = previous
-	})
 
-	err := completePulledImage("busybox.tar", testBusyboxInfo(), PullOptions{Load: true})
+	err := runner.completePulledImage("busybox.tar", testBusyboxInfo(), PullOptions{Load: true})
 	if err == nil {
 		t.Fatal("completePulledImage() error = nil, want load error")
 	}
@@ -464,28 +458,21 @@ func TestResolvePushTargetRejectsInvalidTarget(t *testing.T) {
 
 func TestCompletePulledImageMirrorsWhenToSet(t *testing.T) {
 	var calls []string
-	previousLoad := loadPulledImage
-	previousTag := tagPulledImage
-	previousPush := pushPulledImage
-	loadPulledImage = func(path string) error {
+	runner := newTestPullRunner()
+	runner.loadPulledImage = func(path string) error {
 		calls = append(calls, "load:"+path)
 		return nil
 	}
-	tagPulledImage = func(ctx context.Context, source, target string) error {
+	runner.tagPulledImage = func(ctx context.Context, source, target string) error {
 		calls = append(calls, "tag:"+source+"->"+target)
 		return nil
 	}
-	pushPulledImage = func(ctx context.Context, target string) error {
+	runner.pushPulledImage = func(ctx context.Context, target string) error {
 		calls = append(calls, "push:"+target)
 		return nil
 	}
-	t.Cleanup(func() {
-		loadPulledImage = previousLoad
-		tagPulledImage = previousTag
-		pushPulledImage = previousPush
-	})
 
-	err := completePulledImage("busybox.tar", testBusyboxInfo(), PullOptions{To: "registry.local:5000"})
+	err := runner.completePulledImage("busybox.tar", testBusyboxInfo(), PullOptions{To: "registry.local:5000"})
 	if err != nil {
 		t.Fatalf("completePulledImage() error = %v", err)
 	}
@@ -501,19 +488,12 @@ func TestCompletePulledImageMirrorsWhenToSet(t *testing.T) {
 
 func TestCompletePulledImageReturnsPushError(t *testing.T) {
 	pushErr := errors.New("push failed")
-	previousLoad := loadPulledImage
-	previousTag := tagPulledImage
-	previousPush := pushPulledImage
-	loadPulledImage = func(path string) error { return nil }
-	tagPulledImage = func(ctx context.Context, source, target string) error { return nil }
-	pushPulledImage = func(ctx context.Context, target string) error { return pushErr }
-	t.Cleanup(func() {
-		loadPulledImage = previousLoad
-		tagPulledImage = previousTag
-		pushPulledImage = previousPush
-	})
+	runner := newTestPullRunner()
+	runner.loadPulledImage = func(path string) error { return nil }
+	runner.tagPulledImage = func(ctx context.Context, source, target string) error { return nil }
+	runner.pushPulledImage = func(ctx context.Context, target string) error { return pushErr }
 
-	err := completePulledImage("busybox.tar", testBusyboxInfo(), PullOptions{To: "registry.local:5000"})
+	err := runner.completePulledImage("busybox.tar", testBusyboxInfo(), PullOptions{To: "registry.local:5000"})
 	if err == nil {
 		t.Fatal("completePulledImage() error = nil, want push error")
 	}
@@ -607,11 +587,11 @@ func TestFetchManifestAllowsAnonymousRegistry(t *testing.T) {
 		_, _ = w.Write([]byte(testOCIManifestJSON()))
 	}))
 	defer server.Close()
-	restore := replacePullHTTPClient(server.Client())
-	defer restore()
+	runner := newTestPullRunner()
+	runner.httpClient = &http_utils.HTTPClient{Client: server.Client()}
 
 	info := &ImageInfo{Registry: strings.TrimPrefix(server.URL, "http://"), Repository: "team", Image: "app", Tag: "v1"}
-	manifest, auth, err := fetchManifest(context.Background(), info, PullOptions{PlainHTTP: true})
+	manifest, auth, err := runner.fetchManifest(context.Background(), info, PullOptions{PlainHTTP: true})
 	if err != nil {
 		t.Fatalf("fetchManifest() error = %v", err)
 	}
@@ -645,11 +625,11 @@ func TestFetchManifestUsesBearerChallenge(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	restore := replacePullHTTPClient(server.Client())
-	defer restore()
+	runner := newTestPullRunner()
+	runner.httpClient = &http_utils.HTTPClient{Client: server.Client()}
 
 	info := &ImageInfo{Registry: strings.TrimPrefix(server.URL, "http://"), Repository: "team", Image: "app", Tag: "v1"}
-	_, auth, err := fetchManifest(context.Background(), info, PullOptions{PlainHTTP: true})
+	_, auth, err := runner.fetchManifest(context.Background(), info, PullOptions{PlainHTTP: true})
 	if err != nil {
 		t.Fatalf("fetchManifest() error = %v", err)
 	}
@@ -672,13 +652,13 @@ func TestFetchManifestUsesBasicCredentialFromDockerConfig(t *testing.T) {
 		_, _ = w.Write([]byte(testOCIManifestJSON()))
 	}))
 	defer server.Close()
-	restore := replacePullHTTPClient(server.Client())
-	defer restore()
+	runner := newTestPullRunner()
+	runner.httpClient = &http_utils.HTTPClient{Client: server.Client()}
 
 	registryName := strings.TrimPrefix(server.URL, "http://")
 	configPath := writePullDockerConfig(t, registryName, "demo", "secret")
 	info := &ImageInfo{Registry: registryName, Repository: "team", Image: "app", Tag: "v1"}
-	_, auth, err := fetchManifest(context.Background(), info, PullOptions{PlainHTTP: true, DockerConfig: configPath})
+	_, auth, err := runner.fetchManifest(context.Background(), info, PullOptions{PlainHTTP: true, DockerConfig: configPath})
 	if err != nil {
 		t.Fatalf("fetchManifest() error = %v", err)
 	}
@@ -738,10 +718,17 @@ func strconvQuote(value string) string {
 	return string(data)
 }
 
-func replacePullHTTPClient(client *http.Client) func() {
-	previous := httpClient
-	httpClient = &http_utils.HTTPClient{Client: client}
-	return func() {
-		httpClient = previous
+func newTestPullRunner() *PullRunner {
+	client, err := newPullHTTPClient("")
+	if err != nil {
+		panic(err)
+	}
+	return &PullRunner{
+		platform:            targetPlatform{targetOS: "linux", targetArch: "amd64"},
+		httpClient:          client,
+		loadPulledImage:     loadImageTar,
+		tagPulledImage:      tagImage,
+		pushPulledImage:     pushImage,
+		runCredentialHelper: defaultRunPullCredentialHelper,
 	}
 }
