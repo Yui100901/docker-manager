@@ -116,12 +116,13 @@ func NewHealthCommand() *cobra.Command {
 		},
 		ValidArgsFunction: completion.LocalContainers,
 	}
-	cmd.Flags().BoolVar(&opts.RunningOnly, "running-only", false, "只检查正在运行的容器")
+	cmd.Flags().BoolVar(&opts.RunningOnly, "running", false, "只检查正在运行的容器")
+	cmd.Flags().BoolVar(&opts.RunningOnly, "running-only", false, "只检查正在运行的容器（兼容旧参数）")
 	cmd.Flags().BoolVar(&opts.NoLogs, "no-logs", false, "不扫描容器日志")
 	cmd.Flags().IntVar(&opts.LogTail, "log-tail", opts.LogTail, "每个容器扫描最近日志行数")
 	cmd.Flags().IntVar(&opts.RestartThreshold, "restart-threshold", opts.RestartThreshold, "restart 次数达到该阈值时报告风险")
 	cmd.Flags().StringArrayVar(&opts.Keywords, "keyword", opts.Keywords, "日志扫描关键词，可重复指定")
-	cmd.Flags().StringArrayVarP(&opts.ContainerFilters, "filter", "f", nil, "筛选容器，支持名称/ID/镜像和 * ? 通配符，可重复指定")
+	cmd.Flags().StringArrayVarP(&opts.ContainerFilters, "filter", "f", nil, "筛选容器，支持 name:/id:/image:/state:/status:/label: 和 * ? 通配符，可重复指定")
 	cmd.Flags().BoolVar(&opts.RedactSecrets, "redact-secrets", false, "脱敏日志命中行中的疑似敏感信息，便于分享输出")
 	_ = cmd.RegisterFlagCompletionFunc("filter", completion.LocalContainers)
 	rpt.AddFormatFlag(cmd, &opts.Format)

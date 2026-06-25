@@ -104,13 +104,14 @@ func NewLogsScanCommand() *cobra.Command {
 		},
 		ValidArgsFunction: completion.LocalContainers,
 	}
-	cmd.Flags().BoolVar(&opts.All, "all", false, "扫描所有容器")
-	cmd.Flags().BoolVar(&opts.RunningOnly, "running-only", false, "扫描所有正在运行的容器")
+	cmd.Flags().BoolVar(&opts.All, "all", false, "扫描所有容器（兼容选项；默认已扫描全部容器）")
+	cmd.Flags().BoolVar(&opts.RunningOnly, "running", false, "只扫描正在运行的容器")
+	cmd.Flags().BoolVar(&opts.RunningOnly, "running-only", false, "只扫描正在运行的容器（兼容旧参数）")
 	cmd.Flags().IntVar(&opts.Tail, "tail", opts.Tail, "每个容器扫描最近日志行数，-1 表示全部")
 	cmd.Flags().IntVar(&opts.Context, "context", opts.Context, "命中日志前后各输出多少行上下文")
 	cmd.Flags().StringVar(&opts.Since, "since", "", "只扫描该时间之后的日志，例如 30m、2h 或 RFC3339 时间")
 	cmd.Flags().StringArrayVar(&opts.Keywords, "keyword", opts.Keywords, "日志扫描关键词，可重复指定")
-	cmd.Flags().StringArrayVarP(&opts.Filters, "filter", "f", nil, "筛选容器，支持名称/ID/镜像和 * ? 通配符，可重复指定")
+	cmd.Flags().StringArrayVarP(&opts.Filters, "filter", "f", nil, "筛选容器，支持 name:/id:/image:/state:/status:/label: 和 * ? 通配符，可重复指定")
 	cmd.Flags().BoolVar(&opts.RedactSecrets, "redact-secrets", false, "脱敏日志命中行和上下文中的疑似敏感信息，便于分享输出")
 	_ = cmd.RegisterFlagCompletionFunc("filter", completion.LocalContainers)
 	rpt.AddFormatFlag(cmd, &opts.Format)
@@ -119,10 +120,7 @@ func NewLogsScanCommand() *cobra.Command {
 
 func validateLogsScanArgs(opts LogsScanOptions) error {
 	if opts.All && opts.RunningOnly {
-		return fmt.Errorf("不能同时指定 --all 和 --running-only")
-	}
-	if len(opts.Filters) == 0 && !opts.All && !opts.RunningOnly {
-		return fmt.Errorf("必须指定至少一个容器筛选条件，或使用 --all/--running-only")
+		return fmt.Errorf("不能同时指定 --all 和 --running/--running-only")
 	}
 	if opts.Context < 0 {
 		return fmt.Errorf("--context 不能小于 0")
@@ -146,7 +144,7 @@ func runLogsScan(ctx context.Context, opts LogsScanOptions) (LogsScanReport, err
 }
 
 func logsScanTargets(ctx context.Context, svc logsScanDockerService, opts LogsScanOptions) ([]container.Summary, error) {
-	listAll := opts.All || (len(opts.Filters) > 0 && !opts.RunningOnly)
+	listAll := !opts.RunningOnly
 	containers, err := svc.ListContainers(ctx, listAll)
 	if err != nil {
 		return nil, err

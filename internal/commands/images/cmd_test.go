@@ -176,6 +176,30 @@ func TestSaveImagesFiltersByShortIDAndRepositoryName(t *testing.T) {
 	}
 }
 
+func TestMatchesImageFiltersSupportsKeyedFilters(t *testing.T) {
+	img := image.Summary{
+		ID:          "sha256:abcdef1234567890",
+		RepoTags:    []string{"registry.local/team/api:v1"},
+		RepoDigests: []string{"registry.local/team/api@sha256:deadbeef"},
+		Labels:      map[string]string{"com.example.role": "api"},
+	}
+
+	for _, filter := range []string{
+		"id:abcdef123456",
+		"image:api",
+		"repo:team/api",
+		"tag:v1",
+		"digest:*deadbeef",
+		"label:com.example.role=api",
+	} {
+		t.Run(filter, func(t *testing.T) {
+			if !matchesImageFilters(img, []string{filter}) {
+				t.Fatalf("matchesImageFilters(%q) = false, want true", filter)
+			}
+		})
+	}
+}
+
 func TestSaveImagesDryRunDoesNotSave(t *testing.T) {
 	manager := &fakeImageManager{
 		images: []image.Summary{

@@ -133,6 +133,25 @@ func TestLogsScanTargetsRunningOnlyFiltersContainers(t *testing.T) {
 	}
 }
 
+func TestLogsScanTargetsDefaultsToAllContainers(t *testing.T) {
+	fake := &fakeLogsScanDockerService{
+		containers: []container.Summary{
+			{ID: "api", Names: []string{"/api"}, State: "running"},
+			{ID: "old", Names: []string{"/old"}, State: "exited"},
+		},
+	}
+	targets, err := logsScanTargets(context.Background(), fake, LogsScanOptions{})
+	if err != nil {
+		t.Fatalf("logsScanTargets() error = %v", err)
+	}
+	if !fake.allFlag {
+		t.Fatal("ListContainers all = false, want true by default")
+	}
+	if len(targets) != 2 {
+		t.Fatalf("targets = %#v, want 2 containers", targets)
+	}
+}
+
 func TestReadContainerLogTextPassesTailAndSince(t *testing.T) {
 	fake := &fakeLogsScanDockerService{
 		logs: map[string]string{"api": "error\n"},
@@ -172,7 +191,6 @@ func TestValidateLogsScanArgsRejectsInvalidCombinations(t *testing.T) {
 		name string
 		opts LogsScanOptions
 	}{
-		{name: "missing target", opts: LogsScanOptions{Tail: 1}},
 		{name: "all and running", opts: LogsScanOptions{All: true, RunningOnly: true, Tail: 1}},
 		{name: "bad context", opts: LogsScanOptions{Filters: []string{"api"}, Tail: 1, Context: -1}},
 		{name: "bad tail", opts: LogsScanOptions{Filters: []string{"api"}, Tail: 0}},

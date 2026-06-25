@@ -102,8 +102,9 @@ func NewNetworkCommand() *cobra.Command {
 		},
 		ValidArgsFunction: completion.LocalContainers,
 	}
-	cmd.Flags().BoolVar(&opts.RunningOnly, "running-only", false, "只查看正在运行的容器")
-	cmd.Flags().StringArrayVarP(&opts.ContainerFilters, "filter", "f", nil, "筛选容器，支持名称/ID/镜像和 * ? 通配符，可重复指定")
+	cmd.Flags().BoolVar(&opts.RunningOnly, "running", false, "只查看正在运行的容器")
+	cmd.Flags().BoolVar(&opts.RunningOnly, "running-only", false, "只查看正在运行的容器（兼容旧参数）")
+	cmd.Flags().StringArrayVarP(&opts.ContainerFilters, "filter", "f", nil, "筛选容器，支持 name:/id:/image:/state:/status:/label: 和 * ? 通配符，可重复指定")
 	_ = cmd.RegisterFlagCompletionFunc("filter", completion.LocalContainers)
 	rpt.AddFormatFlag(cmd, &opts.Format)
 	return cmd

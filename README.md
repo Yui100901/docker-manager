@@ -87,7 +87,7 @@ dm completion fish
 dm completion powershell
 ```
 
-资源参数会尽量从本机 Docker 补齐，例如容器、镜像和 volume。已支持的典型位置包括 `backup container`、`reverse`、`inspect-diff`、`logs-scan`、`health`、`network`、`image tree`、`volume ls-unused`，以及 `save --filter` 等筛选参数。
+资源参数会尽量从本机 Docker 补齐，例如容器、镜像和 volume。容器筛选支持 `name:`、`id:`、`image:`、`state:`、`status:`、`label:` 前缀和 `* ?` 通配符。已支持的典型位置包括 `backup container`、`reverse`、`inspect-diff`、`logs-scan`、`health`、`network`、`image tree`、`volume ls-unused`，以及 `save --filter` 等筛选参数。
 
 PowerShell 临时加载示例:
 
@@ -350,14 +350,15 @@ dm registry-login-check registry.local:5000 --format json
 
 ```bash
 dm network
-dm network --running-only
+dm network --running
+dm network --filter 'image:nginx*'
 ```
 
 健康检查:
 
 ```bash
 dm health
-dm health --running-only
+dm health --running
 dm health --no-logs
 dm health --keyword error --keyword timeout --log-tail 200
 dm health --redact-secrets
@@ -367,8 +368,8 @@ dm health --redact-secrets
 
 ```bash
 dm logs-scan app
-dm logs-scan --running-only
-dm logs-scan --all --keyword panic --keyword oom --tail 1000 --context 2
+dm logs-scan --running
+dm logs-scan --keyword panic --keyword oom --tail 1000 --context 2
 dm logs-scan app --since 30m
 dm logs-scan app --redact-secrets
 ```

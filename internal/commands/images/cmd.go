@@ -110,7 +110,7 @@ func NewSaveCommandWithDefaults(defaultOutputDir func() string) *cobra.Command {
 	cmd.Flags().BoolVarP(&merge, "merge", "m", false, "合并为一个 images.tar 文件")
 	cmd.Flags().BoolVarP(&all, "all", "a", false, "导出所有镜像，包括无 tag 镜像")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "仅预览将导出的镜像，不写入文件")
-	cmd.Flags().StringArrayVarP(&filters, "filter", "f", nil, "筛选要导出的镜像，支持镜像名/tag/ID和通配符，可重复指定")
+	cmd.Flags().StringArrayVarP(&filters, "filter", "f", nil, "筛选要导出的镜像，支持 id:/image:/repo:/tag:/digest:/label: 和 * ? 通配符，可重复指定")
 	_ = cmd.RegisterFlagCompletionFunc("filter", completion.LocalImages)
 	return cmd
 }
@@ -316,34 +316,119 @@ func matchesImageFilters(img image.Summary, filters []string) bool {
 	}
 	candidates := imageFilterCandidates(img)
 	for _, filter := range filters {
-		for _, candidate := range candidates {
-			if wildcardMatch(filter, candidate) || candidate == filter || strings.HasPrefix(candidate, filter) {
-				return true
-			}
+		if matchesImageFilterCandidate(candidates, filter) {
+			return true
 		}
 	}
 	return false
 }
 
 func imageFilterCandidates(img image.Summary) []string {
-	candidates := []string{img.ID, strings.TrimPrefix(img.ID, "sha256:")}
-	if shortID := strings.TrimPrefix(img.ID, "sha256:"); len(shortID) > 12 {
-		candidates = append(candidates, shortID[:12])
+	cleanID := strings.TrimPrefix(img.ID, "sha256:")
+	candidates := []string{img.ID, cleanID, "id:" + img.ID, "id:" + cleanID}
+	if len(cleanID) > 12 {
+		candidates = append(candidates, cleanID[:12], "id:"+cleanID[:12])
 	}
 	for _, tag := range img.RepoTags {
-		candidates = append(candidates, tag)
+		candidates = append(candidates, tag, "image:"+tag)
 		repo, version := splitRepoTag(tag)
 		if repo != "" {
-			candidates = append(candidates, repo)
+			candidates = append(candidates, repo, "repo:"+repo, "image:"+repo)
+			if slash := strings.Index(repo, "/"); slash >= 0 && slash < len(repo)-1 {
+				candidates = append(candidates, repo[slash+1:], "repo:"+repo[slash+1:], "image:"+repo[slash+1:])
+			}
 			if slash := strings.LastIndex(repo, "/"); slash >= 0 && slash < len(repo)-1 {
-				candidates = append(candidates, repo[slash+1:])
+				candidates = append(candidates, repo[slash+1:], "repo:"+repo[slash+1:], "image:"+repo[slash+1:])
 			}
 		}
 		if version != "" {
-			candidates = append(candidates, version)
+			candidates = append(candidates, version, "tag:"+version, "image:"+version)
 		}
 	}
-	return candidates
+	for _, digest := range img.RepoDigests {
+		candidates = append(candidates, digest, "digest:"+digest, "image:"+digest)
+	}
+	for key, value := range img.Labels {
+		candidates = append(candidates, key, "label:"+key)
+		if value != "" {
+			candidates = append(candidates, value, key+"="+value, "label:"+key+"="+value)
+		}
+	}
+	return uniqueImageFilterCandidates(candidates)
+}
+
+func matchesImageFilterCandidate(candidates []string, filter string) bool {
+	key, pattern, keyed := splitImageFilter(filter)
+	if strings.TrimSpace(pattern) == "" {
+		return false
+	}
+	for _, candidate := range candidates {
+		candidateKey, candidateValue, candidateKeyed := splitImageFilter(candidate)
+		if keyed {
+			if !candidateKeyed || candidateKey != key {
+				continue
+			}
+			if imageFilterValueMatches(pattern, candidateValue) {
+				return true
+			}
+			continue
+		}
+		if imageFilterValueMatches(pattern, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func splitImageFilter(filter string) (string, string, bool) {
+	filter = strings.TrimSpace(filter)
+	for _, sep := range []string{":", "="} {
+		if idx := strings.Index(filter, sep); idx > 0 {
+			key := strings.ToLower(strings.TrimSpace(filter[:idx]))
+			if isImageFilterKey(key) {
+				return key, strings.TrimSpace(filter[idx+1:]), true
+			}
+		}
+	}
+	return "", filter, false
+}
+
+func isImageFilterKey(key string) bool {
+	switch key {
+	case "id", "image", "repo", "tag", "digest", "label":
+		return true
+	default:
+		return false
+	}
+}
+
+func imageFilterValueMatches(pattern, value string) bool {
+	pattern = strings.TrimSpace(pattern)
+	value = strings.TrimSpace(value)
+	if pattern == "" || value == "" {
+		return false
+	}
+	if wildcardMatch(pattern, value) || strings.EqualFold(pattern, value) || strings.HasPrefix(strings.ToLower(value), strings.ToLower(pattern)) {
+		return true
+	}
+	if strings.ContainsAny(pattern, "*?") {
+		return wildcardMatch(strings.ToLower(pattern), strings.ToLower(value))
+	}
+	return false
+}
+
+func uniqueImageFilterCandidates(values []string) []string {
+	seen := map[string]bool{}
+	var result []string
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		result = append(result, value)
+	}
+	return result
 }
 
 func splitRepoTag(ref string) (string, string) {
