@@ -41,7 +41,7 @@ const (
 type backupDockerService interface {
 	InspectContainer(ctx context.Context, name string) (container.InspectResponse, error)
 	SaveImage(ctx context.Context, refs []string, outputFile string) error
-	LoadImage(ctx context.Context, inputFile string) error
+	LoadImage(ctx context.Context, inputFile string, output io.Writer) error
 	InspectNetwork(ctx context.Context, name string) (network.Inspect, error)
 	CreateNetwork(ctx context.Context, inspect network.Inspect) error
 	InspectVolume(ctx context.Context, name string) (volume.Volume, error)
@@ -78,6 +78,7 @@ type RestoreOptions struct {
 	NoStart      bool
 	DryRun       bool
 	SkipChecksum bool
+	Output       io.Writer
 }
 
 type BackupManifest struct {
@@ -140,6 +141,7 @@ func newRestoreCommand() *cobra.Command {
 		Short: "从 backup container 生成的目录或 tar.gz 离线包恢复镜像、网络、volume 和容器",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			opts.Output = cmd.OutOrStdout()
 			if err := restoreBackup(cmd.Context(), args[0], opts); err != nil {
 				return fmt.Errorf("restore failed: %w", err)
 			}
@@ -246,6 +248,12 @@ func backupContainer(ctx context.Context, name string, opts BackupOptions) (stri
 }
 
 func restoreBackup(ctx context.Context, backupDir string, opts RestoreOptions) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if opts.Output == nil {
+		opts.Output = io.Discard
+	}
 	resolvedDir, cleanup, err := resolveRestoreBackupDir(backupDir)
 	if err != nil {
 		return err
@@ -308,7 +316,7 @@ func restoreBackup(ctx context.Context, backupDir string, opts RestoreOptions) e
 		if err != nil {
 			return err
 		}
-		if err := svc.LoadImage(ctx, imagePath); err != nil {
+		if err := svc.LoadImage(ctx, imagePath, opts.Output); err != nil {
 			return fmt.Errorf("load image archive %s: %w", imagePath, err)
 		}
 	}
@@ -884,6 +892,9 @@ func (s *dockerBackupService) InspectContainer(ctx context.Context, name string)
 }
 
 func (s *dockerBackupService) SaveImage(ctx context.Context, refs []string, outputFile string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	reader, err := s.cli.ImageSave(ctx, refs)
 	if err != nil {
 		return err
@@ -896,11 +907,16 @@ func (s *dockerBackupService) SaveImage(ctx context.Context, refs []string, outp
 	}
 	defer file.Close()
 
-	_, err = io.Copy(file, reader)
-	return err
+	return backupCopyWithContext(ctx, file, reader)
 }
 
-func (s *dockerBackupService) LoadImage(ctx context.Context, inputFile string) error {
+func (s *dockerBackupService) LoadImage(ctx context.Context, inputFile string, output io.Writer) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if output == nil {
+		output = io.Discard
+	}
 	file, err := os.Open(inputFile)
 	if err != nil {
 		return err
@@ -912,8 +928,31 @@ func (s *dockerBackupService) LoadImage(ctx context.Context, inputFile string) e
 		return err
 	}
 	defer resp.Body.Close()
-	_, err = io.Copy(os.Stdout, resp.Body)
-	return err
+	return backupCopyWithContext(ctx, output, resp.Body)
+}
+
+func backupCopyWithContext(ctx context.Context, dst io.Writer, src io.Reader) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	buf := make([]byte, 32*1024)
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		n, readErr := src.Read(buf)
+		if n > 0 {
+			if _, writeErr := dst.Write(buf[:n]); writeErr != nil {
+				return writeErr
+			}
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				return nil
+			}
+			return readErr
+		}
+	}
 }
 
 func (s *dockerBackupService) InspectNetwork(ctx context.Context, name string) (network.Inspect, error) {

@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"docker-manager/docker"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -21,14 +23,22 @@ import (
 //
 
 type imageService interface {
-	List(all bool) ([]image.Summary, error)
-	Save(images []string, outputFile string) error
-	Load(inputFile string) error
+	List(ctx context.Context, all bool) ([]image.Summary, error)
+	Save(ctx context.Context, images []string, outputFile string) error
+	Load(ctx context.Context, inputFile string, output io.Writer) error
+}
+
+type dockerImageService struct {
+	manager *docker.ImageManager
 }
 
 var imageManager imageService
 var newImageManager = func() (imageService, error) {
-	return docker.NewImageManager()
+	manager, err := docker.NewImageManager()
+	if err != nil {
+		return nil, err
+	}
+	return dockerImageService{manager: manager}, nil
 }
 
 type SaveOptions struct {
@@ -52,7 +62,7 @@ func newLoadCommand() *cobra.Command {
 			if len(args) > 0 {
 				path = args[0]
 			}
-			if err := loadImages(path); err != nil {
+			if err := loadImages(cmd.Context(), path, cmd.OutOrStdout()); err != nil {
 				return fmt.Errorf("import failed: %w", err)
 			}
 			return nil
@@ -89,7 +99,7 @@ func newSaveCommandWithDefaults(defaultOutputDir func() string) *cobra.Command {
 				DryRun:  dryRun,
 				Filters: filters,
 			}
-			if err := saveImagesWithOptions(path, opts); err != nil {
+			if err := saveImagesWithOptions(cmd.Context(), path, opts); err != nil {
 				return fmt.Errorf("export failed: %w", err)
 			}
 			return nil
@@ -111,8 +121,17 @@ func defaultSavePath(defaultOutputDir func() string) string {
 	return "images"
 }
 
-func loadImages(path string) error {
+func loadImages(ctx context.Context, path string, output io.Writer) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if output == nil {
+		output = io.Discard
+	}
 	if err := ensureImageManager(); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	discovery, err := findDockerImageArchives(path)
@@ -125,8 +144,11 @@ func loadImages(path string) error {
 	var loadErrs []error
 	success := 0
 	for i, archive := range discovery.Archives {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(append(loadErrs, err)...)
+		}
 		log.Printf("Load image archive [%d/%d]: %s", i+1, total, archive)
-		if err := imageManager.Load(archive); err != nil {
+		if err := imageManager.Load(ctx, archive, output); err != nil {
 			wrappedErr := fmt.Errorf("load image archive %s: %w", archive, err)
 			log.Println(wrappedErr)
 			loadErrs = append(loadErrs, wrappedErr)
@@ -185,14 +207,20 @@ func isDockerImageArchive(path string) bool {
 }
 
 func saveImages(path string, merge bool, all bool) error {
-	return saveImagesWithOptions(path, SaveOptions{Merge: merge, All: all})
+	return saveImagesWithOptions(context.Background(), path, SaveOptions{Merge: merge, All: all})
 }
 
-func saveImagesWithOptions(path string, opts SaveOptions) error {
+func saveImagesWithOptions(ctx context.Context, path string, opts SaveOptions) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if err := ensureImageManager(); err != nil {
 		return err
 	}
-	images, err := imageManager.List(opts.All)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	images, err := imageManager.List(ctx, opts.All)
 	if err != nil {
 		log.Println(err)
 		return err
@@ -223,7 +251,7 @@ func saveImagesWithOptions(path string, opts SaveOptions) error {
 		}
 		outputFile := filepath.Join(path, "images.tar")
 		log.Printf("Save merged images [1/1]: images=%d output=%s", total, outputFile)
-		if err := imageManager.Save(imageIDList, outputFile); err != nil {
+		if err := imageManager.Save(ctx, imageIDList, outputFile); err != nil {
 			log.Printf("Save summary: total=%d success=0 failed=1 skipped=%d", total, skipped)
 			return err
 		}
@@ -233,9 +261,12 @@ func saveImagesWithOptions(path string, opts SaveOptions) error {
 		var saveErrs []error
 		success := 0
 		for i, target := range targets {
+			if err := ctx.Err(); err != nil {
+				return errors.Join(append(saveErrs, err)...)
+			}
 			outputFile := filepath.Join(path, target.Name+".tar")
 			log.Printf("Save image [%d/%d]: %s -> %s", i+1, total, target.ID, outputFile)
-			if err := imageManager.Save([]string{target.ID}, outputFile); err != nil {
+			if err := imageManager.Save(ctx, []string{target.ID}, outputFile); err != nil {
 				wrappedErr := fmt.Errorf("export image %s to %s: %w", target.ID, outputFile, err)
 				log.Println(wrappedErr)
 				saveErrs = append(saveErrs, wrappedErr)
@@ -354,4 +385,16 @@ func ensureImageManager() error {
 	}
 	imageManager = manager
 	return nil
+}
+
+func (s dockerImageService) List(ctx context.Context, all bool) ([]image.Summary, error) {
+	return s.manager.ListWithContext(ctx, all)
+}
+
+func (s dockerImageService) Save(ctx context.Context, images []string, outputFile string) error {
+	return s.manager.SaveWithContext(ctx, images, outputFile)
+}
+
+func (s dockerImageService) Load(ctx context.Context, inputFile string, output io.Writer) error {
+	return s.manager.LoadWithContext(ctx, inputFile, output)
 }

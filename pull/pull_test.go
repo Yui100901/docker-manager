@@ -378,7 +378,7 @@ func TestPullCommandReturnsImageParseError(t *testing.T) {
 func TestCompletePulledImageLoadsWhenRequested(t *testing.T) {
 	var loadedPath string
 	runner := newTestPullRunner()
-	runner.loadPulledImage = func(path string) error {
+	runner.loadPulledImage = func(ctx context.Context, path string, output io.Writer) error {
 		loadedPath = path
 		return nil
 	}
@@ -394,7 +394,7 @@ func TestCompletePulledImageLoadsWhenRequested(t *testing.T) {
 func TestCompletePulledImageReturnsLoadError(t *testing.T) {
 	loadErr := errors.New("load failed")
 	runner := newTestPullRunner()
-	runner.loadPulledImage = func(path string) error {
+	runner.loadPulledImage = func(ctx context.Context, path string, output io.Writer) error {
 		return loadErr
 	}
 
@@ -469,7 +469,7 @@ func TestCompletePulledImageMirrorsWhenToSet(t *testing.T) {
 	targetRegistry := strings.TrimPrefix(server.URL, "http://")
 	runner := newTestPullRunner()
 	runner.httpClient = &http_utils.HTTPClient{Client: server.Client()}
-	runner.loadPulledImage = func(path string) error {
+	runner.loadPulledImage = func(ctx context.Context, path string, output io.Writer) error {
 		calls = append(calls, "load:"+path)
 		return nil
 	}
@@ -477,7 +477,7 @@ func TestCompletePulledImageMirrorsWhenToSet(t *testing.T) {
 		calls = append(calls, "tag:"+source+"->"+target)
 		return nil
 	}
-	runner.pushPulledImage = func(ctx context.Context, target string) error {
+	runner.pushPulledImage = func(ctx context.Context, target string, output io.Writer) error {
 		calls = append(calls, "push:"+target)
 		return nil
 	}
@@ -509,9 +509,9 @@ func TestCompletePulledImageReturnsPushError(t *testing.T) {
 	targetRegistry := strings.TrimPrefix(server.URL, "http://")
 	runner := newTestPullRunner()
 	runner.httpClient = &http_utils.HTTPClient{Client: server.Client()}
-	runner.loadPulledImage = func(path string) error { return nil }
+	runner.loadPulledImage = func(ctx context.Context, path string, output io.Writer) error { return nil }
 	runner.tagPulledImage = func(ctx context.Context, source, target string) error { return nil }
-	runner.pushPulledImage = func(ctx context.Context, target string) error { return pushErr }
+	runner.pushPulledImage = func(ctx context.Context, target string, output io.Writer) error { return pushErr }
 
 	err := runner.completePulledImage("busybox.tar", testBusyboxInfo(), PullOptions{To: targetRegistry, PlainHTTP: true})
 	if err == nil {
@@ -532,7 +532,7 @@ func TestCompletePulledImagePreflightFailureSkipsDockerActions(t *testing.T) {
 	targetRegistry := strings.TrimPrefix(server.URL, "http://")
 	runner := newTestPullRunner()
 	runner.httpClient = &http_utils.HTTPClient{Client: server.Client()}
-	runner.loadPulledImage = func(path string) error {
+	runner.loadPulledImage = func(ctx context.Context, path string, output io.Writer) error {
 		called = true
 		return nil
 	}
@@ -540,7 +540,7 @@ func TestCompletePulledImagePreflightFailureSkipsDockerActions(t *testing.T) {
 		called = true
 		return nil
 	}
-	runner.pushPulledImage = func(ctx context.Context, target string) error {
+	runner.pushPulledImage = func(ctx context.Context, target string, output io.Writer) error {
 		called = true
 		return nil
 	}
@@ -568,7 +568,7 @@ func TestCompletePulledImagePreflightAuthRequiredSkipsDockerActions(t *testing.T
 	targetRegistry := strings.TrimPrefix(server.URL, "http://")
 	runner := newTestPullRunner()
 	runner.httpClient = &http_utils.HTTPClient{Client: server.Client()}
-	runner.loadPulledImage = func(path string) error {
+	runner.loadPulledImage = func(ctx context.Context, path string, output io.Writer) error {
 		called = true
 		return nil
 	}
@@ -610,7 +610,7 @@ func TestCompletePulledImagePreflightUsesBasicCredentialFromDockerConfig(t *test
 	targetRegistry := strings.TrimPrefix(server.URL, "http://")
 	runner := newTestPullRunner()
 	runner.httpClient = &http_utils.HTTPClient{Client: server.Client()}
-	runner.loadPulledImage = func(path string) error {
+	runner.loadPulledImage = func(ctx context.Context, path string, output io.Writer) error {
 		calls = append(calls, "load")
 		return nil
 	}
@@ -618,7 +618,7 @@ func TestCompletePulledImagePreflightUsesBasicCredentialFromDockerConfig(t *test
 		calls = append(calls, "tag")
 		return nil
 	}
-	runner.pushPulledImage = func(ctx context.Context, target string) error {
+	runner.pushPulledImage = func(ctx context.Context, target string, output io.Writer) error {
 		calls = append(calls, "push")
 		return nil
 	}

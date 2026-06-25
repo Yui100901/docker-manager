@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,6 +17,7 @@ type fakeImageManager struct {
 	loadErrs  map[string]error
 	saveCalls []saveCall
 	loadCalls []string
+	cancel    context.CancelFunc
 }
 
 type saveCall struct {
@@ -22,23 +25,29 @@ type saveCall struct {
 	outputFile string
 }
 
-func (m *fakeImageManager) List(all bool) ([]image.Summary, error) {
+func (m *fakeImageManager) List(ctx context.Context, all bool) ([]image.Summary, error) {
 	return m.images, nil
 }
 
-func (m *fakeImageManager) Save(images []string, outputFile string) error {
+func (m *fakeImageManager) Save(ctx context.Context, images []string, outputFile string) error {
 	m.saveCalls = append(m.saveCalls, saveCall{
 		images:     append([]string(nil), images...),
 		outputFile: outputFile,
 	})
+	if m.cancel != nil {
+		m.cancel()
+	}
 	if len(images) == 1 {
 		return m.saveErrs[images[0]]
 	}
 	return nil
 }
 
-func (m *fakeImageManager) Load(inputFile string) error {
+func (m *fakeImageManager) Load(ctx context.Context, inputFile string, output io.Writer) error {
 	m.loadCalls = append(m.loadCalls, inputFile)
+	if m.cancel != nil {
+		m.cancel()
+	}
 	return m.loadErrs[inputFile]
 }
 
@@ -106,7 +115,7 @@ func TestSaveImagesFiltersByWildcard(t *testing.T) {
 	}
 	withFakeImageManager(t, manager)
 
-	err := saveImagesWithOptions("backup", SaveOptions{
+	err := saveImagesWithOptions(context.Background(), "backup", SaveOptions{
 		Filters: []string{"repo/*:v?"},
 	})
 	if err != nil {
@@ -133,7 +142,7 @@ func TestSaveImagesFiltersByShortIDAndRepositoryName(t *testing.T) {
 	}
 	withFakeImageManager(t, manager)
 
-	err := saveImagesWithOptions("backup", SaveOptions{
+	err := saveImagesWithOptions(context.Background(), "backup", SaveOptions{
 		Filters: []string{"abcdef123456", "busybox"},
 	})
 	if err != nil {
@@ -152,7 +161,7 @@ func TestSaveImagesDryRunDoesNotSave(t *testing.T) {
 	}
 	withFakeImageManager(t, manager)
 
-	err := saveImagesWithOptions("backup", SaveOptions{DryRun: true})
+	err := saveImagesWithOptions(context.Background(), "backup", SaveOptions{DryRun: true})
 	if err != nil {
 		t.Fatalf("saveImagesWithOptions() error = %v", err)
 	}
@@ -206,7 +215,7 @@ func TestLoadImagesSkipsNonImageArchives(t *testing.T) {
 	manager := &fakeImageManager{}
 	withFakeImageManager(t, manager)
 
-	if err := loadImages(dir); err != nil {
+	if err := loadImages(context.Background(), dir, io.Discard); err != nil {
 		t.Fatalf("loadImages() error = %v", err)
 	}
 
@@ -229,7 +238,7 @@ func TestLoadImagesSupportsSingleArchiveFile(t *testing.T) {
 	manager := &fakeImageManager{}
 	withFakeImageManager(t, manager)
 
-	if err := loadImages(path); err != nil {
+	if err := loadImages(context.Background(), path, io.Discard); err != nil {
 		t.Fatalf("loadImages() error = %v", err)
 	}
 	if len(manager.loadCalls) != 1 {
@@ -258,7 +267,7 @@ func TestLoadImagesReturnsAggregatedErrors(t *testing.T) {
 	}
 	withFakeImageManager(t, manager)
 
-	err := loadImages(dir)
+	err := loadImages(context.Background(), dir, io.Discard)
 	if err == nil {
 		t.Fatal("loadImages() error = nil, want load error")
 	}
@@ -267,5 +276,48 @@ func TestLoadImagesReturnsAggregatedErrors(t *testing.T) {
 	}
 	if len(manager.loadCalls) != 2 {
 		t.Fatalf("Load called %d times, want 2", len(manager.loadCalls))
+	}
+}
+
+func TestSaveImagesStopsWhenContextCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	manager := &fakeImageManager{
+		images: []image.Summary{
+			{ID: "sha256:one", RepoTags: []string{"repo/app:v1"}},
+			{ID: "sha256:two", RepoTags: []string{"repo/other:v2"}},
+		},
+		cancel: cancel,
+	}
+	withFakeImageManager(t, manager)
+
+	err := saveImagesWithOptions(ctx, "backup", SaveOptions{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("saveImagesWithOptions() error = %v, want context.Canceled", err)
+	}
+	if len(manager.saveCalls) != 1 {
+		t.Fatalf("Save called %d times, want 1 after cancellation", len(manager.saveCalls))
+	}
+}
+
+func TestLoadImagesStopsWhenContextCanceled(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first.tar")
+	second := filepath.Join(dir, "second.tar")
+	for _, path := range []string{first, second} {
+		if err := os.WriteFile(path, []byte("test"), 0644); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	manager := &fakeImageManager{cancel: cancel}
+	withFakeImageManager(t, manager)
+
+	err := loadImages(ctx, dir, io.Discard)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("loadImages() error = %v, want context.Canceled", err)
+	}
+	if len(manager.loadCalls) != 1 {
+		t.Fatalf("Load called %d times, want 1 after cancellation", len(manager.loadCalls))
 	}
 }

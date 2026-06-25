@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +23,7 @@ type fakeBackupDockerService struct {
 	volume          volume.Volume
 	containerExists bool
 	calls           []string
+	loadOutput      io.Writer
 }
 
 func (f *fakeBackupDockerService) InspectContainer(ctx context.Context, name string) (container.InspectResponse, error) {
@@ -36,8 +39,9 @@ func (f *fakeBackupDockerService) SaveImage(ctx context.Context, refs []string, 
 	return os.WriteFile(outputFile, []byte("image tar"), 0644)
 }
 
-func (f *fakeBackupDockerService) LoadImage(ctx context.Context, inputFile string) error {
+func (f *fakeBackupDockerService) LoadImage(ctx context.Context, inputFile string, output io.Writer) error {
 	f.calls = append(f.calls, "load-image:"+filepath.Base(inputFile))
+	f.loadOutput = output
 	return nil
 }
 
@@ -403,8 +407,12 @@ func TestRestoreBackupReplaceCreatesAndStartsContainer(t *testing.T) {
 	restoreFactory := replaceBackupServiceFactory(fake)
 	defer restoreFactory()
 
-	if err := restoreBackup(context.Background(), dir, RestoreOptions{Replace: true}); err != nil {
+	var out bytes.Buffer
+	if err := restoreBackup(context.Background(), dir, RestoreOptions{Replace: true, Output: &out}); err != nil {
 		t.Fatalf("restoreBackup() error = %v", err)
+	}
+	if fake.loadOutput != &out {
+		t.Fatalf("LoadImage output = %#v, want restore output writer", fake.loadOutput)
 	}
 
 	wantCalls := []string{

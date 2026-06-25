@@ -35,13 +35,27 @@ func NewImageManager() (*ImageManager, error) {
 
 // List 列出所有镜像
 func (im *ImageManager) List(all bool) ([]image.Summary, error) {
-	ctx := context.Background()
+	return im.ListWithContext(context.Background(), all)
+}
+
+// ListWithContext lists images with caller-provided cancellation.
+func (im *ImageManager) ListWithContext(ctx context.Context, all bool) ([]image.Summary, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return im.cli.ImageList(ctx, image.ListOptions{All: all})
 }
 
 // Save 导出镜像
 func (im *ImageManager) Save(images []string, outputFile string) error {
-	ctx := context.Background()
+	return im.SaveWithContext(context.Background(), images, outputFile)
+}
+
+// SaveWithContext exports images with caller-provided cancellation.
+func (im *ImageManager) SaveWithContext(ctx context.Context, images []string, outputFile string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	reader, err := im.cli.ImageSave(ctx, images)
 	if err != nil {
 		return err
@@ -62,13 +76,22 @@ func (im *ImageManager) Save(images []string, outputFile string) error {
 		}
 	}()
 
-	_, err = io.Copy(file, reader)
-	return err
+	return copyWithContext(ctx, file, reader)
 }
 
 // Load 导入镜像
 func (im *ImageManager) Load(inputFile string) error {
-	ctx := context.Background()
+	return im.LoadWithContext(context.Background(), inputFile, os.Stdout)
+}
+
+// LoadWithContext imports an image archive with caller-provided cancellation and output.
+func (im *ImageManager) LoadWithContext(ctx context.Context, inputFile string, output io.Writer) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if output == nil {
+		output = io.Discard
+	}
 	file, err := os.Open(inputFile)
 	if err != nil {
 		return err
@@ -91,8 +114,7 @@ func (im *ImageManager) Load(inputFile string) error {
 		}
 	}()
 
-	_, err = io.Copy(os.Stdout, resp.Body)
-	return err
+	return copyWithContext(ctx, output, resp.Body)
 }
 
 // Tag tags an image in the local Docker engine.
@@ -105,8 +127,16 @@ func (im *ImageManager) Tag(ctx context.Context, source, target string) error {
 
 // Push pushes an image from the local Docker engine to a registry.
 func (im *ImageManager) Push(ctx context.Context, ref string) error {
+	return im.PushWithOutput(ctx, ref, os.Stdout)
+}
+
+// PushWithOutput pushes an image and writes Docker's progress stream to output.
+func (im *ImageManager) PushWithOutput(ctx context.Context, ref string, output io.Writer) error {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if output == nil {
+		output = io.Discard
 	}
 	resp, err := im.cli.ImagePush(ctx, ref, image.PushOptions{})
 	if err != nil {
@@ -117,6 +147,29 @@ func (im *ImageManager) Push(ctx context.Context, ref string) error {
 			_, _ = fmt.Fprintf(os.Stderr, "警告: 关闭 push response 失败: %v\n", cerr)
 		}
 	}()
-	_, err = io.Copy(os.Stdout, resp)
-	return err
+	return copyWithContext(ctx, output, resp)
+}
+
+func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	buf := make([]byte, 32*1024)
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		n, readErr := src.Read(buf)
+		if n > 0 {
+			if _, writeErr := dst.Write(buf[:n]); writeErr != nil {
+				return writeErr
+			}
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				return nil
+			}
+			return readErr
+		}
+	}
 }

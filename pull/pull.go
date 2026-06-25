@@ -65,13 +65,14 @@ type ImageInfo struct {
 }
 
 type PullOptions struct {
-	Context      context.Context
-	Output       string
-	OutputDir    string
-	Load         bool
-	To           string
-	DockerConfig string
-	PlainHTTP    bool
+	Context        context.Context
+	Output         string
+	OutputDir      string
+	Load           bool
+	To             string
+	DockerConfig   string
+	PlainHTTP      bool
+	ProgressOutput io.Writer
 }
 
 type CommandDefaults struct {
@@ -84,9 +85,9 @@ type CommandDefaults struct {
 type PullRunner struct {
 	platform            targetPlatform
 	httpClient          *http_utils.HTTPClient
-	loadPulledImage     func(path string) error
+	loadPulledImage     func(ctx context.Context, path string, output io.Writer) error
 	tagPulledImage      func(ctx context.Context, source, target string) error
-	pushPulledImage     func(ctx context.Context, target string) error
+	pushPulledImage     func(ctx context.Context, target string, output io.Writer) error
 	runCredentialHelper func(ctx context.Context, helper, server string) (pullRegistryCredential, error)
 }
 
@@ -142,13 +143,14 @@ func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command 
 			}
 			imageNameList = args
 			opts := PullOptions{
-				Context:      ctx,
-				Output:       output,
-				OutputDir:    outputDir,
-				Load:         load,
-				To:           to,
-				DockerConfig: dockerConfig,
-				PlainHTTP:    plainHTTP,
+				Context:        ctx,
+				Output:         output,
+				OutputDir:      outputDir,
+				Load:           load,
+				To:             to,
+				DockerConfig:   dockerConfig,
+				PlainHTTP:      plainHTTP,
+				ProgressOutput: cmd.OutOrStdout(),
 			}
 			var pullErrs []error
 			success := 0
@@ -300,8 +302,19 @@ func (r *PullRunner) completePulledImage(outputFile string, info *ImageInfo, opt
 		}
 	}
 
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	progressOutput := opts.ProgressOutput
+	if progressOutput == nil {
+		progressOutput = io.Discard
+	}
 	log.Printf("Load pulled image: %s", outputFile)
-	if err := r.loadPulledImage(outputFile); err != nil {
+	if err := r.loadPulledImage(ctx, outputFile, progressOutput); err != nil {
 		return fmt.Errorf("导入镜像失败: %w", err)
 	}
 	log.Printf("镜像导入成功: %s", outputFile)
@@ -310,10 +323,6 @@ func (r *PullRunner) completePulledImage(outputFile string, info *ImageInfo, opt
 		return nil
 	}
 	source := localImageRef(info)
-	ctx := opts.Context
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -325,7 +334,7 @@ func (r *PullRunner) completePulledImage(outputFile string, info *ImageInfo, opt
 		return err
 	}
 	log.Printf("Push pulled image: %s", target)
-	if err := r.pushPulledImage(ctx, target); err != nil {
+	if err := r.pushPulledImage(ctx, target, progressOutput); err != nil {
 		return fmt.Errorf("push 镜像失败: %w", err)
 	}
 	log.Printf("镜像推送成功: %s", target)
@@ -1414,12 +1423,12 @@ func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader) error {
 	}
 }
 
-func loadImageTar(path string) error {
+func loadImageTar(ctx context.Context, path string, output io.Writer) error {
 	im, err := docker.NewImageManager()
 	if err != nil {
 		return err
 	}
-	return im.Load(path)
+	return im.LoadWithContext(ctx, path, output)
 }
 
 func tagImage(ctx context.Context, source, target string) error {
@@ -1430,12 +1439,12 @@ func tagImage(ctx context.Context, source, target string) error {
 	return im.Tag(ctx, source, target)
 }
 
-func pushImage(ctx context.Context, target string) error {
+func pushImage(ctx context.Context, target string, output io.Writer) error {
 	im, err := docker.NewImageManager()
 	if err != nil {
 		return err
 	}
-	return im.Push(ctx, target)
+	return im.PushWithOutput(ctx, target, output)
 }
 
 func sha256Hash(input string) string {
