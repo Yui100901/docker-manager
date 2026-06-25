@@ -19,6 +19,8 @@ import (
 
 type fakeBackupDockerService struct {
 	inspect         container.InspectResponse
+	inspects        map[string]container.InspectResponse
+	containers      []container.Summary
 	network         network.Inspect
 	volume          volume.Volume
 	containerExists bool
@@ -26,8 +28,16 @@ type fakeBackupDockerService struct {
 	loadOutput      io.Writer
 }
 
+func (f *fakeBackupDockerService) ListContainers(ctx context.Context, all bool) ([]container.Summary, error) {
+	f.calls = append(f.calls, "list-containers")
+	return f.containers, nil
+}
+
 func (f *fakeBackupDockerService) InspectContainer(ctx context.Context, name string) (container.InspectResponse, error) {
 	f.calls = append(f.calls, "inspect-container:"+name)
+	if inspect, ok := f.inspects[name]; ok {
+		return inspect, nil
+	}
 	return f.inspect, nil
 }
 
@@ -122,18 +132,22 @@ func TestBackupContainerWritesBundle(t *testing.T) {
 
 	var manifest BackupManifest
 	readTestJSON(t, filepath.Join(dir, backupManifestName), &manifest)
-	if manifest.ContainerName != "demo" {
-		t.Fatalf("ContainerName = %q, want demo", manifest.ContainerName)
+	if len(manifest.Containers) != 1 {
+		t.Fatalf("Containers = %#v, want one container", manifest.Containers)
 	}
-	if manifest.ImageArchive == "" {
+	entry := manifest.Containers[0]
+	if entry.ContainerName != "demo" {
+		t.Fatalf("ContainerName = %q, want demo", entry.ContainerName)
+	}
+	if entry.ImageArchive == "" {
 		t.Fatal("ImageArchive is empty")
 	}
 	for _, rel := range []string{
-		manifest.InspectFile,
-		manifest.ComposeFile,
-		manifest.ImageArchive,
-		manifest.Networks[0].File,
-		manifest.Volumes[0].File,
+		entry.InspectFile,
+		entry.ComposeFile,
+		entry.ImageArchive,
+		entry.Networks[0].File,
+		entry.Volumes[0].File,
 	} {
 		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(rel))); err != nil {
 			t.Fatalf("expected backup file %s: %v", rel, err)
@@ -185,6 +199,111 @@ func TestBackupContainerWritesOfflineBundleArtifacts(t *testing.T) {
 		t.Fatalf("checksums = %q, want manifest and no checksums self-entry", string(checksums))
 	}
 
+	extracted := filepath.Join(root, "extracted")
+	if err := os.MkdirAll(extracted, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := extractBackupArchive(archive, extracted); err != nil {
+		t.Fatalf("extractBackupArchive() error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(extracted, backupManifestName)); err != nil {
+		t.Fatalf("archive missing manifest: %v", err)
+	}
+}
+
+func TestBackupContainersSeparateByDefault(t *testing.T) {
+	fake := &fakeBackupDockerService{
+		containers: []container.Summary{
+			{ID: "api-id", Names: []string{"/api-1"}, Image: "demo/api:latest"},
+			{ID: "worker-id", Names: []string{"/worker"}, Image: "demo/worker:latest"},
+		},
+		inspects: map[string]container.InspectResponse{
+			"api-1": {
+				ContainerJSONBase: &container.ContainerJSONBase{Name: "/api-1", HostConfig: &container.HostConfig{}},
+				Config:            &container.Config{Image: "demo/api:latest"},
+			},
+			"worker": {
+				ContainerJSONBase: &container.ContainerJSONBase{Name: "/worker", HostConfig: &container.HostConfig{}},
+				Config:            &container.Config{Image: "demo/worker:latest"},
+			},
+		},
+	}
+	restoreFactory := replaceBackupServiceFactory(fake)
+	defer restoreFactory()
+
+	root := filepath.Join(t.TempDir(), "batch")
+	result, err := backupContainers(context.Background(), []string{"api-*", "worker"}, BackupOptions{
+		OutputDir:    root,
+		IncludeImage: false,
+	})
+	if err != nil {
+		t.Fatalf("backupContainers() error = %v", err)
+	}
+	if len(result.Paths) != 2 {
+		t.Fatalf("Paths = %#v, want 2 paths", result.Paths)
+	}
+	for _, rel := range []string{"api-1", "worker"} {
+		if _, err := os.Stat(filepath.Join(root, rel, backupManifestName)); err != nil {
+			t.Fatalf("missing %s manifest: %v", rel, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, backupManifestName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("top-level manifest exists for separate backup: %v", err)
+	}
+}
+
+func TestBackupContainersMergeWritesBatchBundle(t *testing.T) {
+	fake := &fakeBackupDockerService{
+		containers: []container.Summary{
+			{ID: "api-id", Names: []string{"/api"}, Image: "demo/api:latest"},
+			{ID: "worker-id", Names: []string{"/worker"}, Image: "demo/worker:latest"},
+		},
+		inspects: map[string]container.InspectResponse{
+			"api": {
+				ContainerJSONBase: &container.ContainerJSONBase{Name: "/api", HostConfig: &container.HostConfig{}},
+				Config:            &container.Config{Image: "demo/api:latest"},
+			},
+			"worker": {
+				ContainerJSONBase: &container.ContainerJSONBase{Name: "/worker", HostConfig: &container.HostConfig{}},
+				Config:            &container.Config{Image: "demo/worker:latest"},
+			},
+		},
+	}
+	restoreFactory := replaceBackupServiceFactory(fake)
+	defer restoreFactory()
+
+	root := t.TempDir()
+	dir := filepath.Join(root, "merged")
+	archive := filepath.Join(root, "merged.tar.gz")
+	result, err := backupContainers(context.Background(), []string{"api", "worker"}, BackupOptions{
+		OutputDir:    dir,
+		IncludeImage: false,
+		Merge:        true,
+		Bundle:       true,
+		BundleOutput: archive,
+	})
+	if err != nil {
+		t.Fatalf("backupContainers() error = %v", err)
+	}
+	if len(result.Paths) != 1 || result.Paths[0] != dir {
+		t.Fatalf("Paths = %#v, want merged dir", result.Paths)
+	}
+	var manifest BackupManifest
+	readTestJSON(t, filepath.Join(dir, backupManifestName), &manifest)
+	if len(manifest.Containers) != 2 {
+		t.Fatalf("manifest = %#v, want 2 containers", manifest)
+	}
+	for _, rel := range []string{
+		filepath.Join("containers", "api", backupManifestName),
+		filepath.Join("containers", "worker", backupManifestName),
+		backupReadmeName,
+		backupRestoreName,
+		backupChecksumName,
+	} {
+		if _, err := os.Stat(filepath.Join(dir, rel)); err != nil {
+			t.Fatalf("missing merged backup file %s: %v", rel, err)
+		}
+	}
 	extracted := filepath.Join(root, "extracted")
 	if err := os.MkdirAll(extracted, 0755); err != nil {
 		t.Fatal(err)
@@ -258,6 +377,58 @@ func TestRestoreBackupSupportsTarGzArchive(t *testing.T) {
 		t.Fatalf("restoreBackup() error = %v", err)
 	}
 	for _, want := range []string{"container-exists:demo", "create-container:demo"} {
+		if !hasCall(fake.calls, want) {
+			t.Fatalf("calls = %#v, want %s", fake.calls, want)
+		}
+	}
+	if hasCallPrefix(fake.calls, "start-container:") {
+		t.Fatalf("calls = %#v, start-container should not run with NoStart", fake.calls)
+	}
+}
+
+func TestRestoreBackupSupportsBatchManifest(t *testing.T) {
+	root := t.TempDir()
+	writeTestJSON(t, filepath.Join(root, backupManifestName), BackupManifest{
+		Version:   1,
+		CreatedAt: "2026-06-25T00:00:00Z",
+		Containers: []BackupContainerManifest{
+			{ContainerName: "api", Path: filepath.ToSlash(filepath.Join("containers", "api"))},
+			{ContainerName: "worker", Path: filepath.ToSlash(filepath.Join("containers", "worker"))},
+		},
+	})
+	for _, name := range []string{"api", "worker"} {
+		dir := filepath.Join(root, "containers", name)
+		writeTestJSON(t, filepath.Join(dir, backupManifestName), BackupManifest{
+			Version:       1,
+			ContainerName: name,
+			InspectFile:   backupInspectName,
+			ComposeFile:   backupComposeName,
+		})
+		writeTestJSON(t, filepath.Join(dir, backupInspectName), container.InspectResponse{
+			ContainerJSONBase: &container.ContainerJSONBase{
+				Name:       "/" + name,
+				HostConfig: &container.HostConfig{},
+			},
+			Config: &container.Config{Image: "busybox:latest"},
+		})
+	}
+	if err := writeChecksums(root); err != nil {
+		t.Fatalf("writeChecksums() error = %v", err)
+	}
+
+	fake := &fakeBackupDockerService{}
+	restoreFactory := replaceBackupServiceFactory(fake)
+	defer restoreFactory()
+
+	if err := restoreBackup(context.Background(), root, RestoreOptions{NoStart: true}); err != nil {
+		t.Fatalf("restoreBackup() error = %v", err)
+	}
+	for _, want := range []string{
+		"container-exists:api",
+		"create-container:api",
+		"container-exists:worker",
+		"create-container:worker",
+	} {
 		if !hasCall(fake.calls, want) {
 			t.Fatalf("calls = %#v, want %s", fake.calls, want)
 		}

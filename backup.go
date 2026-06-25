@@ -39,6 +39,7 @@ const (
 )
 
 type backupDockerService interface {
+	ListContainers(ctx context.Context, all bool) ([]container.Summary, error)
 	InspectContainer(ctx context.Context, name string) (container.InspectResponse, error)
 	SaveImage(ctx context.Context, refs []string, outputFile string) error
 	LoadImage(ctx context.Context, inputFile string, output io.Writer) error
@@ -70,6 +71,7 @@ type BackupOptions struct {
 	DryRun       bool
 	Bundle       bool
 	BundleOutput string
+	Merge        bool
 }
 
 type RestoreOptions struct {
@@ -82,10 +84,24 @@ type RestoreOptions struct {
 }
 
 type BackupManifest struct {
-	Version       int                 `json:"version"`
-	CreatedAt     string              `json:"created_at"`
+	Version    int                       `json:"version"`
+	CreatedAt  string                    `json:"created_at"`
+	Containers []BackupContainerManifest `json:"containers,omitempty"`
+
+	ContainerName string              `json:"container_name,omitempty"`
+	SourceName    string              `json:"source_name,omitempty"`
+	Image         string              `json:"image,omitempty"`
+	ImageArchive  string              `json:"image_archive,omitempty"`
+	InspectFile   string              `json:"inspect_file,omitempty"`
+	ComposeFile   string              `json:"compose_file,omitempty"`
+	Networks      []BackupResourceRef `json:"networks,omitempty"`
+	Volumes       []BackupResourceRef `json:"volumes,omitempty"`
+}
+
+type BackupContainerManifest struct {
 	ContainerName string              `json:"container_name"`
 	SourceName    string              `json:"source_name"`
+	Path          string              `json:"path,omitempty"`
 	Image         string              `json:"image,omitempty"`
 	ImageArchive  string              `json:"image_archive,omitempty"`
 	InspectFile   string              `json:"inspect_file"`
@@ -111,19 +127,20 @@ func newBackupCommand() *cobra.Command {
 func newBackupContainerCommand() *cobra.Command {
 	opts := BackupOptions{IncludeImage: true}
 	cmd := &cobra.Command{
-		Use:   "container <name> [backup-dir]",
-		Short: "备份容器 inspect、镜像、compose、volume 和 network 元数据",
-		Args:  cobra.RangeArgs(1, 2),
+		Use:   "container <name-pattern...> [backup-dir]",
+		Short: "批量备份容器 inspect、镜像、compose、volume 和 network 元数据",
+		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			opts.OutputDir = ""
-			if len(args) == 2 {
-				opts.OutputDir = args[1]
-			}
-			outputDir, err := backupContainer(cmd.Context(), args[0], opts)
+			targets, outputDir := splitBackupContainerArgs(args, opts.OutputDir)
+			runOpts := opts
+			runOpts.OutputDir = outputDir
+			result, err := backupContainers(cmd.Context(), targets, runOpts)
 			if err != nil {
 				return fmt.Errorf("备份容器失败: %w", err)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "备份已创建: %s\n", outputDir)
+			for _, path := range result.Paths {
+				fmt.Fprintf(cmd.OutOrStdout(), "备份已创建: %s\n", path)
+			}
 			return nil
 		},
 	}
@@ -131,21 +148,28 @@ func newBackupContainerCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", false, "只预览备份动作，不写入文件")
 	cmd.Flags().BoolVar(&opts.Bundle, "bundle", false, "生成离线迁移包 tar.gz，并附带 README、restore 脚本和 checksums")
 	cmd.Flags().StringVar(&opts.BundleOutput, "output", "", "离线迁移包输出路径，默认 <backup-dir>.tar.gz")
+	cmd.Flags().StringVar(&opts.OutputDir, "output-dir", "", "批量备份输出根目录；单容器也可继续使用位置参数指定目录")
+	cmd.Flags().BoolVar(&opts.Merge, "merge", false, "将多个容器合并为一个批量备份包，可整体 restore")
 	return cmd
 }
 
 func newRestoreCommand() *cobra.Command {
 	opts := RestoreOptions{}
 	cmd := &cobra.Command{
-		Use:   "restore <backup-dir-or-archive>",
-		Short: "从 backup container 生成的目录或 tar.gz 离线包恢复镜像、网络、volume 和容器",
-		Args:  cobra.ExactArgs(1),
+		Use:   "restore <backup-dir-or-archive...>",
+		Short: "从 backup container 生成的目录、批量目录或 tar.gz 离线包恢复镜像、网络、volume 和容器",
+		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.Output = cmd.OutOrStdout()
-			if err := restoreBackup(cmd.Context(), args[0], opts); err != nil {
-				return fmt.Errorf("恢复失败: %w", err)
+			if opts.Name != "" && len(args) > 1 {
+				return fmt.Errorf("--name 只支持恢复单个备份")
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "恢复完成: %s\n", args[0])
+			for _, arg := range args {
+				if err := restoreBackup(cmd.Context(), arg, opts); err != nil {
+					return fmt.Errorf("恢复失败: %w", err)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "恢复完成: %s\n", arg)
+			}
 			return nil
 		},
 	}
@@ -155,6 +179,202 @@ func newRestoreCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", false, "只预览恢复动作，不修改 Docker")
 	cmd.Flags().BoolVar(&opts.SkipChecksum, "skip-checksum", false, "跳过 checksums.txt 完整性校验")
 	return cmd
+}
+
+type BackupContainersResult struct {
+	Paths []string
+}
+
+func backupContainers(ctx context.Context, patterns []string, opts BackupOptions) (BackupContainersResult, error) {
+	if len(patterns) == 0 {
+		return BackupContainersResult{}, fmt.Errorf("必须提供至少一个容器名称或通配符")
+	}
+	targets, err := resolveBackupContainerTargets(ctx, patterns)
+	if err != nil {
+		return BackupContainersResult{}, err
+	}
+	if len(targets) == 0 {
+		return BackupContainersResult{}, fmt.Errorf("未匹配任何容器")
+	}
+	if len(targets) == 1 && !opts.Merge {
+		singleOpts := opts
+		outputDir, err := backupContainer(ctx, targets[0], singleOpts)
+		if err != nil {
+			return BackupContainersResult{}, err
+		}
+		return BackupContainersResult{Paths: []string{outputDir}}, nil
+	}
+	if opts.BundleOutput != "" && !opts.Merge {
+		return BackupContainersResult{}, fmt.Errorf("多个独立备份不能使用单个 --output；请使用 --output-dir 或添加 --merge")
+	}
+	if opts.Merge {
+		return backupContainersMerged(ctx, targets, opts)
+	}
+	return backupContainersSeparate(ctx, targets, opts)
+}
+
+func backupContainersSeparate(ctx context.Context, targets []string, opts BackupOptions) (BackupContainersResult, error) {
+	root := opts.OutputDir
+	if root == "" {
+		root = defaultBackupBatchDir(time.Now())
+	}
+	var result BackupContainersResult
+	for _, target := range targets {
+		childOpts := opts
+		childOpts.OutputDir = filepath.Join(root, safeBackupName(target))
+		childOpts.BundleOutput = ""
+		outputDir, err := backupContainer(ctx, target, childOpts)
+		if err != nil {
+			return result, fmt.Errorf("backup %s: %w", target, err)
+		}
+		result.Paths = append(result.Paths, outputDir)
+	}
+	return result, nil
+}
+
+func backupContainersMerged(ctx context.Context, targets []string, opts BackupOptions) (BackupContainersResult, error) {
+	root := opts.OutputDir
+	if root == "" {
+		root = defaultBackupBatchDir(time.Now())
+	}
+	manifest := BackupManifest{
+		Version:   1,
+		CreatedAt: time.Now().Format(time.RFC3339),
+	}
+	for _, target := range targets {
+		childRel := filepath.ToSlash(filepath.Join("containers", safeBackupName(target)))
+		childOpts := opts
+		childOpts.OutputDir = filepath.Join(root, filepath.FromSlash(childRel))
+		childOpts.Bundle = false
+		childOpts.BundleOutput = ""
+		outputDir, err := backupContainer(ctx, target, childOpts)
+		if err != nil {
+			return BackupContainersResult{}, fmt.Errorf("backup %s: %w", target, err)
+		}
+		entry := BackupContainerManifest{
+			ContainerName: target,
+			SourceName:    target,
+			Path:          childRel,
+		}
+		if !opts.DryRun {
+			childManifest, err := readBackupManifest(outputDir)
+			if err != nil {
+				return BackupContainersResult{}, err
+			}
+			if len(childManifest.Containers) == 0 {
+				return BackupContainersResult{}, fmt.Errorf("backup %s manifest does not contain containers", target)
+			}
+			entry = childManifest.Containers[0]
+			entry.Path = childRel
+		}
+		manifest.Containers = append(manifest.Containers, entry)
+	}
+	if !opts.DryRun {
+		if err := writeJSONFile(filepath.Join(root, backupManifestName), manifest); err != nil {
+			return BackupContainersResult{}, fmt.Errorf("write manifest: %w", err)
+		}
+		if opts.Bundle {
+			if err := writeBackupBundleArtifacts(root, manifest); err != nil {
+				return BackupContainersResult{}, err
+			}
+			archivePath := opts.BundleOutput
+			if archivePath == "" {
+				archivePath = root + ".tar.gz"
+			}
+			if err := createBackupArchive(root, archivePath); err != nil {
+				return BackupContainersResult{}, err
+			}
+			log.Printf("Backup batch bundle: %s", archivePath)
+		}
+	}
+	log.Printf("Backup batch summary: containers=%d output=%s merge=true", len(targets), root)
+	return BackupContainersResult{Paths: []string{root}}, nil
+}
+
+func resolveBackupContainerTargets(ctx context.Context, patterns []string) ([]string, error) {
+	svc, err := newBackupDockerService()
+	if err != nil {
+		return nil, err
+	}
+	containers, err := svc.ListContainers(ctx, true)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	var targets []string
+	for _, pattern := range patterns {
+		matches := matchBackupContainerTargets(containers, pattern)
+		if len(matches) == 0 {
+			return nil, fmt.Errorf("容器 %q 未匹配任何容器", pattern)
+		}
+		for _, match := range matches {
+			if !seen[match] {
+				seen[match] = true
+				targets = append(targets, match)
+			}
+		}
+	}
+	return targets, nil
+}
+
+func matchBackupContainerTargets(containers []container.Summary, pattern string) []string {
+	var matches []string
+	for _, c := range containers {
+		if !backupContainerMatchesPattern(c, pattern) {
+			continue
+		}
+		name := backupContainerTargetName(c)
+		if name != "" {
+			matches = append(matches, name)
+		}
+	}
+	sort.Strings(matches)
+	return matches
+}
+
+func backupContainerMatchesPattern(c container.Summary, pattern string) bool {
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
+		return false
+	}
+	hasWildcard := strings.ContainsAny(pattern, "*?")
+	for _, candidate := range containerFilterCandidates(c) {
+		if hasWildcard {
+			if wildcardMatch(pattern, candidate) {
+				return true
+			}
+			continue
+		}
+		if candidate == pattern {
+			return true
+		}
+	}
+	return false
+}
+
+func backupContainerTargetName(c container.Summary) string {
+	name := firstContainerName(c.Names)
+	if name != "" {
+		return name
+	}
+	return c.ID
+}
+
+func splitBackupContainerArgs(args []string, outputDir string) ([]string, string) {
+	if outputDir != "" || len(args) < 2 {
+		return args, outputDir
+	}
+	last := args[len(args)-1]
+	if looksLikeBackupPathArg(last) {
+		return args[:len(args)-1], last
+	}
+	return args, outputDir
+}
+
+func looksLikeBackupPathArg(value string) bool {
+	return filepath.IsAbs(value) ||
+		strings.HasPrefix(value, ".") ||
+		strings.ContainsAny(value, `/\`)
 }
 
 func backupContainer(ctx context.Context, name string, opts BackupOptions) (string, error) {
@@ -176,16 +396,15 @@ func backupContainer(ctx context.Context, name string, opts BackupOptions) (stri
 		outputDir = defaultBackupDir(time.Now(), containerName)
 	}
 
-	manifest := BackupManifest{
-		Version:       1,
-		CreatedAt:     time.Now().Format(time.RFC3339),
+	createdAt := time.Now().Format(time.RFC3339)
+	containerManifest := BackupContainerManifest{
 		ContainerName: containerName,
 		SourceName:    name,
 		InspectFile:   backupInspectName,
 		ComposeFile:   backupComposeName,
 	}
 	if inspect.Config != nil {
-		manifest.Image = inspect.Config.Image
+		containerManifest.Image = inspect.Config.Image
 	}
 
 	if opts.DryRun {
@@ -203,30 +422,35 @@ func backupContainer(ctx context.Context, name string, opts BackupOptions) (stri
 		return "", fmt.Errorf("write compose: %w", err)
 	}
 
-	if opts.IncludeImage && manifest.Image != "" {
+	if opts.IncludeImage && containerManifest.Image != "" {
 		imageDir := filepath.Join(outputDir, "images")
 		if err := os.MkdirAll(imageDir, 0755); err != nil {
 			return "", err
 		}
-		imageFile := filepath.Join("images", safeBackupName(manifest.Image)+".tar")
-		if err := svc.SaveImage(ctx, []string{manifest.Image}, filepath.Join(outputDir, imageFile)); err != nil {
-			return "", fmt.Errorf("save image %s: %w", manifest.Image, err)
+		imageFile := filepath.Join("images", safeBackupName(containerManifest.Image)+".tar")
+		if err := svc.SaveImage(ctx, []string{containerManifest.Image}, filepath.Join(outputDir, imageFile)); err != nil {
+			return "", fmt.Errorf("save image %s: %w", containerManifest.Image, err)
 		}
-		manifest.ImageArchive = filepath.ToSlash(imageFile)
+		containerManifest.ImageArchive = filepath.ToSlash(imageFile)
 	}
 
 	networks, err := backupNetworks(ctx, svc, outputDir, inspect)
 	if err != nil {
 		return "", err
 	}
-	manifest.Networks = networks
+	containerManifest.Networks = networks
 
 	volumes, err := backupVolumes(ctx, svc, outputDir, inspect)
 	if err != nil {
 		return "", err
 	}
-	manifest.Volumes = volumes
+	containerManifest.Volumes = volumes
 
+	manifest := BackupManifest{
+		Version:    1,
+		CreatedAt:  createdAt,
+		Containers: []BackupContainerManifest{containerManifest},
+	}
 	if err := writeJSONFile(filepath.Join(outputDir, backupManifestName), manifest); err != nil {
 		return "", fmt.Errorf("write manifest: %w", err)
 	}
@@ -243,7 +467,7 @@ func backupContainer(ctx context.Context, name string, opts BackupOptions) (stri
 		}
 		log.Printf("Backup bundle: %s", archivePath)
 	}
-	log.Printf("Backup summary: container=%s output=%s image=%v networks=%d volumes=%d", containerName, outputDir, manifest.ImageArchive != "", len(manifest.Networks), len(manifest.Volumes))
+	log.Printf("Backup summary: container=%s output=%s image=%v networks=%d volumes=%d", containerName, outputDir, containerManifest.ImageArchive != "", len(containerManifest.Networks), len(containerManifest.Volumes))
 	return outputDir, nil
 }
 
@@ -275,6 +499,10 @@ func restoreBackup(ctx context.Context, backupDir string, opts RestoreOptions) e
 		log.Printf("Skip checksum verification: %s", backupDir)
 	}
 
+	return restoreBackupDir(ctx, backupDir, opts)
+}
+
+func restoreBackupDir(ctx context.Context, backupDir string, opts RestoreOptions) error {
 	svc, err := newBackupDockerService()
 	if err != nil {
 		return err
@@ -283,13 +511,37 @@ func restoreBackup(ctx context.Context, backupDir string, opts RestoreOptions) e
 	if err != nil {
 		return err
 	}
-	inspect, err := readContainerInspect(backupDir, manifest)
+	if len(manifest.Containers) == 0 {
+		return fmt.Errorf("manifest does not contain any containers")
+	}
+	if opts.Name != "" && len(manifest.Containers) != 1 {
+		return fmt.Errorf("--name 只支持恢复单个备份")
+	}
+	for _, entry := range manifest.Containers {
+		if err := restoreBackupContainerEntry(ctx, svc, backupDir, entry, opts); err != nil {
+			return err
+		}
+	}
+	log.Printf("Restore summary: containers=%d source=%s", len(manifest.Containers), backupDir)
+	return nil
+}
+
+func restoreBackupContainerEntry(ctx context.Context, svc backupDockerService, backupDir string, entry BackupContainerManifest, opts RestoreOptions) error {
+	entryDir := backupDir
+	if entry.Path != "" {
+		var err error
+		entryDir, err = backupFilePath(backupDir, entry.Path)
+		if err != nil {
+			return err
+		}
+	}
+	inspect, err := readContainerInspect(entryDir, entry)
 	if err != nil {
 		return err
 	}
 	targetName := opts.Name
 	if targetName == "" {
-		targetName = manifest.ContainerName
+		targetName = entry.ContainerName
 	}
 	if targetName == "" {
 		targetName = normalizeContainerName(inspect.Name)
@@ -307,12 +559,12 @@ func restoreBackup(ctx context.Context, backupDir string, opts RestoreOptions) e
 	}
 
 	if opts.DryRun {
-		log.Printf("Dry run restore: backup=%s container=%s replace=%v noStart=%v", backupDir, targetName, opts.Replace, opts.NoStart)
+		log.Printf("Dry run restore: backup=%s container=%s replace=%v noStart=%v", entryDir, targetName, opts.Replace, opts.NoStart)
 		return nil
 	}
 
-	if manifest.ImageArchive != "" {
-		imagePath, err := backupFilePath(backupDir, manifest.ImageArchive)
+	if entry.ImageArchive != "" {
+		imagePath, err := backupFilePath(entryDir, entry.ImageArchive)
 		if err != nil {
 			return err
 		}
@@ -321,8 +573,8 @@ func restoreBackup(ctx context.Context, backupDir string, opts RestoreOptions) e
 		}
 	}
 
-	for _, ref := range manifest.Networks {
-		netMeta, err := readNetworkInspect(backupDir, ref)
+	for _, ref := range entry.Networks {
+		netMeta, err := readNetworkInspect(entryDir, ref)
 		if err != nil {
 			return err
 		}
@@ -331,8 +583,8 @@ func restoreBackup(ctx context.Context, backupDir string, opts RestoreOptions) e
 		}
 	}
 
-	for _, ref := range manifest.Volumes {
-		volMeta, err := readVolumeInspect(backupDir, ref)
+	for _, ref := range entry.Volumes {
+		volMeta, err := readVolumeInspect(entryDir, ref)
 		if err != nil {
 			return err
 		}
@@ -356,7 +608,7 @@ func restoreBackup(ctx context.Context, backupDir string, opts RestoreOptions) e
 			return fmt.Errorf("start container %s: %w", targetName, err)
 		}
 	}
-	log.Printf("Restore summary: container=%s id=%s started=%v", targetName, id, !opts.NoStart)
+	log.Printf("Restore container summary: container=%s id=%s started=%v", targetName, id, !opts.NoStart)
 	return nil
 }
 
@@ -464,17 +716,21 @@ func writeBackupReadme(path string, manifest BackupManifest) error {
 	var sb strings.Builder
 	sb.WriteString("# docker-manager offline backup\n\n")
 	sb.WriteString("## Contents\n\n")
-	sb.WriteString("- `manifest.json`: backup manifest\n")
-	sb.WriteString("- `container.inspect.json`: Docker inspect JSON\n")
-	sb.WriteString("- `docker-compose.yml`: compose generated from the container\n")
-	if manifest.ImageArchive != "" {
-		sb.WriteString("- `" + manifest.ImageArchive + "`: image archive\n")
-	}
-	if len(manifest.Networks) > 0 {
-		sb.WriteString("- `networks/`: network metadata\n")
-	}
-	if len(manifest.Volumes) > 0 {
-		sb.WriteString("- `volumes/`: volume metadata\n")
+	sb.WriteString("- `manifest.json`: migration manifest; `containers` contains one or more container entries\n")
+	if len(manifest.Containers) == 1 && manifest.Containers[0].Path == "" {
+		sb.WriteString("- `container.inspect.json`: Docker inspect JSON\n")
+		sb.WriteString("- `docker-compose.yml`: compose generated from the container\n")
+		if manifest.Containers[0].ImageArchive != "" {
+			sb.WriteString("- `" + manifest.Containers[0].ImageArchive + "`: image archive\n")
+		}
+		if len(manifest.Containers[0].Networks) > 0 {
+			sb.WriteString("- `networks/`: network metadata\n")
+		}
+		if len(manifest.Containers[0].Volumes) > 0 {
+			sb.WriteString("- `volumes/`: volume metadata\n")
+		}
+	} else {
+		sb.WriteString("- `containers/`: per-container backup directories\n")
 	}
 	sb.WriteString("- `checksums.txt`: SHA256 checksums\n")
 	sb.WriteString("- `restore.sh`: helper restore script\n\n")
@@ -484,11 +740,19 @@ func writeBackupReadme(path string, manifest BackupManifest) error {
 	sb.WriteString("# or restore directly from the archive:\n")
 	sb.WriteString("dm restore <backup>.tar.gz\n")
 	sb.WriteString("```\n\n")
-	sb.WriteString("Container: `" + manifest.ContainerName + "`\n\n")
-	if manifest.Image != "" {
-		sb.WriteString("Image: `" + manifest.Image + "`\n\n")
+	sb.WriteString("## Containers\n\n")
+	for _, entry := range manifest.Containers {
+		location := "."
+		if entry.Path != "" {
+			location = entry.Path
+		}
+		line := "- `" + entry.ContainerName + "` from `" + location + "`"
+		if entry.Image != "" {
+			line += " image `" + entry.Image + "`"
+		}
+		sb.WriteString(line + "\n")
 	}
-	sb.WriteString("Created at: `" + manifest.CreatedAt + "`\n")
+	sb.WriteString("\nCreated at: `" + manifest.CreatedAt + "`\n")
 	return os.WriteFile(path, []byte(sb.String()), 0644)
 }
 
@@ -757,7 +1021,7 @@ func safeExtractPath(root, name string) (string, error) {
 }
 
 func findExtractedBackupRoot(tempDir string) (string, error) {
-	if _, err := os.Stat(filepath.Join(tempDir, backupManifestName)); err == nil {
+	if isBackupRootDir(tempDir) {
 		return tempDir, nil
 	}
 	entries, err := os.ReadDir(tempDir)
@@ -769,11 +1033,20 @@ func findExtractedBackupRoot(tempDir string) (string, error) {
 			continue
 		}
 		candidate := filepath.Join(tempDir, entry.Name())
-		if _, err := os.Stat(filepath.Join(candidate, backupManifestName)); err == nil {
+		if isBackupRootDir(candidate) {
 			return candidate, nil
 		}
 	}
 	return "", fmt.Errorf("archive does not contain %s", backupManifestName)
+}
+
+func isBackupRootDir(dir string) bool {
+	return isSingleBackupDir(dir)
+}
+
+func isSingleBackupDir(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, backupManifestName))
+	return err == nil
 }
 
 func readBackupManifest(backupDir string) (BackupManifest, error) {
@@ -788,10 +1061,27 @@ func readBackupManifest(backupDir string) (BackupManifest, error) {
 	if manifest.Version != 1 {
 		return manifest, fmt.Errorf("unsupported backup manifest version %d", manifest.Version)
 	}
+	manifest = normalizeBackupManifest(manifest)
 	return manifest, nil
 }
 
-func readContainerInspect(backupDir string, manifest BackupManifest) (container.InspectResponse, error) {
+func normalizeBackupManifest(manifest BackupManifest) BackupManifest {
+	if len(manifest.Containers) == 0 && (manifest.ContainerName != "" || manifest.InspectFile != "" || manifest.ComposeFile != "") {
+		manifest.Containers = []BackupContainerManifest{{
+			ContainerName: manifest.ContainerName,
+			SourceName:    manifest.SourceName,
+			Image:         manifest.Image,
+			ImageArchive:  manifest.ImageArchive,
+			InspectFile:   manifest.InspectFile,
+			ComposeFile:   manifest.ComposeFile,
+			Networks:      manifest.Networks,
+			Volumes:       manifest.Volumes,
+		}}
+	}
+	return manifest
+}
+
+func readContainerInspect(backupDir string, manifest BackupContainerManifest) (container.InspectResponse, error) {
 	inspectFile := manifest.InspectFile
 	if inspectFile == "" {
 		inspectFile = backupInspectName
@@ -855,6 +1145,10 @@ func defaultBackupDir(now time.Time, containerName string) string {
 	return filepath.Join(backupRoot, safeBackupName(containerName)+"-"+now.Format("20060102-150405"))
 }
 
+func defaultBackupBatchDir(now time.Time) string {
+	return filepath.Join(backupRoot, "batch-"+now.Format("20060102-150405"))
+}
+
 func safeBackupName(name string) string {
 	name = normalizeContainerName(name)
 	var sb strings.Builder
@@ -885,6 +1179,10 @@ func isBuiltinNetwork(name string) bool {
 	default:
 		return false
 	}
+}
+
+func (s *dockerBackupService) ListContainers(ctx context.Context, all bool) ([]container.Summary, error) {
+	return s.cli.ContainerList(ctx, container.ListOptions{All: all})
 }
 
 func (s *dockerBackupService) InspectContainer(ctx context.Context, name string) (container.InspectResponse, error) {
