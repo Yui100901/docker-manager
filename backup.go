@@ -2,11 +2,13 @@ package main
 
 import (
 	"archive/tar"
+	"bufio"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -71,10 +73,11 @@ type BackupOptions struct {
 }
 
 type RestoreOptions struct {
-	Name    string
-	Replace bool
-	NoStart bool
-	DryRun  bool
+	Name         string
+	Replace      bool
+	NoStart      bool
+	DryRun       bool
+	SkipChecksum bool
 }
 
 type BackupManifest struct {
@@ -148,6 +151,7 @@ func newRestoreCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&opts.Replace, "replace", false, "如果目标容器已存在则先删除")
 	cmd.Flags().BoolVar(&opts.NoStart, "no-start", false, "只创建容器，不启动")
 	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", false, "只预览恢复动作，不修改 Docker")
+	cmd.Flags().BoolVar(&opts.SkipChecksum, "skip-checksum", false, "跳过 checksums.txt 完整性校验")
 	return cmd
 }
 
@@ -250,6 +254,18 @@ func restoreBackup(ctx context.Context, backupDir string, opts RestoreOptions) e
 		defer cleanup()
 	}
 	backupDir = resolvedDir
+
+	if !opts.SkipChecksum {
+		verified, err := verifyBackupChecksums(backupDir)
+		if err != nil {
+			return fmt.Errorf("verify checksums: %w", err)
+		}
+		if verified {
+			log.Printf("Checksum verification passed: %s", backupDir)
+		}
+	} else {
+		log.Printf("Skip checksum verification: %s", backupDir)
+	}
 
 	svc, err := newBackupDockerService()
 	if err != nil {
@@ -505,6 +521,77 @@ func writeChecksums(root string) error {
 	}
 	sort.Strings(lines)
 	return os.WriteFile(filepath.Join(root, backupChecksumName), []byte(strings.Join(lines, "\n")+"\n"), 0644)
+}
+
+func verifyBackupChecksums(root string) (bool, error) {
+	checksumPath := filepath.Join(root, backupChecksumName)
+	file, err := os.Open(checksumPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			log.Printf("Checksum file not found, skip verification: %s", checksumPath)
+			return false, nil
+		}
+		return false, err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	lineNumber := 0
+	checked := 0
+	for scanner.Scan() {
+		lineNumber++
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		expected, rel, err := parseChecksumLine(line)
+		if err != nil {
+			return true, fmt.Errorf("%s:%d: %w", backupChecksumName, lineNumber, err)
+		}
+		if rel == backupChecksumName {
+			continue
+		}
+		target, err := safeExtractPath(root, rel)
+		if err != nil {
+			return true, fmt.Errorf("%s:%d: %w", backupChecksumName, lineNumber, err)
+		}
+		actual, err := fileSHA256(target)
+		if err != nil {
+			return true, fmt.Errorf("checksum target %s: %w", rel, err)
+		}
+		if !strings.EqualFold(actual, expected) {
+			return true, fmt.Errorf("checksum mismatch for %s: expected %s actual %s", rel, expected, actual)
+		}
+		checked++
+	}
+	if err := scanner.Err(); err != nil {
+		return true, err
+	}
+	log.Printf("Checksum verification checked files: %d", checked)
+	return true, nil
+}
+
+func parseChecksumLine(line string) (string, string, error) {
+	sum, rel, ok := strings.Cut(line, "  ")
+	if !ok {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			return "", "", fmt.Errorf("invalid checksum line")
+		}
+		sum, rel = fields[0], fields[1]
+	}
+	sum = strings.TrimSpace(sum)
+	rel = strings.TrimSpace(rel)
+	if len(sum) != sha256.Size*2 {
+		return "", "", fmt.Errorf("invalid sha256 length")
+	}
+	if _, err := hex.DecodeString(sum); err != nil {
+		return "", "", fmt.Errorf("invalid sha256: %w", err)
+	}
+	if rel == "" {
+		return "", "", fmt.Errorf("empty checksum path")
+	}
+	return sum, filepath.ToSlash(rel), nil
 }
 
 func fileSHA256(path string) (string, error) {

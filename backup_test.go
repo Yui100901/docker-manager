@@ -263,6 +263,112 @@ func TestRestoreBackupSupportsTarGzArchive(t *testing.T) {
 	}
 }
 
+func TestVerifyBackupChecksumsDetectsMismatch(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, backupManifestName), []byte("manifest"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "nested"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "nested", "data.txt"), []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeChecksums(dir); err != nil {
+		t.Fatalf("writeChecksums() error = %v", err)
+	}
+	verified, err := verifyBackupChecksums(dir)
+	if err != nil {
+		t.Fatalf("verifyBackupChecksums() error = %v", err)
+	}
+	if !verified {
+		t.Fatal("verifyBackupChecksums() verified = false, want true")
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "nested", "data.txt"), []byte("tampered"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = verifyBackupChecksums(dir)
+	if err == nil {
+		t.Fatal("verifyBackupChecksums() error = nil, want mismatch")
+	}
+	if !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("verifyBackupChecksums() error = %v, want checksum mismatch", err)
+	}
+}
+
+func TestRestoreBackupVerifiesChecksumsBeforeDockerActions(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJSON(t, filepath.Join(dir, backupManifestName), BackupManifest{
+		Version:       1,
+		ContainerName: "demo",
+		InspectFile:   backupInspectName,
+		ComposeFile:   backupComposeName,
+	})
+	writeTestJSON(t, filepath.Join(dir, backupInspectName), container.InspectResponse{
+		ContainerJSONBase: &container.ContainerJSONBase{
+			Name:       "/demo",
+			HostConfig: &container.HostConfig{},
+		},
+		Config: &container.Config{Image: "busybox:latest"},
+	})
+	if err := writeChecksums(dir); err != nil {
+		t.Fatalf("writeChecksums() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, backupInspectName), []byte("{}\n "), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	fake := &fakeBackupDockerService{}
+	restoreFactory := replaceBackupServiceFactory(fake)
+	defer restoreFactory()
+
+	err := restoreBackup(context.Background(), dir, RestoreOptions{NoStart: true})
+	if err == nil {
+		t.Fatal("restoreBackup() error = nil, want checksum mismatch")
+	}
+	if !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("restoreBackup() error = %v, want checksum mismatch", err)
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("calls = %#v, want no Docker actions before checksum passes", fake.calls)
+	}
+}
+
+func TestRestoreBackupCanSkipChecksumVerification(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJSON(t, filepath.Join(dir, backupManifestName), BackupManifest{
+		Version:       1,
+		ContainerName: "demo",
+		InspectFile:   backupInspectName,
+		ComposeFile:   backupComposeName,
+	})
+	writeTestJSON(t, filepath.Join(dir, backupInspectName), container.InspectResponse{
+		ContainerJSONBase: &container.ContainerJSONBase{
+			Name:       "/demo",
+			HostConfig: &container.HostConfig{},
+		},
+		Config: &container.Config{Image: "busybox:latest"},
+	})
+	if err := writeChecksums(dir); err != nil {
+		t.Fatalf("writeChecksums() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, backupInspectName), []byte("{}\n "), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	fake := &fakeBackupDockerService{}
+	restoreFactory := replaceBackupServiceFactory(fake)
+	defer restoreFactory()
+
+	if err := restoreBackup(context.Background(), dir, RestoreOptions{NoStart: true, SkipChecksum: true}); err != nil {
+		t.Fatalf("restoreBackup() error = %v", err)
+	}
+	if !hasCall(fake.calls, "container-exists:demo") || !hasCall(fake.calls, "create-container:demo") {
+		t.Fatalf("calls = %#v, want restore to continue when checksum is skipped", fake.calls)
+	}
+}
+
 func TestRestoreBackupReplaceCreatesAndStartsContainer(t *testing.T) {
 	dir := t.TempDir()
 	imageArchive := filepath.ToSlash(filepath.Join("images", "busybox.tar"))
