@@ -34,7 +34,7 @@ type dockerInspectDiffService struct {
 }
 
 type InspectDiffOptions struct {
-	ShowSecrets bool
+	RedactSecrets bool
 	ReportFormatOptions
 }
 
@@ -68,7 +68,7 @@ func newInspectDiffCommand() *cobra.Command {
 			})
 		},
 	}
-	cmd.Flags().BoolVar(&opts.ShowSecrets, "show-secrets", false, "显示 env/label 中疑似敏感字段的真实值")
+	cmd.Flags().BoolVar(&opts.RedactSecrets, "redact-secrets", false, "脱敏 env/label 中疑似敏感字段，便于分享输出")
 	addReportFormatFlag(cmd, &opts.Format)
 	return cmd
 }
@@ -133,8 +133,12 @@ func inspectComparableFields(info container.InspectResponse, opts InspectDiffOpt
 		add("config.domainname", cfg.Domainname)
 		add("config.cmd", []string(cfg.Cmd))
 		add("config.entrypoint", []string(cfg.Entrypoint))
-		add("config.env", envMap(cfg.Env, opts.ShowSecrets))
-		add("config.labels", redactStringMap(cfg.Labels, opts.ShowSecrets))
+		add("config.env", envMap(cfg.Env, opts.RedactSecrets))
+		if opts.RedactSecrets {
+			add("config.labels", redactStringMap(cfg.Labels))
+		} else {
+			add("config.labels", cfg.Labels)
+		}
 		add("config.exposed_ports", cfg.ExposedPorts)
 		add("config.tty", cfg.Tty)
 		add("config.open_stdin", cfg.OpenStdin)
@@ -223,7 +227,7 @@ func comparableNetworks(networks map[string]*network.EndpointSettings) map[strin
 	return result
 }
 
-func envMap(envs []string, showSecrets bool) map[string]string {
+func envMap(envs []string, redactSecrets bool) map[string]string {
 	result := map[string]string{}
 	for _, env := range envs {
 		key, value, found := strings.Cut(env, "=")
@@ -231,36 +235,12 @@ func envMap(envs []string, showSecrets bool) map[string]string {
 			result[env] = ""
 			continue
 		}
-		if !showSecrets && isSensitiveKey(key) {
-			value = "<redacted>"
+		if redactSecrets && isSensitiveKey(key) {
+			value = redactedValue
 		}
 		result[key] = value
 	}
 	return result
-}
-
-func redactStringMap(values map[string]string, showSecrets bool) map[string]string {
-	if len(values) == 0 {
-		return nil
-	}
-	result := make(map[string]string, len(values))
-	for key, value := range values {
-		if !showSecrets && isSensitiveKey(key) {
-			value = "<redacted>"
-		}
-		result[key] = value
-	}
-	return result
-}
-
-func isSensitiveKey(key string) bool {
-	key = strings.ToLower(key)
-	for _, needle := range []string{"password", "passwd", "secret", "token", "credential", "auth", "private_key", "apikey", "api_key"} {
-		if strings.Contains(key, needle) {
-			return true
-		}
-	}
-	return false
 }
 
 func inspectDiffValue(value interface{}) string {

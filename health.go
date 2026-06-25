@@ -42,6 +42,7 @@ type HealthOptions struct {
 	LogTail          int
 	RestartThreshold int
 	Keywords         []string
+	RedactSecrets    bool
 	ReportFormatOptions
 }
 
@@ -115,6 +116,7 @@ func newHealthCommand() *cobra.Command {
 	cmd.Flags().IntVar(&opts.LogTail, "log-tail", opts.LogTail, "每个容器扫描最近日志行数")
 	cmd.Flags().IntVar(&opts.RestartThreshold, "restart-threshold", opts.RestartThreshold, "restart 次数达到该阈值时报告风险")
 	cmd.Flags().StringArrayVar(&opts.Keywords, "keyword", opts.Keywords, "日志扫描关键词，可重复指定")
+	cmd.Flags().BoolVar(&opts.RedactSecrets, "redact-secrets", false, "脱敏日志命中行中的疑似敏感信息，便于分享输出")
 	addReportFormatFlag(cmd, &opts.Format)
 	return cmd
 }
@@ -187,7 +189,7 @@ func buildHealthReport(ctx context.Context, svc healthDockerService, containers 
 		}
 
 		if !opts.NoLogs && opts.LogTail != 0 && len(keywords) > 0 {
-			matches, err := scanHealthLogs(ctx, svc, ref, inspect, opts.LogTail, keywords)
+			matches, err := scanHealthLogs(ctx, svc, ref, inspect, opts.LogTail, keywords, opts.RedactSecrets)
 			if err != nil {
 				report.Issues = append(report.Issues, HealthIssue{
 					Severity:  "warn",
@@ -292,7 +294,7 @@ func addStateIssues(report *HealthReport, item HealthContainer, inspect containe
 	}
 }
 
-func scanHealthLogs(ctx context.Context, svc healthDockerService, id string, inspect container.InspectResponse, tail int, keywords []string) ([]LogMatch, error) {
+func scanHealthLogs(ctx context.Context, svc healthDockerService, id string, inspect container.InspectResponse, tail int, keywords []string, redactSecrets bool) ([]LogMatch, error) {
 	tailValue := strconv.Itoa(tail)
 	if tail < 0 {
 		tailValue = "all"
@@ -311,7 +313,13 @@ func scanHealthLogs(ctx context.Context, svc healthDockerService, id string, ins
 	if err != nil {
 		return nil, err
 	}
-	return findLogMatches(text, keywords), nil
+	matches := findLogMatches(text, keywords)
+	if redactSecrets {
+		for i := range matches {
+			matches[i].Line = redactSensitiveText(matches[i].Line)
+		}
+	}
+	return matches, nil
 }
 
 func readDockerLogs(reader io.Reader, tty bool) (string, error) {

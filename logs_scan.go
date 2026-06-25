@@ -35,12 +35,13 @@ type dockerLogsScanService struct {
 }
 
 type LogsScanOptions struct {
-	All         bool
-	RunningOnly bool
-	Tail        int
-	Context     int
-	Since       string
-	Keywords    []string
+	All           bool
+	RunningOnly   bool
+	Tail          int
+	Context       int
+	Since         string
+	Keywords      []string
+	RedactSecrets bool
 	ReportFormatOptions
 }
 
@@ -103,6 +104,7 @@ func newLogsScanCommand() *cobra.Command {
 	cmd.Flags().IntVar(&opts.Context, "context", opts.Context, "命中日志前后各输出多少行上下文")
 	cmd.Flags().StringVar(&opts.Since, "since", "", "只扫描该时间之后的日志，例如 30m、2h 或 RFC3339 时间")
 	cmd.Flags().StringArrayVar(&opts.Keywords, "keyword", opts.Keywords, "日志扫描关键词，可重复指定")
+	cmd.Flags().BoolVar(&opts.RedactSecrets, "redact-secrets", false, "脱敏日志命中行和上下文中的疑似敏感信息，便于分享输出")
 	addReportFormatFlag(cmd, &opts.Format)
 	return cmd
 }
@@ -204,6 +206,9 @@ func buildLogsScanReport(ctx context.Context, svc logsScanDockerService, targets
 			continue
 		}
 		item.Matches = findLogScanMatches(text, keywords, opts.Context)
+		if opts.RedactSecrets {
+			redactLogScanMatches(item.Matches)
+		}
 		if len(item.Matches) > 0 {
 			report.Summary.ContainersMatched++
 			report.Summary.TotalMatches += len(item.Matches)
@@ -287,6 +292,14 @@ func findLogScanMatches(text string, keywords []string, contextLines int) []LogS
 		matches = append(matches, match)
 	}
 	return matches
+}
+
+func redactLogScanMatches(matches []LogScanMatch) {
+	for i := range matches {
+		matches[i].Line = redactSensitiveText(matches[i].Line)
+		matches[i].Before = redactStringSlice(matches[i].Before)
+		matches[i].After = redactStringSlice(matches[i].After)
+	}
 }
 
 func splitLogLines(text string) []string {

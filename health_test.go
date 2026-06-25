@@ -121,6 +121,43 @@ func TestRunHealthReportRunningOnlyPassesContainerListFlag(t *testing.T) {
 	}
 }
 
+func TestBuildHealthReportRedactsLogSecretsWhenRequested(t *testing.T) {
+	fake := &fakeHealthDockerService{
+		containers: []container.Summary{{
+			ID:    "api",
+			Names: []string{"/api"},
+			State: "running",
+		}},
+		inspects: map[string]container.InspectResponse{
+			"api": {
+				ContainerJSONBase: &container.ContainerJSONBase{
+					Name:  "/api",
+					State: &container.State{Status: "running"},
+				},
+				Config: &container.Config{Image: "demo/api", Tty: true},
+			},
+		},
+		logs: map[string]string{
+			"api": "ERROR token=secret-token\n",
+		},
+	}
+
+	report := buildHealthReport(context.Background(), fake, fake.containers, HealthOptions{
+		LogTail:          100,
+		RestartThreshold: 3,
+		Keywords:         []string{"error"},
+		RedactSecrets:    true,
+	})
+
+	if len(report.Containers) != 1 || len(report.Containers[0].LogMatches) != 1 {
+		t.Fatalf("Containers = %#v, want one log match", report.Containers)
+	}
+	line := report.Containers[0].LogMatches[0].Line
+	if strings.Contains(line, "secret-token") || !strings.Contains(line, "<redacted>") {
+		t.Fatalf("Log line = %q, want redacted secret", line)
+	}
+}
+
 func TestFindLogMatchesDeduplicatesKeywords(t *testing.T) {
 	got := findLogMatches("INFO ok\nERROR panic happened\n", normalizeKeywords([]string{"panic", "error", "ERROR"}))
 	if len(got) != 1 {

@@ -19,7 +19,7 @@ func (f *fakeInspectDiffDockerService) InspectContainer(ctx context.Context, nam
 	return f.inspects[name], nil
 }
 
-func TestBuildInspectDiffReportComparesKeyFieldsAndRedactsSecrets(t *testing.T) {
+func TestBuildInspectDiffReportComparesKeyFieldsAndShowsSecretsByDefault(t *testing.T) {
 	left := inspectDiffFixture("nginx:1.25", []string{"MODE=prod", "PASSWORD=left"}, []string{"NET_ADMIN"})
 	right := inspectDiffFixture("nginx:1.26", []string{"MODE=debug", "PASSWORD=right"}, []string{"SYS_TIME"})
 
@@ -31,28 +31,28 @@ func TestBuildInspectDiffReportComparesKeyFieldsAndRedactsSecrets(t *testing.T) 
 	if envChange == nil {
 		t.Fatalf("Changed = %#v, want config.env change", report.Changed)
 	}
-	if strings.Contains(envChange.Left, "left") || strings.Contains(envChange.Right, "right") {
-		t.Fatalf("env diff leaked secret: %#v", envChange)
-	}
-	if !strings.Contains(envChange.Left, "<redacted>") || !strings.Contains(envChange.Right, "<redacted>") {
-		t.Fatalf("env diff = %#v, want redacted secret", envChange)
+	if !strings.Contains(envChange.Left, "left") || !strings.Contains(envChange.Right, "right") {
+		t.Fatalf("env diff = %#v, want visible secrets by default", envChange)
 	}
 	if !hasInspectDiffChange(report, "host.cap_add", `["NET_ADMIN"]`, `["SYS_TIME"]`) {
 		t.Fatalf("Changed = %#v, want cap_add change", report.Changed)
 	}
 }
 
-func TestBuildInspectDiffReportCanShowSecrets(t *testing.T) {
-	left := inspectDiffFixture("nginx:1.25", []string{"PASSWORD=left"}, nil)
-	right := inspectDiffFixture("nginx:1.25", []string{"PASSWORD=right"}, nil)
+func TestBuildInspectDiffReportCanRedactSecrets(t *testing.T) {
+	left := inspectDiffFixture("nginx:1.25", []string{"MODE=left", "PASSWORD=alpha-secret"}, nil)
+	right := inspectDiffFixture("nginx:1.25", []string{"MODE=right", "PASSWORD=beta-secret"}, nil)
 
-	report := buildInspectDiffReport("left", "right", left, right, InspectDiffOptions{ShowSecrets: true})
+	report := buildInspectDiffReport("left", "right", left, right, InspectDiffOptions{RedactSecrets: true})
 	envChange := findInspectDiffChange(report, "config.env")
 	if envChange == nil {
 		t.Fatal("config.env change not found")
 	}
-	if !strings.Contains(envChange.Left, "left") || !strings.Contains(envChange.Right, "right") {
-		t.Fatalf("env diff = %#v, want visible secrets", envChange)
+	if strings.Contains(envChange.Left, "alpha-secret") || strings.Contains(envChange.Right, "beta-secret") {
+		t.Fatalf("env diff leaked secret: %#v", envChange)
+	}
+	if !strings.Contains(envChange.Left, "<redacted>") || !strings.Contains(envChange.Right, "<redacted>") {
+		t.Fatalf("env diff = %#v, want redacted secret", envChange)
 	}
 }
 

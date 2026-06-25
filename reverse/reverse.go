@@ -21,6 +21,7 @@ func NewReverseCommand() *cobra.Command {
 		dryRun            bool
 		confirm           bool
 		running           bool
+		redactSecrets     bool
 	)
 
 	cmd := &cobra.Command{
@@ -60,6 +61,7 @@ func NewReverseCommand() *cobra.Command {
 				ReverseType:       rt,
 				DryRun:            dryRun,
 				Confirm:           confirm,
+				RedactSecrets:     redactSecrets,
 			}
 
 			if running {
@@ -130,6 +132,7 @@ func NewReverseCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "仅打印将要执行的操作，不实际重新运行容器（用于审计/确认）")
 	cmd.Flags().BoolVar(&confirm, "confirm", false, "确认执行 --rerun 的停止、删除并重建容器操作")
 	cmd.Flags().BoolVar(&running, "running", false, "反向解析当前正在运行的所有容器；未指定 --reverse-type 时默认输出 compose")
+	cmd.Flags().BoolVar(&redactSecrets, "redact-secrets", false, "脱敏 env/label 中疑似敏感字段，便于分享输出")
 
 	return cmd
 }

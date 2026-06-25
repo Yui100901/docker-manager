@@ -231,6 +231,37 @@ func TestParserToSpecIncludesDeviceUlimitAndLoggingFields(t *testing.T) {
 	}
 }
 
+func TestParserRedactsEnvAndLabelsWhenRequested(t *testing.T) {
+	result := NewParser(container.InspectResponse{
+		ContainerJSONBase: &container.ContainerJSONBase{
+			Name:       "/demo",
+			HostConfig: &container.HostConfig{},
+		},
+		Config: &container.Config{
+			Image: "busybox:latest",
+			Env:   []string{"PASSWORD=secret", "MODE=prod"},
+			Labels: map[string]string{
+				"api_token": "token-value",
+				"owner":     "team-a",
+			},
+		},
+	}, ReverseOptions{RedactSecrets: true}).ToResult()
+
+	run := strings.Join(result.Command, " ")
+	if strings.Contains(run, "secret") || strings.Contains(run, "token-value") {
+		t.Fatalf("Command leaked secret: %s", run)
+	}
+	if !strings.Contains(run, "PASSWORD=<redacted>") || !strings.Contains(run, "MODE=prod") {
+		t.Fatalf("Command = %s, want redacted password and visible non-secret env", run)
+	}
+	if result.Compose.Labels["api_token"] != "<redacted>" || result.Compose.Labels["owner"] != "team-a" {
+		t.Fatalf("Compose labels = %#v, want redacted api_token only", result.Compose.Labels)
+	}
+	if strings.Join(result.Compose.Environment, ",") != "PASSWORD=<redacted>,MODE=prod" {
+		t.Fatalf("Compose environment = %#v, want redacted password", result.Compose.Environment)
+	}
+}
+
 func TestCommandFormatterIncludesLoggingOptions(t *testing.T) {
 	cmd := CommandFormatter{}.Format(&ContainerSpec{
 		Image:         "busybox:latest",

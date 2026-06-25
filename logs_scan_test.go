@@ -85,6 +85,35 @@ func TestBuildLogsScanReportScansExplicitContainers(t *testing.T) {
 	}
 }
 
+func TestBuildLogsScanReportRedactsSecretsWhenRequested(t *testing.T) {
+	fake := &fakeLogsScanDockerService{
+		logs: map[string]string{
+			"api": "before token=abc123\nERROR password=super-secret\nnext Authorization: Bearer token-value\n",
+		},
+	}
+
+	report := buildLogsScanReport(context.Background(), fake, []container.Summary{{ID: "api", Names: []string{"/api"}}}, LogsScanOptions{
+		Tail:          100,
+		Context:       1,
+		Keywords:      []string{"error"},
+		RedactSecrets: true,
+	})
+
+	if len(report.Containers) != 1 || len(report.Containers[0].Matches) != 1 {
+		t.Fatalf("Containers = %#v, want one match", report.Containers)
+	}
+	match := report.Containers[0].Matches[0]
+	joined := strings.Join(append(append([]string{}, match.Before...), append([]string{match.Line}, match.After...)...), "\n")
+	for _, leaked := range []string{"abc123", "super-secret", "token-value"} {
+		if strings.Contains(joined, leaked) {
+			t.Fatalf("redacted log output leaked %q: %q", leaked, joined)
+		}
+	}
+	if !strings.Contains(joined, "<redacted>") {
+		t.Fatalf("redacted log output = %q, want <redacted>", joined)
+	}
+}
+
 func TestLogsScanTargetsRunningOnlyFiltersContainers(t *testing.T) {
 	fake := &fakeLogsScanDockerService{
 		containers: []container.Summary{

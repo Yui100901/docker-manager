@@ -71,7 +71,7 @@ func (p *Parser) ToSpec() *ContainerSpec {
 	return &ContainerSpec{
 		Image:           p.ci.Config.Image,
 		ContainerName:   strings.TrimPrefix(p.ci.Name, "/"),
-		Labels:          copyStringMap(p.ci.Config.Labels),
+		Labels:          p.parseLabels(),
 		DNS:             copyStringSlice(p.ci.HostConfig.DNS),
 		DNSSearch:       copyStringSlice(p.ci.HostConfig.DNSSearch),
 		ExtraHosts:      copyStringSlice(p.ci.HostConfig.ExtraHosts),
@@ -115,7 +115,7 @@ var defaultEnvKeys = map[string]bool{
 
 func (p *Parser) parseEnvs() []string {
 	envs := p.ci.Config.Env
-	if !p.options.FilterDefaultEnvs {
+	if !p.options.FilterDefaultEnvs && !p.options.RedactSecrets {
 		return envs
 	}
 	var result []string
@@ -127,9 +127,20 @@ func (p *Parser) parseEnvs() []string {
 				continue
 			}
 		}
+		if p.options.RedactSecrets {
+			e = redactEnvValue(e)
+		}
 		result = append(result, e)
 	}
 	return result
+}
+
+func (p *Parser) parseLabels() map[string]string {
+	labels := copyStringMap(p.ci.Config.Labels)
+	if !p.options.RedactSecrets {
+		return labels
+	}
+	return redactStringMap(labels)
 }
 
 func (p *Parser) parseMounts() []string {
