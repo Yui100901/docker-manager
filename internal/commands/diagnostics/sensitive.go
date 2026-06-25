@@ -21,6 +21,7 @@ var sensitiveKeyNeedles = []string{
 }
 
 var sensitiveAssignmentPattern = regexp.MustCompile(`(?i)\b([a-z0-9_.-]*(?:password|passwd|secret|token|credential|authorization|auth|private_key|apikey|api_key)[a-z0-9_.-]*)(\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)`)
+var sensitiveJSONFieldPattern = regexp.MustCompile(`(?i)("?[a-z0-9_.-]*(?:password|passwd|secret|token|credential|authorization|auth|private_key|apikey|api_key)[a-z0-9_.-]*"?\s*:\s*)("[^"]*"|[^\s,;}]+)`)
 var authorizationHeaderPattern = regexp.MustCompile(`(?i)\b(authorization)(\s*:\s*)([^\r\n]+)`)
 var urlCredentialPattern = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://[^/\s:@]+):([^@\s/]+)@`)
 
@@ -50,6 +51,8 @@ func redactStringMap(values map[string]string) map[string]string {
 	for key, value := range values {
 		if isSensitiveKey(key) {
 			value = redactedValue
+		} else {
+			value = redactSensitiveText(value)
 		}
 		result[key] = value
 	}
@@ -58,6 +61,7 @@ func redactStringMap(values map[string]string) map[string]string {
 
 func redactSensitiveText(text string) string {
 	text = authorizationHeaderPattern.ReplaceAllString(text, `${1}${2}`+redactedValue)
+	text = sensitiveJSONFieldPattern.ReplaceAllString(text, `${1}"`+redactedValue+`"`)
 	text = sensitiveAssignmentPattern.ReplaceAllString(text, `${1}${2}`+redactedValue)
 	return urlCredentialPattern.ReplaceAllString(text, `${1}:`+redactedValue+`@`)
 }

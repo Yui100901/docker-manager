@@ -71,7 +71,7 @@ func NewInspectDiffCommand() *cobra.Command {
 		},
 		ValidArgsFunction: completion.LocalContainers,
 	}
-	cmd.Flags().BoolVar(&opts.RedactSecrets, "redact-secrets", false, "脱敏 env/label 中疑似敏感字段，便于分享输出")
+	cmd.Flags().BoolVar(&opts.RedactSecrets, "redact-secrets", false, "脱敏 env/label/cmd/entrypoint/healthcheck/log config 等字段中的疑似敏感信息，便于分享输出")
 	rpt.AddFormatFlag(cmd, &opts.Format)
 	return cmd
 }
@@ -124,6 +124,9 @@ func buildInspectDiffReport(leftName, rightName string, left, right container.In
 func inspectComparableFields(info container.InspectResponse, opts InspectDiffOptions) map[string]string {
 	fields := map[string]string{}
 	add := func(path string, value interface{}) {
+		if opts.RedactSecrets {
+			value = redactInspectDiffValue(value)
+		}
 		fields[path] = inspectDiffValue(value)
 	}
 
@@ -136,12 +139,9 @@ func inspectComparableFields(info container.InspectResponse, opts InspectDiffOpt
 		add("config.domainname", cfg.Domainname)
 		add("config.cmd", []string(cfg.Cmd))
 		add("config.entrypoint", []string(cfg.Entrypoint))
+		add("config.healthcheck", comparableHealthcheck(cfg.Healthcheck))
 		add("config.env", envMap(cfg.Env, opts.RedactSecrets))
-		if opts.RedactSecrets {
-			add("config.labels", redactStringMap(cfg.Labels))
-		} else {
-			add("config.labels", cfg.Labels)
-		}
+		add("config.labels", cfg.Labels)
 		add("config.exposed_ports", cfg.ExposedPorts)
 		add("config.tty", cfg.Tty)
 		add("config.open_stdin", cfg.OpenStdin)
@@ -165,7 +165,7 @@ func inspectComparableFields(info container.InspectResponse, opts InspectDiffOpt
 		add("host.security_opt", sortedStrings(host.SecurityOpt))
 		add("host.devices", host.Devices)
 		add("host.ulimits", host.Ulimits)
-		add("host.log_config", host.LogConfig)
+		add("host.log_config", comparableLogConfig(host.LogConfig))
 		add("host.memory", host.Memory)
 		add("host.memory_reservation", host.MemoryReservation)
 		add("host.memory_swap", host.MemorySwap)
@@ -189,6 +189,63 @@ func inspectComparableFields(info container.InspectResponse, opts InspectDiffOpt
 		add("networks", comparableNetworks(info.NetworkSettings.Networks))
 	}
 	return fields
+}
+
+func redactInspectDiffValue(value interface{}) interface{} {
+	switch v := value.(type) {
+	case nil:
+		return nil
+	case string:
+		return redactSensitiveText(v)
+	case []string:
+		return redactStringSlice(v)
+	case map[string]string:
+		return redactStringMap(v)
+	case map[string]interface{}:
+		result := make(map[string]interface{}, len(v))
+		for key, item := range v {
+			if isSensitiveKey(key) {
+				result[key] = redactedValue
+			} else {
+				result[key] = redactInspectDiffValue(item)
+			}
+		}
+		return result
+	case []interface{}:
+		result := make([]interface{}, len(v))
+		for i, item := range v {
+			result[i] = redactInspectDiffValue(item)
+		}
+		return result
+	case []map[string]interface{}:
+		result := make([]map[string]interface{}, len(v))
+		for i, item := range v {
+			result[i] = redactInspectDiffValue(item).(map[string]interface{})
+		}
+		return result
+	default:
+		return value
+	}
+}
+
+func comparableHealthcheck(health *container.HealthConfig) map[string]interface{} {
+	if health == nil {
+		return nil
+	}
+	return map[string]interface{}{
+		"test":         append([]string(nil), health.Test...),
+		"interval":     health.Interval,
+		"timeout":      health.Timeout,
+		"start_period": health.StartPeriod,
+		"retries":      health.Retries,
+	}
+}
+
+func comparableLogConfig(config container.LogConfig) map[string]interface{} {
+	return map[string]interface{}{
+		"type":   config.Type,
+		"config": cloneStringMap(config.Config),
+	}
 }
 
 func comparableMounts(mounts []container.MountPoint) []map[string]interface{} {
@@ -240,6 +297,8 @@ func envMap(envs []string, redactSecrets bool) map[string]string {
 		}
 		if redactSecrets && isSensitiveKey(key) {
 			value = redactedValue
+		} else if redactSecrets {
+			value = redactSensitiveText(value)
 		}
 		result[key] = value
 	}

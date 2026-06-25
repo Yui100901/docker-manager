@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/strslice"
 )
 
 type fakeInspectDiffDockerService struct {
@@ -53,6 +54,67 @@ func TestBuildInspectDiffReportCanRedactSecrets(t *testing.T) {
 	}
 	if !strings.Contains(envChange.Left, "<redacted>") || !strings.Contains(envChange.Right, "<redacted>") {
 		t.Fatalf("env diff = %#v, want redacted secret", envChange)
+	}
+}
+
+func TestBuildInspectDiffReportRedactsSensitiveStringsOutsideEnvAndLabels(t *testing.T) {
+	left := inspectDiffFixture("busybox:1", []string{"MODE=left"}, nil)
+	left.Config.Cmd = strslice.StrSlice{"sh", "-c", "echo password=cmd-alpha"}
+	left.Config.Entrypoint = strslice.StrSlice{"/bin/app", "--token=entry-alpha"}
+	left.Config.Healthcheck = &container.HealthConfig{
+		Test: []string{"CMD-SHELL", "curl -H 'Authorization: Bearer health-alpha' http://localhost/health"},
+	}
+	left.Config.Labels = map[string]string{
+		"owner":     "team-a",
+		"api_token": "label-alpha",
+		"note":      "url=https://user:label-pass@example.com/path",
+	}
+	left.HostConfig.Binds = []string{"/host/password=bind-alpha:/data"}
+	left.HostConfig.LogConfig = container.LogConfig{
+		Type: "json-file",
+		Config: map[string]string{
+			"token":    "log-alpha",
+			"max-size": "10m",
+		},
+	}
+
+	right := inspectDiffFixture("busybox:1", []string{"MODE=right"}, nil)
+	right.Config.Cmd = strslice.StrSlice{"sh", "-c", "echo password=cmd-beta"}
+	right.Config.Entrypoint = strslice.StrSlice{"/bin/app", "--token=entry-beta"}
+	right.Config.Healthcheck = &container.HealthConfig{
+		Test: []string{"CMD-SHELL", "curl -H 'Authorization: Bearer health-beta' http://localhost/health"},
+	}
+	right.Config.Labels = map[string]string{
+		"owner":     "team-b",
+		"api_token": "label-beta",
+		"note":      "url=https://user:label-pass-beta@example.com/path",
+	}
+	right.HostConfig.Binds = []string{"/host/password=bind-beta:/data"}
+	right.HostConfig.LogConfig = container.LogConfig{
+		Type: "json-file",
+		Config: map[string]string{
+			"token":    "log-beta",
+			"max-size": "20m",
+		},
+	}
+
+	report := buildInspectDiffReport("left", "right", left, right, InspectDiffOptions{RedactSecrets: true})
+	joined := inspectDiffReportText(report)
+	for _, leaked := range []string{
+		"cmd-alpha", "cmd-beta",
+		"entry-alpha", "entry-beta",
+		"health-alpha", "health-beta",
+		"label-alpha", "label-beta",
+		"label-pass", "label-pass-beta",
+		"bind-alpha", "bind-beta",
+		"log-alpha", "log-beta",
+	} {
+		if strings.Contains(joined, leaked) {
+			t.Fatalf("redacted inspect diff leaked %q:\n%s", leaked, joined)
+		}
+	}
+	if strings.Count(joined, "<redacted>") < 6 {
+		t.Fatalf("redacted inspect diff = %s, want multiple redacted markers", joined)
 	}
 }
 
@@ -107,10 +169,25 @@ func inspectDiffFixture(image string, env []string, capAdd []string) container.I
 			},
 		},
 		Config: &container.Config{
-			Image: image,
-			Env:   env,
+			Image:  image,
+			Env:    env,
+			Labels: map[string]string{},
 		},
 	}
+}
+
+func inspectDiffReportText(report InspectDiffReport) string {
+	var parts []string
+	for _, entry := range report.Added {
+		parts = append(parts, entry.Path, entry.Left, entry.Right)
+	}
+	for _, entry := range report.Removed {
+		parts = append(parts, entry.Path, entry.Left, entry.Right)
+	}
+	for _, entry := range report.Changed {
+		parts = append(parts, entry.Path, entry.Left, entry.Right)
+	}
+	return strings.Join(parts, "\n")
 }
 
 func hasInspectDiffChange(report InspectDiffReport, path, left, right string) bool {
