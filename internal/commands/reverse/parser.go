@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/go-connections/nat"
 )
 
 type ContainerSpec struct {
@@ -178,25 +179,58 @@ func normalizeIP(ip string) string {
 func (p *Parser) parsePortBindings() []PortBindingSpec {
 	var result []PortBindingSpec
 	for port, bindings := range p.ci.HostConfig.PortBindings {
-		proto := port.Proto()
-		contPort, err := strconv.Atoi(port.Port())
+		for _, b := range bindings {
+			for _, binding := range p.resolvePublishedPort(port, b) {
+				result = append(result, binding)
+			}
+		}
+	}
+	return result
+}
+
+func (p *Parser) resolvePublishedPort(port nat.Port, configured nat.PortBinding) []PortBindingSpec {
+	proto := port.Proto()
+	contPort, err := strconv.Atoi(port.Port())
+	if err != nil {
+		log.Printf("警告: 解析容器端口失败 %s: %v", port.Port(), err)
+		return nil
+	}
+	if strings.TrimSpace(configured.HostPort) != "" {
+		hp, err := strconv.Atoi(configured.HostPort)
 		if err != nil {
-			log.Printf("警告: 解析容器端口失败 %s: %v", port.Port(), err)
+			log.Printf("警告: 解析主机端口失败 %s: %v", configured.HostPort, err)
+			return nil
+		}
+		return []PortBindingSpec{{
+			HostIP:   normalizeIP(configured.HostIP),
+			HostPort: hp,
+			ContPort: contPort,
+			Proto:    proto,
+		}}
+	}
+	if p.ci.NetworkSettings == nil {
+		return nil
+	}
+	var result []PortBindingSpec
+	for _, runtimeBinding := range p.ci.NetworkSettings.Ports[port] {
+		if strings.TrimSpace(runtimeBinding.HostPort) == "" {
 			continue
 		}
-		for _, b := range bindings {
-			hp, err := strconv.Atoi(b.HostPort)
-			if err != nil {
-				log.Printf("警告: 解析主机端口失败 %s: %v", b.HostPort, err)
-				continue
-			}
-			result = append(result, PortBindingSpec{
-				HostIP:   normalizeIP(b.HostIP),
-				HostPort: hp,
-				ContPort: contPort,
-				Proto:    proto,
-			})
+		hp, err := strconv.Atoi(runtimeBinding.HostPort)
+		if err != nil {
+			log.Printf("警告: 解析运行态主机端口失败 %s: %v", runtimeBinding.HostPort, err)
+			continue
 		}
+		hostIP := runtimeBinding.HostIP
+		if hostIP == "" {
+			hostIP = configured.HostIP
+		}
+		result = append(result, PortBindingSpec{
+			HostIP:   normalizeIP(hostIP),
+			HostPort: hp,
+			ContPort: contPort,
+			Proto:    proto,
+		})
 	}
 	return result
 }

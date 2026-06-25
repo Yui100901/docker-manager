@@ -1,12 +1,15 @@
 package reverse
 
 import (
+	"bytes"
+	"log"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/go-connections/nat"
 	units "github.com/docker/go-units"
 )
 
@@ -228,6 +231,45 @@ func TestParserToSpecIncludesDeviceUlimitAndLoggingFields(t *testing.T) {
 	}
 	if spec.LogOptions["max-size"] != "10m" || spec.LogOptions["max-file"] != "3" {
 		t.Fatalf("LogOptions = %#v, want max-size=10m and max-file=3", spec.LogOptions)
+	}
+}
+
+func TestParserUsesRuntimePortWhenConfiguredHostPortIsEmpty(t *testing.T) {
+	var logs bytes.Buffer
+	oldLogOutput := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(oldLogOutput)
+
+	result := NewParser(container.InspectResponse{
+		ContainerJSONBase: &container.ContainerJSONBase{
+			Name: "/demo",
+			HostConfig: &container.HostConfig{
+				PortBindings: nat.PortMap{
+					"80/tcp": []nat.PortBinding{{HostIP: "127.0.0.1", HostPort: ""}},
+				},
+			},
+		},
+		Config: &container.Config{
+			Image: "busybox:latest",
+		},
+		NetworkSettings: &container.NetworkSettings{
+			NetworkSettingsBase: container.NetworkSettingsBase{
+				Ports: nat.PortMap{
+					"80/tcp": []nat.PortBinding{{HostIP: "127.0.0.1", HostPort: "32768"}},
+				},
+			},
+		},
+	}, ReverseOptions{}).ToResult()
+
+	run := strings.Join(result.Command, " ")
+	if !strings.Contains(run, "-p 127.0.0.1:32768:80/tcp") {
+		t.Fatalf("Command = %q, want runtime port mapping", run)
+	}
+	if len(result.Compose.Ports) != 1 || result.Compose.Ports[0] != "127.0.0.1:32768:80/tcp" {
+		t.Fatalf("Compose ports = %#v, want runtime port mapping", result.Compose.Ports)
+	}
+	if strings.Contains(logs.String(), "解析主机端口失败") {
+		t.Fatalf("unexpected host port warning: %s", logs.String())
 	}
 }
 
