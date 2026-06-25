@@ -1,4 +1,4 @@
-package cli
+package completion
 
 import (
 	"context"
@@ -17,7 +17,7 @@ import (
 
 const completionTimeout = 2 * time.Second
 
-func newCompletionCommand() *cobra.Command {
+func NewCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "completion <bash|zsh|fish|powershell>",
 		Short: "生成 shell 自动补全脚本",
@@ -36,18 +36,18 @@ func newCompletionCommand() *cobra.Command {
 				return fmt.Errorf("不支持的 shell %q，请使用 bash、zsh、fish 或 powershell", args[0])
 			}
 		},
-		ValidArgsFunction: completeFixedValues("bash", "zsh", "fish", "powershell"),
+		ValidArgsFunction: FixedValues("bash", "zsh", "fish", "powershell"),
 	}
 	return cmd
 }
 
-func completeFixedValues(values ...string) cobra.CompletionFunc {
+func FixedValues(values ...string) cobra.CompletionFunc {
 	return func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return filterCompletionValues(values, toComplete), cobra.ShellCompDirectiveNoFileComp
 	}
 }
 
-func completeLocalContainers(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+func LocalContainers(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	values, err := localContainerCompletionValues(cmd.Context())
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveError
@@ -55,7 +55,7 @@ func completeLocalContainers(cmd *cobra.Command, args []string, toComplete strin
 	return filterCompletionValues(values, toComplete), cobra.ShellCompDirectiveNoFileComp
 }
 
-func completeLocalImages(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+func LocalImages(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	values, err := localImageCompletionValues(cmd.Context())
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveError
@@ -63,7 +63,7 @@ func completeLocalImages(cmd *cobra.Command, args []string, toComplete string) (
 	return filterCompletionValues(values, toComplete), cobra.ShellCompDirectiveNoFileComp
 }
 
-func completeLocalVolumes(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+func LocalVolumes(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	values, err := localVolumeCompletionValues(cmd.Context())
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveError
@@ -175,4 +175,19 @@ func ctxOrBackground(ctx context.Context) context.Context {
 		return context.Background()
 	}
 	return ctx
+}
+
+func firstContainerName(names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	return strings.TrimPrefix(names[0], "/")
+}
+
+func shortID(id string) string {
+	id = strings.TrimPrefix(id, "sha256:")
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
 }

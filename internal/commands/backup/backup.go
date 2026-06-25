@@ -1,4 +1,4 @@
-package cli
+package backup
 
 import (
 	"archive/tar"
@@ -14,12 +14,15 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
 	"time"
 
 	"docker-manager/docker"
+	"docker-manager/internal/completion"
+	"docker-manager/internal/version"
 	"docker-manager/reverse"
 
 	"github.com/docker/docker/api/types/container"
@@ -87,7 +90,7 @@ type RestoreOptions struct {
 type BackupManifest struct {
 	Version        int                       `json:"version"`
 	CreatedAt      string                    `json:"created_at"`
-	Tool           VersionInfo               `json:"tool,omitempty"`
+	Tool           version.VersionInfo       `json:"tool,omitempty"`
 	SourcePlatform string                    `json:"source_platform,omitempty"`
 	Containers     []BackupContainerManifest `json:"containers,omitempty"`
 
@@ -118,7 +121,7 @@ type BackupResourceRef struct {
 	File string `json:"file"`
 }
 
-func newBackupCommand() *cobra.Command {
+func NewBackupCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "backup",
 		Short: "备份 Docker 资源",
@@ -146,7 +149,7 @@ func newBackupContainerCommand() *cobra.Command {
 			}
 			return nil
 		},
-		ValidArgsFunction: completeLocalContainers,
+		ValidArgsFunction: completion.LocalContainers,
 	}
 	cmd.Flags().BoolVar(&opts.IncludeImage, "include-image", true, "导出容器镜像 tar")
 	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", false, "只预览备份动作，不写入文件")
@@ -157,7 +160,7 @@ func newBackupContainerCommand() *cobra.Command {
 	return cmd
 }
 
-func newRestoreCommand() *cobra.Command {
+func NewRestoreCommand() *cobra.Command {
 	opts := RestoreOptions{}
 	cmd := &cobra.Command{
 		Use:   "restore <backup-dir-or-archive...>",
@@ -244,7 +247,7 @@ func backupContainersMerged(ctx context.Context, targets []string, opts BackupOp
 	manifest := BackupManifest{
 		Version:        1,
 		CreatedAt:      time.Now().Format(time.RFC3339),
-		Tool:           currentVersionInfo(),
+		Tool:           version.CurrentInfo(),
 		SourcePlatform: currentSourcePlatform(),
 	}
 	for _, target := range targets {
@@ -358,6 +361,78 @@ func backupContainerMatchesPattern(c container.Summary, pattern string) bool {
 	return false
 }
 
+func containerFilterCandidates(c container.Summary) []string {
+	candidates := []string{
+		c.ID,
+		strings.TrimPrefix(c.ID, "sha256:"),
+		c.Image,
+		string(c.State),
+	}
+	if short := shortID(c.ID); short != "" && short != c.ID {
+		candidates = append(candidates, short)
+	}
+	for _, name := range c.Names {
+		name = strings.TrimPrefix(name, "/")
+		candidates = append(candidates, name)
+	}
+	if name := firstContainerName(c.Names); name != "" {
+		candidates = append(candidates, name)
+	}
+	return uniqueNonEmptyStrings(candidates)
+}
+
+func firstContainerName(names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	return strings.TrimPrefix(names[0], "/")
+}
+
+func shortID(id string) string {
+	id = strings.TrimPrefix(id, "sha256:")
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
+}
+
+func wildcardMatch(pattern, value string) bool {
+	re, err := regexp.Compile("^" + wildcardToRegex(pattern) + "$")
+	if err != nil {
+		return false
+	}
+	return re.MatchString(value)
+}
+
+func wildcardToRegex(pattern string) string {
+	var sb strings.Builder
+	for _, r := range pattern {
+		switch r {
+		case '*':
+			sb.WriteString(".*")
+		case '?':
+			sb.WriteByte('.')
+		default:
+			sb.WriteString(regexp.QuoteMeta(string(r)))
+		}
+	}
+	return sb.String()
+}
+
+func uniqueNonEmptyStrings(values []string) []string {
+	seen := map[string]bool{}
+	var result []string
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		result = append(result, value)
+	}
+	return result
+}
+
 func backupContainerTargetName(c container.Summary) string {
 	name := firstContainerName(c.Names)
 	if name != "" {
@@ -455,7 +530,7 @@ func backupContainer(ctx context.Context, name string, opts BackupOptions) (stri
 	manifest := BackupManifest{
 		Version:        1,
 		CreatedAt:      createdAt,
-		Tool:           currentVersionInfo(),
+		Tool:           version.CurrentInfo(),
 		SourcePlatform: currentSourcePlatform(),
 		Containers:     []BackupContainerManifest{containerManifest},
 	}

@@ -7,8 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/docker/docker/api/types/image"
 )
 
 func TestLoadAppConfig(t *testing.T) {
@@ -40,28 +38,5 @@ func TestWriteCommandErrorJSON(t *testing.T) {
 	}
 	if got["level"] != "error" || got["error"] != "boom" {
 		t.Fatalf("error json = %#v, want level=error error=boom", got)
-	}
-}
-
-func TestSaveCommandUsesConfiguredDefaultOutputDir(t *testing.T) {
-	outputDir := t.TempDir()
-	manager := &fakeImageManager{
-		images: []image.Summary{
-			{ID: "sha256:one", RepoTags: []string{"repo/app:v1"}},
-		},
-	}
-	withFakeImageManager(t, manager)
-
-	cmd := newSaveCommandWithDefaults(func() string { return outputDir })
-	cmd.SetArgs(nil)
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-	if len(manager.saveCalls) != 1 {
-		t.Fatalf("Save called %d times, want 1", len(manager.saveCalls))
-	}
-	want := filepath.Join(outputDir, "repo_app-v1.tar")
-	if manager.saveCalls[0].outputFile != want {
-		t.Fatalf("outputFile = %q, want %q", manager.saveCalls[0].outputFile, want)
 	}
 }

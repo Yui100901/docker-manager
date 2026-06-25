@@ -1,4 +1,4 @@
-package cli
+package version
 
 import (
 	"bytes"
@@ -11,7 +11,7 @@ func TestCurrentVersionInfoUsesBuildVariables(t *testing.T) {
 	restore := setVersionVars("1.2.3", "abc123", "2026-06-25T00:00:00Z")
 	defer restore()
 
-	info := currentVersionInfo()
+	info := CurrentInfo()
 	if info.Version != "1.2.3" || info.Commit != "abc123" || info.BuildDate != "2026-06-25T00:00:00Z" {
 		t.Fatalf("VersionInfo = %#v, want injected values", info)
 	}
@@ -42,7 +42,7 @@ func TestVersionCommandJSON(t *testing.T) {
 	restore := setVersionVars("1.2.3", "abc123", "2026-06-25T00:00:00Z")
 	defer restore()
 
-	cmd := newVersionCommand()
+	cmd := NewCommand()
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetArgs([]string{"--format", "json"})

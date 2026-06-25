@@ -1,4 +1,4 @@
-package cli
+package diagnostics
 
 import (
 	"bytes"
@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"docker-manager/docker"
+	"docker-manager/internal/completion"
+	rpt "docker-manager/internal/report"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
@@ -44,7 +46,7 @@ type HealthOptions struct {
 	Keywords         []string
 	ContainerFilters []string
 	RedactSecrets    bool
-	ReportFormatOptions
+	rpt.FormatOptions
 }
 
 type HealthReport struct {
@@ -92,7 +94,7 @@ type HealthIssue struct {
 	Message   string `json:"message"`
 }
 
-func newHealthCommand() *cobra.Command {
+func NewHealthCommand() *cobra.Command {
 	opts := HealthOptions{
 		LogTail:          100,
 		RestartThreshold: 3,
@@ -108,11 +110,11 @@ func newHealthCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("生成体检报告失败: %w", err)
 			}
-			return printReport(cmd.OutOrStdout(), runOpts.Format, report, func(w io.Writer) {
+			return rpt.Print(cmd.OutOrStdout(), runOpts.Format, report, func(w io.Writer) {
 				printHealthReport(w, report)
 			})
 		},
-		ValidArgsFunction: completeLocalContainers,
+		ValidArgsFunction: completion.LocalContainers,
 	}
 	cmd.Flags().BoolVar(&opts.RunningOnly, "running-only", false, "只检查正在运行的容器")
 	cmd.Flags().BoolVar(&opts.NoLogs, "no-logs", false, "不扫描容器日志")
@@ -121,8 +123,8 @@ func newHealthCommand() *cobra.Command {
 	cmd.Flags().StringArrayVar(&opts.Keywords, "keyword", opts.Keywords, "日志扫描关键词，可重复指定")
 	cmd.Flags().StringArrayVarP(&opts.ContainerFilters, "filter", "f", nil, "筛选容器，支持名称/ID/镜像和 * ? 通配符，可重复指定")
 	cmd.Flags().BoolVar(&opts.RedactSecrets, "redact-secrets", false, "脱敏日志命中行中的疑似敏感信息，便于分享输出")
-	_ = cmd.RegisterFlagCompletionFunc("filter", completeLocalContainers)
-	addReportFormatFlag(cmd, &opts.Format)
+	_ = cmd.RegisterFlagCompletionFunc("filter", completion.LocalContainers)
+	rpt.AddFormatFlag(cmd, &opts.Format)
 	return cmd
 }
 

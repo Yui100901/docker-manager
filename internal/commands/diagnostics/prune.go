@@ -1,4 +1,4 @@
-package cli
+package diagnostics
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"docker-manager/docker"
+	rpt "docker-manager/internal/report"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/build"
@@ -42,7 +43,7 @@ type dockerPruneService struct {
 
 type PruneReportOptions struct {
 	Apply bool
-	ReportFormatOptions
+	rpt.FormatOptions
 }
 
 type PruneReport struct {
@@ -92,7 +93,7 @@ type PruneApplyResult struct {
 	SpaceReclaimed     uint64   `json:"space_reclaimed"`
 }
 
-func newPruneReportCommand() *cobra.Command {
+func NewPruneReportCommand() *cobra.Command {
 	opts := PruneReportOptions{}
 	cmd := &cobra.Command{
 		Use:   "prune-report",
@@ -103,13 +104,13 @@ func newPruneReportCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("生成清理报告失败: %w", err)
 			}
-			return printReport(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
+			return rpt.Print(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
 				printPruneReport(w, report)
 			})
 		},
 	}
 	cmd.Flags().BoolVar(&opts.Apply, "apply", false, "根据报告执行清理")
-	addReportFormatFlag(cmd, &opts.Format)
+	rpt.AddFormatFlag(cmd, &opts.Format)
 	return cmd
 }
 

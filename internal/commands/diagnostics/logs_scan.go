@@ -1,4 +1,4 @@
-package cli
+package diagnostics
 
 import (
 	"context"
@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"docker-manager/docker"
+	"docker-manager/internal/completion"
+	rpt "docker-manager/internal/report"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
@@ -43,7 +45,7 @@ type LogsScanOptions struct {
 	Keywords      []string
 	Filters       []string
 	RedactSecrets bool
-	ReportFormatOptions
+	rpt.FormatOptions
 }
 
 type LogsScanReport struct {
@@ -77,7 +79,7 @@ type LogScanMatch struct {
 	After      []string `json:"after,omitempty"`
 }
 
-func newLogsScanCommand() *cobra.Command {
+func NewLogsScanCommand() *cobra.Command {
 	opts := LogsScanOptions{
 		Tail:     500,
 		Context:  0,
@@ -96,11 +98,11 @@ func newLogsScanCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("扫描日志失败: %w", err)
 			}
-			return printReport(cmd.OutOrStdout(), runOpts.Format, report, func(w io.Writer) {
+			return rpt.Print(cmd.OutOrStdout(), runOpts.Format, report, func(w io.Writer) {
 				printLogsScanReport(w, report)
 			})
 		},
-		ValidArgsFunction: completeLocalContainers,
+		ValidArgsFunction: completion.LocalContainers,
 	}
 	cmd.Flags().BoolVar(&opts.All, "all", false, "扫描所有容器")
 	cmd.Flags().BoolVar(&opts.RunningOnly, "running-only", false, "扫描所有正在运行的容器")
@@ -110,8 +112,8 @@ func newLogsScanCommand() *cobra.Command {
 	cmd.Flags().StringArrayVar(&opts.Keywords, "keyword", opts.Keywords, "日志扫描关键词，可重复指定")
 	cmd.Flags().StringArrayVarP(&opts.Filters, "filter", "f", nil, "筛选容器，支持名称/ID/镜像和 * ? 通配符，可重复指定")
 	cmd.Flags().BoolVar(&opts.RedactSecrets, "redact-secrets", false, "脱敏日志命中行和上下文中的疑似敏感信息，便于分享输出")
-	_ = cmd.RegisterFlagCompletionFunc("filter", completeLocalContainers)
-	addReportFormatFlag(cmd, &opts.Format)
+	_ = cmd.RegisterFlagCompletionFunc("filter", completion.LocalContainers)
+	rpt.AddFormatFlag(cmd, &opts.Format)
 	return cmd
 }
 

@@ -1,4 +1,4 @@
-package cli
+package diagnostics
 
 import (
 	"context"
@@ -7,6 +7,8 @@ import (
 	"sort"
 
 	"docker-manager/docker"
+	"docker-manager/internal/completion"
+	rpt "docker-manager/internal/report"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
@@ -36,7 +38,7 @@ type VolumeOptions struct {
 	All     bool
 	NoTrunc bool
 	Filters []string
-	ReportFormatOptions
+	rpt.FormatOptions
 }
 
 type VolumeReport struct {
@@ -77,7 +79,7 @@ type VolumeContainerRef struct {
 	RW          bool   `json:"rw"`
 }
 
-func newVolumeCommand() *cobra.Command {
+func NewVolumeCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "volume",
 		Short: "Volume 分析工具",
@@ -98,17 +100,17 @@ func newVolumeListUnusedCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("生成 volume 报告失败: %w", err)
 			}
-			return printReport(cmd.OutOrStdout(), runOpts.Format, report, func(w io.Writer) {
+			return rpt.Print(cmd.OutOrStdout(), runOpts.Format, report, func(w io.Writer) {
 				printVolumeReport(w, report, runOpts)
 			})
 		},
-		ValidArgsFunction: completeLocalVolumes,
+		ValidArgsFunction: completion.LocalVolumes,
 	}
 	cmd.Flags().BoolVar(&opts.All, "all", false, "显示所有 volume，包括仍被容器引用的 volume")
 	cmd.Flags().BoolVar(&opts.NoTrunc, "no-trunc", false, "显示完整 volume 名称和挂载点")
 	cmd.Flags().StringArrayVarP(&opts.Filters, "filter", "f", nil, "筛选 volume，支持名称/driver/mountpoint/label 和 * ? 通配符，可重复指定")
-	_ = cmd.RegisterFlagCompletionFunc("filter", completeLocalVolumes)
-	addReportFormatFlag(cmd, &opts.Format)
+	_ = cmd.RegisterFlagCompletionFunc("filter", completion.LocalVolumes)
+	rpt.AddFormatFlag(cmd, &opts.Format)
 	return cmd
 }
 

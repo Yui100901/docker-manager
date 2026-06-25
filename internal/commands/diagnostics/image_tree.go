@@ -1,4 +1,4 @@
-package cli
+package diagnostics
 
 import (
 	"context"
@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"docker-manager/docker"
+	"docker-manager/internal/completion"
+	rpt "docker-manager/internal/report"
 
 	imageapi "github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
@@ -35,7 +37,7 @@ type dockerImageTreeService struct {
 type ImageTreeOptions struct {
 	NoTrunc bool
 	Top     int
-	ReportFormatOptions
+	rpt.FormatOptions
 }
 
 type ImageTreeReport struct {
@@ -67,7 +69,7 @@ type ImageLayerInfo struct {
 	Metadata    bool     `json:"metadata"`
 }
 
-func newImageCommand() *cobra.Command {
+func NewImageCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "image",
 		Short: "镜像分析工具",
@@ -87,15 +89,15 @@ func newImageTreeCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("生成镜像层报告失败: %w", err)
 			}
-			return printReport(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
+			return rpt.Print(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
 				printImageTreeReport(w, report, opts)
 			})
 		},
-		ValidArgsFunction: completeLocalImages,
+		ValidArgsFunction: completion.LocalImages,
 	}
 	cmd.Flags().BoolVar(&opts.NoTrunc, "no-trunc", false, "显示完整 layer ID 和构建命令")
 	cmd.Flags().IntVar(&opts.Top, "top", opts.Top, "显示最大的前 N 个 layer，0 表示不显示")
-	addReportFormatFlag(cmd, &opts.Format)
+	rpt.AddFormatFlag(cmd, &opts.Format)
 	return cmd
 }
 

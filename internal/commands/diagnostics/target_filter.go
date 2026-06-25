@@ -1,6 +1,7 @@
-package cli
+package diagnostics
 
 import (
+	"regexp"
 	"sort"
 	"strings"
 
@@ -104,4 +105,31 @@ func uniqueNonEmptyStrings(values []string) []string {
 		result = append(result, value)
 	}
 	return result
+}
+
+func normalizeContainerName(name string) string {
+	return strings.TrimPrefix(strings.TrimSpace(name), "/")
+}
+
+func wildcardMatch(pattern, value string) bool {
+	re, err := regexp.Compile("^" + wildcardToRegex(pattern) + "$")
+	if err != nil {
+		return false
+	}
+	return re.MatchString(value)
+}
+
+func wildcardToRegex(pattern string) string {
+	var sb strings.Builder
+	for _, r := range pattern {
+		switch r {
+		case '*':
+			sb.WriteString(".*")
+		case '?':
+			sb.WriteByte('.')
+		default:
+			sb.WriteString(regexp.QuoteMeta(string(r)))
+		}
+	}
+	return sb.String()
 }

@@ -1,4 +1,4 @@
-package cli
+package completion
 
 import (
 	"strings"
@@ -15,7 +15,7 @@ func TestFilterCompletionValuesSortsDeduplicatesAndMatchesPrefix(t *testing.T) {
 }
 
 func TestCompleteFixedValuesDisablesFileCompletion(t *testing.T) {
-	fn := completeFixedValues("json", "text")
+	fn := FixedValues("json", "text")
 	values, directive := fn(&cobra.Command{}, nil, "j")
 	if strings.Join(values, ",") != "json" {
 		t.Fatalf("values = %#v, want json", values)

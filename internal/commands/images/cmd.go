@@ -1,4 +1,4 @@
-package cli
+package images
 
 import (
 	"context"
@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"docker-manager/internal/completion"
 
 	"github.com/Yui100901/MyGo/file_utils"
 	"github.com/docker/docker/api/types/image"
@@ -53,7 +55,7 @@ type imageExportTarget struct {
 	Name string
 }
 
-func newLoadCommand() *cobra.Command {
+func NewLoadCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "load [path]",
 		Short: "导入 Docker 镜像，默认递归扫描 images 目录",
@@ -72,10 +74,10 @@ func newLoadCommand() *cobra.Command {
 }
 
 func newSaveCommand() *cobra.Command {
-	return newSaveCommandWithDefaults(func() string { return "" })
+	return NewSaveCommandWithDefaults(func() string { return "" })
 }
 
-func newSaveCommandWithDefaults(defaultOutputDir func() string) *cobra.Command {
+func NewSaveCommandWithDefaults(defaultOutputDir func() string) *cobra.Command {
 	var merge bool
 	var all bool
 	var dryRun bool
@@ -109,7 +111,7 @@ func newSaveCommandWithDefaults(defaultOutputDir func() string) *cobra.Command {
 	cmd.Flags().BoolVarP(&all, "all", "a", false, "导出所有镜像，包括无 tag 镜像")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "仅预览将导出的镜像，不写入文件")
 	cmd.Flags().StringArrayVarP(&filters, "filter", "f", nil, "筛选要导出的镜像，支持镜像名/tag/ID和通配符，可重复指定")
-	_ = cmd.RegisterFlagCompletionFunc("filter", completeLocalImages)
+	_ = cmd.RegisterFlagCompletionFunc("filter", completion.LocalImages)
 	return cmd
 }
 

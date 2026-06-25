@@ -1,4 +1,4 @@
-package cli
+package diagnostics
 
 import (
 	"bytes"
@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"docker-manager/docker"
+	"docker-manager/internal/completion"
+	rpt "docker-manager/internal/report"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
@@ -35,7 +37,7 @@ type dockerInspectDiffService struct {
 
 type InspectDiffOptions struct {
 	RedactSecrets bool
-	ReportFormatOptions
+	rpt.FormatOptions
 }
 
 type InspectDiffReport struct {
@@ -52,7 +54,7 @@ type InspectDiffEntry struct {
 	Right string `json:"right,omitempty"`
 }
 
-func newInspectDiffCommand() *cobra.Command {
+func NewInspectDiffCommand() *cobra.Command {
 	opts := InspectDiffOptions{}
 	cmd := &cobra.Command{
 		Use:   "inspect-diff <containerA> <containerB>",
@@ -63,14 +65,14 @@ func newInspectDiffCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("对比容器 inspect 失败: %w", err)
 			}
-			return printReport(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
+			return rpt.Print(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
 				printInspectDiffReport(w, report)
 			})
 		},
-		ValidArgsFunction: completeLocalContainers,
+		ValidArgsFunction: completion.LocalContainers,
 	}
 	cmd.Flags().BoolVar(&opts.RedactSecrets, "redact-secrets", false, "脱敏 env/label 中疑似敏感字段，便于分享输出")
-	addReportFormatFlag(cmd, &opts.Format)
+	rpt.AddFormatFlag(cmd, &opts.Format)
 	return cmd
 }
 

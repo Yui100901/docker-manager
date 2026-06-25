@@ -1,9 +1,11 @@
-package cli
+package version
 
 import (
 	"fmt"
 	"io"
 	"runtime"
+
+	"docker-manager/internal/report"
 
 	"github.com/spf13/cobra"
 )
@@ -23,24 +25,24 @@ type VersionInfo struct {
 	GOARCH    string `json:"goarch"`
 }
 
-func newVersionCommand() *cobra.Command {
-	opts := ReportFormatOptions{}
+func NewCommand() *cobra.Command {
+	opts := report.FormatOptions{}
 	cmd := &cobra.Command{
 		Use:   "version",
 		Short: "输出 dm 版本、commit 和构建信息",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			info := currentVersionInfo()
-			return printReport(cmd.OutOrStdout(), opts.Format, info, func(w io.Writer) {
+			info := CurrentInfo()
+			return report.Print(cmd.OutOrStdout(), opts.Format, info, func(w io.Writer) {
 				printVersionInfo(w, info)
 			})
 		},
 	}
-	addReportFormatFlag(cmd, &opts.Format)
+	report.AddFormatFlag(cmd, &opts.Format)
 	return cmd
 }
 
-func currentVersionInfo() VersionInfo {
+func CurrentInfo() VersionInfo {
 	return VersionInfo{
 		Version:   version,
 		Commit:    commit,

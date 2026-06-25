@@ -1,4 +1,4 @@
-package cli
+package diagnostics
 
 import (
 	"context"
@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"docker-manager/docker"
+	"docker-manager/internal/completion"
+	rpt "docker-manager/internal/report"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
@@ -35,7 +37,7 @@ type dockerNetworkService struct {
 type NetworkOptions struct {
 	RunningOnly      bool
 	ContainerFilters []string
-	ReportFormatOptions
+	rpt.FormatOptions
 }
 
 type NetworkReport struct {
@@ -82,7 +84,7 @@ type NetworkRisk struct {
 	Message string `json:"message"`
 }
 
-func newNetworkCommand() *cobra.Command {
+func NewNetworkCommand() *cobra.Command {
 	opts := NetworkOptions{}
 	cmd := &cobra.Command{
 		Use:   "network [container-pattern...]",
@@ -94,16 +96,16 @@ func newNetworkCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("生成网络报告失败: %w", err)
 			}
-			return printReport(cmd.OutOrStdout(), runOpts.Format, report, func(w io.Writer) {
+			return rpt.Print(cmd.OutOrStdout(), runOpts.Format, report, func(w io.Writer) {
 				printNetworkReport(w, report)
 			})
 		},
-		ValidArgsFunction: completeLocalContainers,
+		ValidArgsFunction: completion.LocalContainers,
 	}
 	cmd.Flags().BoolVar(&opts.RunningOnly, "running-only", false, "只查看正在运行的容器")
 	cmd.Flags().StringArrayVarP(&opts.ContainerFilters, "filter", "f", nil, "筛选容器，支持名称/ID/镜像和 * ? 通配符，可重复指定")
-	_ = cmd.RegisterFlagCompletionFunc("filter", completeLocalContainers)
-	addReportFormatFlag(cmd, &opts.Format)
+	_ = cmd.RegisterFlagCompletionFunc("filter", completion.LocalContainers)
+	rpt.AddFormatFlag(cmd, &opts.Format)
 	return cmd
 }
 

@@ -1,6 +1,11 @@
 package cli
 
 import (
+	"docker-manager/internal/commands/backup"
+	"docker-manager/internal/commands/diagnostics"
+	"docker-manager/internal/commands/images"
+	"docker-manager/internal/completion"
+	"docker-manager/internal/version"
 	"docker-manager/pull"
 	"docker-manager/reverse"
 
@@ -53,20 +58,20 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 	rootCmd.PersistentFlags().BoolVar(&opts.Quiet, "quiet", opts.Quiet, "隐藏信息日志")
 	rootCmd.PersistentFlags().BoolVar(&opts.JSON, "json", opts.JSON, "以 JSON 输出日志和错误")
 
-	rootCmd.AddCommand(newLoadCommand())
-	rootCmd.AddCommand(newSaveCommandWithDefaults(func() string { return cfg.OutputDir }))
-	rootCmd.AddCommand(newBackupCommand())
-	rootCmd.AddCommand(newRestoreCommand())
-	rootCmd.AddCommand(newPruneReportCommand())
-	rootCmd.AddCommand(newNetworkCommand())
-	rootCmd.AddCommand(newHealthCommand())
-	rootCmd.AddCommand(newInspectDiffCommand())
-	rootCmd.AddCommand(newImageCommand())
-	rootCmd.AddCommand(newVolumeCommand())
-	rootCmd.AddCommand(newLogsScanCommand())
-	rootCmd.AddCommand(newRegistryLoginCheckCommand())
-	rootCmd.AddCommand(newCompletionCommand())
-	rootCmd.AddCommand(newVersionCommand())
+	rootCmd.AddCommand(images.NewLoadCommand())
+	rootCmd.AddCommand(images.NewSaveCommandWithDefaults(func() string { return cfg.OutputDir }))
+	rootCmd.AddCommand(backup.NewBackupCommand())
+	rootCmd.AddCommand(backup.NewRestoreCommand())
+	rootCmd.AddCommand(diagnostics.NewPruneReportCommand())
+	rootCmd.AddCommand(diagnostics.NewNetworkCommand())
+	rootCmd.AddCommand(diagnostics.NewHealthCommand())
+	rootCmd.AddCommand(diagnostics.NewInspectDiffCommand())
+	rootCmd.AddCommand(diagnostics.NewImageCommand())
+	rootCmd.AddCommand(diagnostics.NewVolumeCommand())
+	rootCmd.AddCommand(diagnostics.NewLogsScanCommand())
+	rootCmd.AddCommand(diagnostics.NewRegistryLoginCheckCommand())
+	rootCmd.AddCommand(completion.NewCommand())
+	rootCmd.AddCommand(version.NewCommand())
 	rootCmd.AddCommand(reverse.NewReverseCommand())
 	rootCmd.AddCommand(pull.NewPullCommandWithDefaults(func() pull.CommandDefaults {
 		return pull.CommandDefaults{

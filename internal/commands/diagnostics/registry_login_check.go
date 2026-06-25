@@ -1,4 +1,4 @@
-package cli
+package diagnostics
 
 import (
 	"bytes"
@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"docker-manager/docker"
+	rpt "docker-manager/internal/report"
 
 	"github.com/docker/docker/api/types/registry"
 	"github.com/docker/docker/client"
@@ -49,7 +50,7 @@ type RegistryLoginCheckOptions struct {
 	DockerConfig string
 	PlainHTTP    bool
 	Timeout      time.Duration
-	ReportFormatOptions
+	rpt.FormatOptions
 }
 
 type RegistryLoginCheckReport struct {
@@ -106,7 +107,7 @@ type dockerCredentialHelperResponse struct {
 	Secret    string `json:"Secret"`
 }
 
-func newRegistryLoginCheckCommand() *cobra.Command {
+func NewRegistryLoginCheckCommand() *cobra.Command {
 	opts := RegistryLoginCheckOptions{Timeout: 5 * time.Second}
 	cmd := &cobra.Command{
 		Use:   "registry-login-check <registry>",
@@ -117,7 +118,7 @@ func newRegistryLoginCheckCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("检查 registry 登录失败: %w", err)
 			}
-			return printReport(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
+			return rpt.Print(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
 				printRegistryLoginCheckReport(w, report)
 			})
 		},
@@ -125,7 +126,7 @@ func newRegistryLoginCheckCommand() *cobra.Command {
 	cmd.Flags().StringVar(&opts.DockerConfig, "docker-config", "", "Docker config.json 路径，默认使用 DOCKER_CONFIG/config.json 或 ~/.docker/config.json")
 	cmd.Flags().BoolVar(&opts.PlainHTTP, "plain-http", false, "使用 http:// 访问 registry /v2/，用于未启用 TLS 的内网 registry")
 	cmd.Flags().DurationVar(&opts.Timeout, "timeout", opts.Timeout, "registry 连通性检查超时时间")
-	addReportFormatFlag(cmd, &opts.Format)
+	rpt.AddFormatFlag(cmd, &opts.Format)
 	return cmd
 }
 
