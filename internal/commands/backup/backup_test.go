@@ -331,6 +331,42 @@ func TestBackupContainersSeparateByDefault(t *testing.T) {
 	}
 }
 
+func TestBackupContainerCommandNoImageDisablesImageExport(t *testing.T) {
+	fake := &fakeBackupDockerService{
+		containers: []container.Summary{
+			{ID: "demo-id", Names: []string{"/demo"}, Image: "busybox:latest"},
+		},
+		inspect: container.InspectResponse{
+			ContainerJSONBase: &container.ContainerJSONBase{Name: "/demo", HostConfig: &container.HostConfig{}},
+			Config:            &container.Config{Image: "busybox:latest"},
+		},
+	}
+	restoreFactory := replaceBackupServiceFactory(fake)
+	defer restoreFactory()
+
+	cmd := newBackupContainerCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{"demo", "--no-image", "--output-dir", t.TempDir()})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if hasCallPrefix(fake.calls, "save-image:") {
+		t.Fatalf("calls = %#v, --no-image should skip image export", fake.calls)
+	}
+}
+
+func TestBackupContainerCommandRejectsConflictingImageFlags(t *testing.T) {
+	cmd := newBackupContainerCommand()
+	cmd.SetArgs([]string{"demo", "--no-image", "--include-image=true"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want conflict error")
+	}
+	if !strings.Contains(err.Error(), "--no-image") || !strings.Contains(err.Error(), "--include-image=true") {
+		t.Fatalf("Execute() error = %q, want image flag conflict", err.Error())
+	}
+}
+
 func TestBackupContainersMergeWritesBatchBundle(t *testing.T) {
 	fake := &fakeBackupDockerService{
 		containers: []container.Summary{

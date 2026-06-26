@@ -337,6 +337,7 @@ dm save images --all
 dm reverse my-container
 dm reverse my-container --pretty
 dm reverse my-container --redact-secrets
+dm reverse my-container --no-default-envs --no-merge-ports
 dm reverse --filter 'name:api-*'
 dm reverse --filter 'image:team/api'
 ```
@@ -383,6 +384,7 @@ dm rerun --filter 'name:app-*' --confirm
 ```bash
 dm backup container app
 dm backup container app ./docker-backups/app
+dm backup container app --no-image
 dm backup container "api-*" worker --output-dir ./docker-backups/prod
 dm backup container "image:team/api" "label:env=prod" --output-dir ./docker-backups/prod
 dm backup container app --dry-run

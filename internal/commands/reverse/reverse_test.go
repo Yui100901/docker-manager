@@ -14,6 +14,33 @@ func TestReverseCommandNoLongerHasRerunFlag(t *testing.T) {
 	}
 }
 
+func TestReverseCommandHasNegativeBooleanAliases(t *testing.T) {
+	cmd := NewReverseCommand()
+	for _, name := range []string{"no-default-envs", "no-merge-ports"} {
+		if flag := cmd.Flags().Lookup(name); flag == nil {
+			t.Fatalf("reverse command missing --%s", name)
+		}
+	}
+}
+
+func TestReverseCommandRejectsConflictingNegativeBooleanAliases(t *testing.T) {
+	tests := [][]string{
+		{"demo", "--no-default-envs", "--filter-default-envs=true"},
+		{"demo", "--no-merge-ports", "--merge-ports=true"},
+	}
+	for _, args := range tests {
+		cmd := NewReverseCommand()
+		cmd.SetArgs(args)
+		err := cmd.Execute()
+		if err == nil {
+			t.Fatalf("Execute(%v) error = nil, want conflict error", args)
+		}
+		if !strings.Contains(err.Error(), args[1]) || !strings.Contains(err.Error(), args[2]) {
+			t.Fatalf("Execute(%v) error = %q, want conflict hint", args, err.Error())
+		}
+	}
+}
+
 func TestRerunRequiresExplicitTarget(t *testing.T) {
 	cmd := NewRerunCommand()
 	cmd.SetArgs([]string{"--dry-run"})

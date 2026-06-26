@@ -148,6 +148,7 @@ func NewBackupCommand() *cobra.Command {
 
 func newBackupContainerCommand() *cobra.Command {
 	opts := BackupOptions{IncludeImage: true}
+	var noImage bool
 	cmd := &cobra.Command{
 		Use:   "container <name-pattern...> [backup-dir]",
 		Short: "批量备份容器 inspect、镜像、compose、volume 和 network 元数据",
@@ -155,6 +156,12 @@ func newBackupContainerCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			targets, outputDir := splitBackupContainerArgs(args, opts.OutputDir)
 			runOpts := opts
+			if noImage {
+				if cmd.Flags().Changed("include-image") && opts.IncludeImage {
+					return fmt.Errorf("不能同时指定 --no-image 和 --include-image=true")
+				}
+				runOpts.IncludeImage = false
+			}
 			runOpts.OutputDir = outputDir
 			runOpts.Output = cmd.OutOrStdout()
 			result, err := backupContainers(cmd.Context(), targets, runOpts)
@@ -173,6 +180,7 @@ func newBackupContainerCommand() *cobra.Command {
 		ValidArgsFunction: completion.LocalContainers,
 	}
 	cmd.Flags().BoolVar(&opts.IncludeImage, "include-image", true, "导出容器镜像 tar")
+	cmd.Flags().BoolVar(&noImage, "no-image", false, "不导出容器镜像 tar")
 	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", false, "只预览备份动作，不写入文件")
 	cmd.Flags().BoolVar(&opts.Bundle, "bundle", false, "生成离线迁移包 tar.gz，并附带 README、restore 脚本和 checksums")
 	cmd.Flags().StringVar(&opts.BundleOutput, "output", "", "离线迁移包输出路径，默认 <backup-dir>.tar.gz")

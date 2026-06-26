@@ -18,7 +18,9 @@ func NewReverseCommand() *cobra.Command {
 		reverseType       string
 		preserveVolumes   bool
 		mergePorts        bool
+		noMergePorts      bool
 		filterDefaultEnvs bool
+		noDefaultEnvs     bool
 		prettyFormat      bool
 		running           bool
 		redactSecrets     bool
@@ -29,6 +31,12 @@ func NewReverseCommand() *cobra.Command {
 		Use:   "reverse [container-filter...]",
 		Short: "逆向 Docker 容器到启动命令",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if noDefaultEnvs && cmd.Flags().Changed("filter-default-envs") && filterDefaultEnvs {
+				return fmt.Errorf("不能同时指定 --no-default-envs 和 --filter-default-envs=true")
+			}
+			if noMergePorts && cmd.Flags().Changed("merge-ports") && mergePorts {
+				return fmt.Errorf("不能同时指定 --no-merge-ports 和 --merge-ports=true")
+			}
 			if running && !cmd.Flags().Changed("reverse-type") {
 				reverseType = string(ReverseCompose)
 			}
@@ -43,11 +51,19 @@ func NewReverseCommand() *cobra.Command {
 			}
 
 			// 传递选项
+			effectiveFilterDefaultEnvs := filterDefaultEnvs
+			if noDefaultEnvs {
+				effectiveFilterDefaultEnvs = false
+			}
+			effectiveMergePorts := mergePorts
+			if noMergePorts {
+				effectiveMergePorts = false
+			}
 			opts := ReverseOptions{
 				PreserveVolumes:   preserveVolumes,
-				FilterDefaultEnvs: filterDefaultEnvs,
+				FilterDefaultEnvs: effectiveFilterDefaultEnvs,
 				PrettyFormat:      prettyFormat,
-				MergePorts:        mergePorts,
+				MergePorts:        effectiveMergePorts,
 				Save:              save,
 				ReverseType:       rt,
 				RedactSecrets:     redactSecrets,
@@ -87,7 +103,9 @@ func NewReverseCommand() *cobra.Command {
 	cmd.Flags().StringVarP(&reverseType, "reverse-type", "t", "cmd", "输出类型: cmd | compose | all")
 	cmd.Flags().BoolVar(&preserveVolumes, "preserve-volumes", false, "是否保留匿名卷名称（默认关闭）")
 	cmd.Flags().BoolVar(&filterDefaultEnvs, "filter-default-envs", true, "是否过滤掉 Docker 默认环境变量（默认开启）")
+	cmd.Flags().BoolVar(&noDefaultEnvs, "no-default-envs", false, "不过滤 Docker 默认环境变量")
 	cmd.Flags().BoolVar(&mergePorts, "merge-ports", true, "命令是否合并连续端口，compose 无法合并（默认开启）")
+	cmd.Flags().BoolVar(&noMergePorts, "no-merge-ports", false, "不合并连续端口")
 	cmd.Flags().BoolVar(&prettyFormat, "pretty", false, "是否格式化输出 docker run 命令（默认关闭）")
 	cmd.Flags().BoolVar(&running, "running", false, "仅筛选正在运行的容器；未指定 --reverse-type 时默认输出 compose")
 	cmd.Flags().StringArrayVarP(&filters, "filter", "f", nil, "筛选容器，支持 name:/id:/image:/state:/status:/label: 和 * ? 通配符，可重复指定")
