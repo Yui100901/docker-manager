@@ -326,10 +326,13 @@ dm prune-report
 执行清理:
 
 ```bash
-dm prune-report --apply
+dm prune-report --apply --confirm
+dm prune-report --only container --filter label=dmtest=true --apply --confirm
+dm prune-report --only volume --protect-label keep=true --apply --confirm
+dm prune-report --filter until=168h --apply --confirm
 ```
 
-`--apply` 会调用 Docker prune API 删除可清理资源，执行前请确认报告内容。
+`--apply` 会调用 Docker prune API 删除可清理资源，必须同时指定 `--confirm`。可用 `--only container|image|volume|build-cache` 限制资源类型，用 `--filter label=...`、`--filter label!=...`、`--filter until=...` 或 `--until` 收窄范围，用 `--protect-label` 保护带指定 label 的资源。使用 label 或 protect-label 范围时不会清理 build cache，因为 Docker 的 build cache 缺少可与报告一致核对的 label 元数据。执行前请确认报告内容。
 
 ## 诊断命令
 
