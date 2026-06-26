@@ -79,12 +79,10 @@ type VolumeContainerRef struct {
 	RW          bool   `json:"rw"`
 }
 
-func NewVolumeCommand() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "volume",
-		Short: "Volume 分析工具",
-	}
-	cmd.AddCommand(newVolumeListUnusedCommand())
+func NewVolumesReportCommand() *cobra.Command {
+	cmd := newVolumeListUnusedCommand()
+	cmd.Use = "volumes [volume-pattern...]"
+	cmd.Short = "查找疑似未使用 volume，并输出关联容器信息"
 	return cmd
 }
 

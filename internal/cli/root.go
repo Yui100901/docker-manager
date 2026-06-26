@@ -90,7 +90,6 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 	rootCmd.AddCommand(backup.NewBackupCommand())
 	rootCmd.AddCommand(backup.NewRestoreCommand())
 	rootCmd.AddCommand(newImageCommand(cfg))
-	rootCmd.AddCommand(diagnostics.NewVolumeCommand())
 	rootCmd.AddCommand(diagnostics.NewRegistryCommand())
 	rootCmd.AddCommand(diagnostics.NewReportCommand())
 	rootCmd.AddCommand(diagnostics.NewDoctorCommandWithDefaults(func() diagnostics.DoctorDefaults {

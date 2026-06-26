@@ -134,7 +134,7 @@ dm completion fish
 dm completion powershell
 ```
 
-资源参数会尽量从本机 Docker 补齐，例如容器、镜像和 volume。已支持的典型位置包括 `backup container`、`reverse`、`report diff`、`report logs`、`report health`、`report network`、`image tree`、`volume ls-unused`，以及 `image save --filter` 等筛选参数。
+资源参数会尽量从本机 Docker 补齐，例如容器、镜像和 volume。已支持的典型位置包括 `backup container`、`reverse`、`report diff`、`report logs`、`report health`、`report network`、`image tree`、`report volumes`，以及 `image save --filter` 等筛选参数。
 
 PowerShell 临时加载示例:
 
@@ -186,7 +186,7 @@ dm image save images --filter 'digest:*deadbeef'
 dm image save images --filter 'label:org.opencontainers.image.source=*github*' --dry-run
 ```
 
-Volume 筛选适用于 `volume ls-unused`:
+Volume 筛选适用于 `report volumes`:
 
 | 字段 | 匹配内容 |
 | --- | --- |
@@ -198,11 +198,11 @@ Volume 筛选适用于 `volume ls-unused`:
 | `option` | driver option key、value 或 `key=value` |
 
 ```bash
-dm volume ls-unused --filter 'name:app_*'
-dm volume ls-unused --filter 'driver:local'
-dm volume ls-unused --filter 'mountpoint:*/app_data/*'
-dm volume ls-unused --filter 'label:env=dev'
-dm volume ls-unused --filter 'option:type=nfs'
+dm report volumes --filter 'name:app_*'
+dm report volumes --filter 'driver:local'
+dm report volumes --filter 'mountpoint:*/app_data/*'
+dm report volumes --filter 'label:env=dev'
+dm report volumes --filter 'option:type=nfs'
 ```
 
 `report prune --filter` 使用 Docker prune 语义，和上面的本地资源筛选器不同。它只支持 `label=...`、`label!=...`、`until=...`，并会影响实际 `--apply` 清理范围。
@@ -249,7 +249,7 @@ DM_E2E_KEEP_WORKDIR=1 bash scripts/e2e.sh
 | `dm report logs` | 扫描容器日志关键词 |
 | `dm report diff` | 对比两个容器关键配置差异 |
 | `dm image tree` | 分析镜像层、大小和构建历史 |
-| `dm volume ls-unused` | 查找未使用或疑似未使用 volume |
+| `dm report volumes` | 查找未使用或疑似未使用 volume |
 | `dm registry check` | 检查 registry 登录配置、凭据和连通性 |
 | `dm doctor` | 检查 Docker、registry、代理、磁盘和测试前置条件 |
 | `dm version` | 输出版本、commit、构建时间和运行平台 |
@@ -515,7 +515,7 @@ dm report prune --format json
 dm report logs app --format json
 dm report diff app-old app-new --format json
 dm image tree nginx:latest --format json
-dm volume ls-unused --format json
+dm report volumes --format json
 dm registry check registry.local:5000 --format json
 dm doctor --format json
 ```
@@ -526,7 +526,7 @@ dm doctor --format json
 dm report health --format markdown > health-report.md
 dm report network --format html > network-report.html
 dm report prune --format markdown > prune-report.md
-dm volume ls-unused --format html > volume-report.html
+dm report volumes --format html > volume-report.html
 dm image tree nginx:latest --format markdown > image-tree.md
 ```
 
@@ -584,12 +584,12 @@ dm image tree nginx:latest --no-trunc
 Volume 分析:
 
 ```bash
-dm volume ls-unused
-dm volume ls-unused --all
-dm volume ls-unused --no-trunc
-dm volume ls-unused --filter 'name:app_*'
-dm volume ls-unused --filter 'driver:local'
-dm volume ls-unused --filter 'label:env=dev'
+dm report volumes
+dm report volumes --all
+dm report volumes --no-trunc
+dm report volumes --filter 'name:app_*'
+dm report volumes --filter 'driver:local'
+dm report volumes --filter 'label:env=dev'
 ```
 
 Registry 登录检查:
@@ -624,7 +624,7 @@ dm restore app-offline.tar.gz --replace
 dm report health
 dm report network
 dm report prune
-dm volume ls-unused
+dm report volumes
 ```
 
 排查容器差异:

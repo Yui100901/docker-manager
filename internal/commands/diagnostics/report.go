@@ -14,6 +14,7 @@ func NewReportCommand() *cobra.Command {
 		NewLogsScanCommand(),
 		NewInspectDiffCommand(),
 		NewPruneReportCommand(),
+		NewVolumesReportCommand(),
 	)
 	return cmd
 }

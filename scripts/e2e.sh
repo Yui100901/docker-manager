@@ -310,7 +310,7 @@ run_case "report network html" "${DM_BIN}" report network --filter "label:${LABE
 run_case "report logs markdown" "${DM_BIN}" report logs --filter "label:${LABEL}" --keyword dm-test --tail 100 --context 1 --format markdown
 run_case "report logs redact json" "${DM_BIN}" report logs --filter "label:${LABEL}" --keyword dm-test --redact-secrets --format json
 run_case "report diff markdown" "${DM_BIN}" report diff "${CONTAINER_NAME}" "${SECOND_CONTAINER_NAME}" --redact-secrets --format markdown
-run_case "volume ls-unused json" "${DM_BIN}" volume ls-unused "${VOLUME_NAME}" --all --format json
+run_case "report volumes json" "${DM_BIN}" report volumes "${VOLUME_NAME}" --all --format json
 run_case "report prune markdown" "${DM_BIN}" report prune --only container --filter "label=${LABEL}" --format markdown
 run_expect_fail "report prune apply without confirm rejected" "${DM_BIN}" report prune --only container --filter "label=${LABEL}" --apply
 run_case "report prune apply stopped container scoped" "${DM_BIN}" report prune --only container --filter "label=${LABEL}" --apply --confirm --format json
