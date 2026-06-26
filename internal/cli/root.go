@@ -38,6 +38,10 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			loaded, err := loadAppConfig(configPath)
 			if err != nil {
+				if isDoctorCommand(cmd) {
+					configureLogging(*opts)
+					return nil
+				}
 				return err
 			}
 			*cfg = loaded
@@ -70,6 +74,9 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 	rootCmd.AddCommand(diagnostics.NewVolumeCommand())
 	rootCmd.AddCommand(diagnostics.NewLogsScanCommand())
 	rootCmd.AddCommand(diagnostics.NewRegistryLoginCheckCommand())
+	rootCmd.AddCommand(diagnostics.NewDoctorCommandWithDefaults(func() diagnostics.DoctorDefaults {
+		return diagnostics.DoctorDefaults{ConfigPath: configPath, OutputDir: cfg.OutputDir}
+	}))
 	rootCmd.AddCommand(completion.NewCommand())
 	rootCmd.AddCommand(version.NewCommand())
 	rootCmd.AddCommand(reverse.NewReverseCommand())
@@ -83,6 +90,15 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 		}
 	}))
 	return rootCmd
+}
+
+func isDoctorCommand(cmd *cobra.Command) bool {
+	for current := cmd; current != nil; current = current.Parent() {
+		if current.Name() == "doctor" {
+			return true
+		}
+	}
+	return false
 }
 
 func applyOutputDefaults(cmd *cobra.Command, cfg *appConfig, opts *outputOptions) {

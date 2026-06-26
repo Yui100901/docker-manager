@@ -201,6 +201,7 @@ DM_E2E_KEEP_WORKDIR=1 bash scripts/e2e.sh
 | `dm image tree` | 分析镜像层、大小和构建历史 |
 | `dm volume ls-unused` | 查找未使用或疑似未使用 volume |
 | `dm registry-login-check` | 检查 registry 登录配置、凭据和连通性 |
+| `dm doctor` | 检查 Docker、registry、代理、磁盘和测试前置条件 |
 | `dm version` | 输出版本、commit、构建时间和运行平台 |
 
 ## 版本信息
@@ -215,6 +216,20 @@ dm version --format json
 ```bash
 VERSION=v0.1.0 ./build.sh
 ```
+
+## 环境诊断
+
+`doctor` 是只读检查命令，用于在生产机或测试机上快速确认运行环境是否适合执行镜像同步、备份恢复和端到端测试。
+
+```bash
+dm doctor
+dm doctor --format json
+dm doctor --registry registry.local:5000 --plain-http
+dm doctor --registry registry.local:5000 --docker-config /root/.docker/config.json
+dm doctor --output-dir /data/dm-work --min-disk-free-mb 10240
+```
+
+检查范围包括 Docker daemon 权限和版本、dm 配置文件、代理环境变量和 `.dm.yaml` 代理、输出目录剩余空间、Docker config、credential helper、registry `/v2/` 连通性和 Docker RegistryLogin 结果，以及 Go/vendor/e2e 测试前置条件。未指定 `--registry` 时会跳过 registry 远端检查。
 
 ## 镜像拉取和迁移
 
