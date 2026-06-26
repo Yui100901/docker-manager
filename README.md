@@ -46,7 +46,7 @@ VERSION=v0.1.0 bash scripts/package-release.sh
 bash scripts/package-release.sh --version v0.1.0 --platform linux/amd64 --platform windows/amd64
 ```
 
-产物默认写入 `dist/`，包括按平台命名的 `tar.gz`/`zip`、`checksums.txt` 和 `release-manifest.json`。
+产物默认写入 `dist/`，包括按平台命名的 `tar.gz`/`zip`、`checksums.txt`、`release-manifest.json` 和 `release-summary.md`。每个归档内包含 `INSTALL.md`，记录对应平台的安装和验证命令。发布前可按 [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) 逐项检查。
 
 Linux 安装。安装脚本会安装真实二进制为 `dm-bin`，并生成 `dm` 包装入口；包装入口默认读取 `DM_CONFIG`，未设置时使用安装脚本生成的配置文件:
 
@@ -54,6 +54,7 @@ Linux 安装。安装脚本会安装真实二进制为 `dm-bin`，并生成 `dm`
 sudo bash scripts/install.sh --binary ./bin/linux/dm
 sudo bash scripts/install.sh --install-dir /opt/docker-manager --binary ./bin/linux/dm
 sudo bash scripts/install.sh --build
+sudo bash scripts/install.sh --binary ./bin/linux/dm --completion bash --completion zsh --completion fish
 ```
 
 默认安装位置:
@@ -76,6 +77,7 @@ Windows 安装:
 .\scripts\install.ps1 -Binary .\bin\windows\dm.exe
 .\scripts\install.ps1 -InstallDir C:\Tools\docker-manager -Binary .\bin\windows\dm.exe
 .\scripts\install.ps1 -Build
+.\scripts\install.ps1 -Binary .\bin\windows\dm.exe -Completion PowerShell
 ```
 
 Windows 安装脚本会生成 `dm.cmd` 包装入口，设置用户级 `DM_CONFIG`、`DM_HOME`、`DM_OUTPUT_DIR`，并把安装 bin 目录加入用户 `PATH`。卸载:
@@ -148,6 +150,8 @@ dm completion powershell
 ```
 
 资源参数会尽量从本机 Docker 补齐，例如容器、镜像和 volume。已支持的典型位置包括 `backup container`、`reverse`、`report diff`、`report logs`、`report health`、`report network`、`image tree`、`report volumes`，以及 `image save --filter` 等筛选参数。
+
+安装脚本可选安装补全脚本。Linux/macOS 使用 `scripts/install.sh --completion bash|zsh|fish|powershell|all`，可重复指定或用逗号分隔；卸载时会根据 `install.env` 清理生成的补全文件。Windows 使用 `scripts/install.ps1 -Completion PowerShell`，会生成 PowerShell 补全脚本并写入可卸载的 profile 片段。
 
 PowerShell 临时加载示例:
 

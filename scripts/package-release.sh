@@ -94,11 +94,13 @@ archive_platform() {
   local name="dm_${VERSION}_${goos}_${goarch}"
   local package_dir="${WORK_DIR}/${name}"
   local binary="dm"
+  local format="tar.gz"
   local archive
   local checksum
 
   if [ "${goos}" = "windows" ]; then
     binary="dm.exe"
+    format="zip"
   fi
 
   mkdir -p "${package_dir}"
@@ -115,6 +117,36 @@ archive_platform() {
   mkdir -p "${package_dir}/scripts"
   cp "${ROOT_DIR}/scripts/install.sh" "${ROOT_DIR}/scripts/uninstall.sh" "${package_dir}/scripts/"
   cp "${ROOT_DIR}/scripts/install.ps1" "${ROOT_DIR}/scripts/uninstall.ps1" "${package_dir}/scripts/"
+  cat >"${package_dir}/INSTALL.md" <<EOF
+# docker-manager ${VERSION} ${platform}
+
+## Files
+
+- \`${binary}\`: dm executable for ${platform}
+- \`dm.yaml.example\`: sample configuration
+- \`scripts/install.*\`: release install scripts
+- \`scripts/uninstall.*\`: uninstall scripts
+
+## Linux/macOS install
+
+\`\`\`bash
+bash scripts/install.sh --binary ./${binary}
+bash scripts/install.sh --binary ./${binary} --completion bash --completion zsh --completion fish
+\`\`\`
+
+## Windows install
+
+\`\`\`powershell
+.\scripts\install.ps1 -Binary .\${binary} -Completion PowerShell
+\`\`\`
+
+Verify after installation:
+
+\`\`\`bash
+dm version
+dm doctor --check-e2e=false
+\`\`\`
+EOF
 
   if [ "${goos}" = "windows" ]; then
     need_cmd zip
@@ -126,7 +158,8 @@ archive_platform() {
   fi
   checksum=$(sha256_file "${archive}")
   printf '%s  %s\n' "${checksum}" "$(basename "${archive}")" >>"${CHECKSUMS_FILE}"
-  printf '    {"platform":"%s","archive":"%s","sha256":"%s"}' "${platform}" "$(basename "${archive}")" "${checksum}" >>"${MANIFEST_FILE}"
+  printf '    {"platform":"%s","os":"%s","arch":"%s","format":"%s","binary":"%s","archive":"%s","sha256":"%s"}' "${platform}" "${goos}" "${goarch}" "${format}" "${binary}" "$(basename "${archive}")" "${checksum}" >>"${MANIFEST_FILE}"
+  printf '| `%s` | `%s` | `%s` | `%s` |\n' "${platform}" "${format}" "$(basename "${archive}")" "${checksum}" >>"${SUMMARY_FILE}"
 }
 
 need_cmd go
@@ -138,6 +171,7 @@ trap 'rm -rf "${WORK_DIR}"' EXIT
 LDFLAGS="-s -w -X docker-manager/internal/version.version=${VERSION} -X docker-manager/internal/version.commit=${COMMIT} -X docker-manager/internal/version.buildDate=${BUILD_DATE}"
 CHECKSUMS_FILE="${DIST_DIR}/checksums.txt"
 MANIFEST_FILE="${DIST_DIR}/release-manifest.json"
+SUMMARY_FILE="${DIST_DIR}/release-summary.md"
 : >"${CHECKSUMS_FILE}"
 
 if [ "${RUN_TESTS}" = "1" ]; then
@@ -151,6 +185,18 @@ cat >"${MANIFEST_FILE}" <<EOF
   "commit": "${COMMIT}",
   "build_date": "${BUILD_DATE}",
   "artifacts": [
+EOF
+
+cat >"${SUMMARY_FILE}" <<EOF
+# docker-manager ${VERSION} release artifacts
+
+- Commit: \`${COMMIT}\`
+- Build date: \`${BUILD_DATE}\`
+- Checksums: \`checksums.txt\`
+- Manifest: \`release-manifest.json\`
+
+| Platform | Format | Archive | SHA256 |
+| --- | --- | --- | --- |
 EOF
 
 first=1
@@ -176,3 +222,4 @@ EOF
 echo "Release artifacts written to: ${DIST_DIR}"
 echo "Checksums: ${CHECKSUMS_FILE}"
 echo "Manifest: ${MANIFEST_FILE}"
+echo "Summary: ${SUMMARY_FILE}"

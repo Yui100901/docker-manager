@@ -26,6 +26,8 @@ BUILD_FROM_SOURCE=0
 NO_PROFILE=0
 DRY_RUN=0
 OVERWRITE_CONFIG=0
+COMPLETION_SHELLS=()
+COMPLETION_DIR=""
 
 usage() {
   cat <<'EOF'
@@ -43,6 +45,8 @@ Options:
   --binary PATH         Existing dm binary to install
   --build               Build dm from the current source tree when --binary is not set
   --overwrite-config    Replace existing config file
+  --completion SHELL    Install shell completion for bash, zsh, fish, powershell or all. Repeatable
+  --completion-dir DIR  Base directory for completion files. Default: <prefix>/share
   --no-profile          Do not write shell environment profile
   --dry-run             Print actions without changing files
   -h, --help            Show this help
@@ -88,6 +92,15 @@ while [ "$#" -gt 0 ]; do
       OVERWRITE_CONFIG=1
       shift
       ;;
+    --completion)
+      IFS=',' read -r -a requested_completions <<<"${2:?missing value for --completion}"
+      COMPLETION_SHELLS+=("${requested_completions[@]}")
+      shift 2
+      ;;
+    --completion-dir)
+      COMPLETION_DIR=${2:?missing value for --completion-dir}
+      shift 2
+      ;;
     --no-profile)
       NO_PROFILE=1
       shift
@@ -115,6 +128,8 @@ OUTPUT_DIR="${DATA_DIR}/images"
 INSTALLED_BIN="${LIBEXEC_DIR}/dm-bin"
 WRAPPER="${BIN_DIR}/dm"
 MANIFEST="${CONFIG_DIR}/install.env"
+COMPLETION_BASE_DIR=${COMPLETION_DIR:-"${PREFIX}/share"}
+COMPLETION_FILES=()
 
 run() {
   if [ "${DRY_RUN}" = "1" ]; then
@@ -143,6 +158,70 @@ write_file() {
   fi
   install -m "${mode}" "${tmp}" "${path}"
   rm -f "${tmp}"
+}
+
+completion_file_for_shell() {
+  local shell="$1"
+  case "${shell}" in
+    bash) printf '%s\n' "${COMPLETION_BASE_DIR}/bash-completion/completions/dm" ;;
+    zsh) printf '%s\n' "${COMPLETION_BASE_DIR}/zsh/site-functions/_dm" ;;
+    fish) printf '%s\n' "${COMPLETION_BASE_DIR}/fish/vendor_completions.d/dm.fish" ;;
+    powershell) printf '%s\n' "${COMPLETION_BASE_DIR}/powershell/Completions/dm.ps1" ;;
+    *) return 1 ;;
+  esac
+}
+
+normalize_completion_shells() {
+  local shell
+  local normalized=()
+  if [ "${#COMPLETION_SHELLS[@]}" -eq 0 ]; then
+    return 0
+  fi
+  for shell in "${COMPLETION_SHELLS[@]}"; do
+    shell=$(printf '%s' "${shell}" | tr '[:upper:]' '[:lower:]')
+    case "${shell}" in
+      all)
+        normalized+=(bash zsh fish powershell)
+        ;;
+      bash|zsh|fish|powershell)
+        normalized+=("${shell}")
+        ;;
+      "")
+        ;;
+      *)
+        echo "Unsupported completion shell: ${shell}" >&2
+        exit 2
+        ;;
+    esac
+  done
+  COMPLETION_SHELLS=()
+  local seen=" "
+  for shell in "${normalized[@]}"; do
+    case "${seen}" in
+      *" ${shell} "*) ;;
+      *)
+        COMPLETION_SHELLS+=("${shell}")
+        seen="${seen}${shell} "
+        ;;
+    esac
+  done
+}
+
+install_completions() {
+  local shell path dir
+  normalize_completion_shells
+  for shell in "${COMPLETION_SHELLS[@]}"; do
+    path=$(completion_file_for_shell "${shell}")
+    dir=$(dirname "${path}")
+    run mkdir -p "${dir}"
+    if [ "${DRY_RUN}" = "1" ]; then
+      echo "DRY-RUN: ${INSTALLED_BIN} completion ${shell} > ${path}"
+    else
+      "${INSTALLED_BIN}" completion "${shell}" >"${path}"
+      chmod 0644 "${path}"
+    fi
+    COMPLETION_FILES+=("${path}")
+  done
 }
 
 resolve_binary() {
@@ -196,6 +275,7 @@ echo "  data:    ${DATA_DIR}"
 
 run mkdir -p "${BIN_DIR}" "${LIBEXEC_DIR}" "${CONFIG_DIR}" "${OUTPUT_DIR}"
 run install -m 0755 "${SOURCE_BIN}" "${INSTALLED_BIN}"
+install_completions
 
 write_file "${WRAPPER}" 0755 <<EOF
 #!/usr/bin/env sh
@@ -245,6 +325,7 @@ DM_CONFIG_FILE="${CONFIG_FILE}"
 DM_DATA_DIR="${DATA_DIR}"
 DM_OUTPUT_DIR="${OUTPUT_DIR}"
 DM_PROFILE_FILE="${PROFILE_FILE}"
+DM_COMPLETION_FILES="$(IFS=:; printf '%s' "${COMPLETION_FILES[*]}")"
 EOF
 
 if [ "${NO_PROFILE}" != "1" ]; then

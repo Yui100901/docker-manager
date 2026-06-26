@@ -29,6 +29,10 @@ if (-not $ConfigDir) {
 $Manifest = Join-Path $ConfigDir "install.json"
 $DataDir = Join-Path $InstallDir "data"
 $LibexecDir = Join-Path $InstallDir "lib"
+$CompletionFiles = @()
+$CompletionProfile = $null
+$CompletionProfileStart = "# >>> docker-manager completion >>>"
+$CompletionProfileEnd = "# <<< docker-manager completion <<<"
 if (Test-Path $Manifest) {
     $manifestData = Get-Content $Manifest -Raw | ConvertFrom-Json
     if (-not $PSBoundParameters.ContainsKey("InstallDir")) { $InstallDir = $manifestData.install_dir }
@@ -37,6 +41,10 @@ if (Test-Path $Manifest) {
     $DataDir = $manifestData.data_dir
     $LibexecDir = $manifestData.libexec_dir
     if ($manifestData.scope -eq "Machine") { $Scope = "Machine" }
+    if ($manifestData.completion_files) { $CompletionFiles = @($manifestData.completion_files) }
+    if ($manifestData.completion_profile) { $CompletionProfile = $manifestData.completion_profile }
+    if ($manifestData.completion_profile_start) { $CompletionProfileStart = $manifestData.completion_profile_start }
+    if ($manifestData.completion_profile_end) { $CompletionProfileEnd = $manifestData.completion_profile_end }
 }
 
 $Wrapper = Join-Path $BinDir "dm.cmd"
@@ -55,10 +63,24 @@ Write-Host "Uninstalling docker-manager"
 
 Invoke-Step {
     Remove-Item -Force -ErrorAction SilentlyContinue $Wrapper, $InstalledBin
+    foreach ($file in $CompletionFiles) {
+        if ($file) {
+            Remove-Item -Force -ErrorAction SilentlyContinue $file
+        }
+    }
     if (Test-Path $LibexecDir) {
         Remove-Item -Force -ErrorAction SilentlyContinue $LibexecDir
     }
 } "remove installed files"
+
+if ($CompletionProfile -and (Test-Path $CompletionProfile)) {
+    Invoke-Step {
+        $existing = Get-Content $CompletionProfile -Raw
+        $pattern = "(?s)" + [regex]::Escape($CompletionProfileStart) + ".*?" + [regex]::Escape($CompletionProfileEnd) + "\r?\n?"
+        $clean = [regex]::Replace($existing, $pattern, "")
+        Set-Content -Path $CompletionProfile -Value $clean -Encoding UTF8
+    } "remove PowerShell completion block from $CompletionProfile"
+}
 
 Invoke-Step {
     [Environment]::SetEnvironmentVariable("DM_HOME", $null, $Scope)

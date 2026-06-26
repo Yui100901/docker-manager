@@ -94,6 +94,7 @@ if [ -f "${MANIFEST}" ]; then
   CONFIG_DIR="${DM_CONFIG_DIR:-${CONFIG_DIR}}"
   DATA_DIR="${DM_DATA_DIR:-${DATA_DIR}}"
   PROFILE_FILE="${DM_PROFILE_FILE:-${PROFILE_FILE}}"
+  COMPLETION_FILES="${DM_COMPLETION_FILES:-}"
 fi
 
 BIN_DIR=${BIN_DIR:-"${PREFIX}/bin"}
@@ -113,6 +114,16 @@ run() {
 
 echo "Uninstalling docker-manager"
 run rm -f "${WRAPPER}" "${INSTALLED_BIN}"
+if [ -n "${COMPLETION_FILES:-}" ]; then
+  old_ifs="${IFS}"
+  IFS=':'
+  for file in ${COMPLETION_FILES}; do
+    if [ -n "${file}" ]; then
+      run rm -f "${file}"
+    fi
+  done
+  IFS="${old_ifs}"
+fi
 run rmdir "${LIBEXEC_DIR}" 2>/dev/null || true
 
 if [ "${IS_ROOT}" = "1" ]; then

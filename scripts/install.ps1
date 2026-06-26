@@ -4,9 +4,12 @@ param(
     [string]$ConfigDir,
     [string]$DataDir,
     [string]$Binary,
+    [string[]]$Completion,
+    [string]$CompletionDir,
     [switch]$Build,
     [switch]$OverwriteConfig,
     [switch]$NoPathUpdate,
+    [switch]$NoCompletionProfile,
     [switch]$MachineScope,
     [switch]$DryRun
 )
@@ -39,6 +42,11 @@ $YamlOutputDir = $OutputDir.Replace("'", "''")
 $InstalledBin = Join-Path $LibexecDir "dm-bin.exe"
 $Wrapper = Join-Path $BinDir "dm.cmd"
 $Manifest = Join-Path $ConfigDir "install.json"
+$CompletionBaseDir = if ($CompletionDir) { $CompletionDir } else { Join-Path $InstallDir "completions" }
+$CompletionFiles = @()
+$CompletionProfile = if ($MachineScope) { $PROFILE.AllUsersAllHosts } else { $PROFILE.CurrentUserAllHosts }
+$CompletionProfileStart = "# >>> docker-manager completion >>>"
+$CompletionProfileEnd = "# <<< docker-manager completion <<<"
 
 function Invoke-Step {
     param([scriptblock]$Action, [string]$Text)
@@ -77,6 +85,58 @@ function Resolve-DmBinary {
     throw "No dm binary found. Pass -Binary PATH or -Build."
 }
 
+function Get-CompletionShells {
+    $items = @()
+    foreach ($entry in $Completion) {
+        foreach ($part in ($entry -split ',')) {
+            $value = $part.Trim().ToLowerInvariant()
+            if (-not $value) { continue }
+            if ($value -eq "all") {
+                $items += "powershell"
+            } elseif ($value -eq "powershell" -or $value -eq "pwsh") {
+                $items += "powershell"
+            } else {
+                throw "Unsupported completion shell on Windows install.ps1: $part. Use PowerShell."
+            }
+        }
+    }
+    return @($items | Select-Object -Unique)
+}
+
+function Install-Completions {
+    $shells = Get-CompletionShells
+    foreach ($shell in $shells) {
+        $target = Join-Path $CompletionBaseDir "dm-completion.ps1"
+        Invoke-Step {
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+            & $InstalledBin completion powershell | Set-Content -Path $target -Encoding UTF8
+        } "write PowerShell completion $target"
+        $script:CompletionFiles += $target
+    }
+
+    if (($shells -contains "powershell") -and -not $NoCompletionProfile) {
+        Invoke-Step {
+            $profileDir = Split-Path -Parent $CompletionProfile
+            if ($profileDir) {
+                New-Item -ItemType Directory -Force -Path $profileDir | Out-Null
+            }
+            if (-not (Test-Path $CompletionProfile)) {
+                New-Item -ItemType File -Force -Path $CompletionProfile | Out-Null
+            }
+            $existing = Get-Content $CompletionProfile -Raw
+            $pattern = "(?s)" + [regex]::Escape($CompletionProfileStart) + ".*?" + [regex]::Escape($CompletionProfileEnd) + "\r?\n?"
+            $clean = [regex]::Replace($existing, $pattern, "")
+            $completionFile = $CompletionFiles[0]
+            $block = @"
+$CompletionProfileStart
+. '$completionFile'
+$CompletionProfileEnd
+"@
+            Set-Content -Path $CompletionProfile -Value ($clean.TrimEnd() + [Environment]::NewLine + $block + [Environment]::NewLine) -Encoding UTF8
+        } "update PowerShell profile $CompletionProfile"
+    }
+}
+
 $SourceBin = Resolve-DmBinary
 
 Write-Host "Installing docker-manager"
@@ -89,6 +149,8 @@ Invoke-Step {
     New-Item -ItemType Directory -Force -Path $BinDir, $LibexecDir, $ConfigDir, $OutputDir | Out-Null
     Copy-Item -Force $SourceBin $InstalledBin
 } "create directories and copy binary"
+
+Install-Completions
 
 $WrapperContent = @"
 @echo off
@@ -133,6 +195,10 @@ $manifestData = [ordered]@{
     data_dir = $DataDir
     output_dir = $OutputDir
     scope = $Scope
+    completion_files = $CompletionFiles
+    completion_profile = if ($CompletionFiles.Count -gt 0 -and -not $NoCompletionProfile) { $CompletionProfile } else { $null }
+    completion_profile_start = $CompletionProfileStart
+    completion_profile_end = $CompletionProfileEnd
 }
 Invoke-Step {
     $manifestData | ConvertTo-Json | Set-Content -Path $Manifest -Encoding UTF8
