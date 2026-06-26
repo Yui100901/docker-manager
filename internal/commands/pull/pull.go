@@ -128,6 +128,7 @@ func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command 
 		Long: `无需 Docker 客户端下载 Docker 镜像，从官方镜像源拉取。
 默认使用 HTTP_PROXY/HTTPS_PROXY 环境变量代理；未设置则直连。可通过 --proxy 强制指定代理。
 默认拉取 linux/amd64 镜像。`,
+		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
 			defer stop()
@@ -181,6 +182,7 @@ func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command 
 	cmd.Flags().BoolVar(&plainHTTP, "plain-http", false, "使用 http:// 拉取 registry，适用于未启用 TLS 的内网 registry")
 	_ = cmd.RegisterFlagCompletionFunc("os", completePullValues("linux", "windows"))
 	_ = cmd.RegisterFlagCompletionFunc("arch", completePullValues("amd64", "arm64", "arm", "386", "ppc64le", "s390x"))
+	cmd.AddCommand(NewPullMirrorCommandWithDefaults(defaults))
 	return cmd
 }
 
