@@ -133,6 +133,18 @@ func TestLogsScanTargetsRunningOnlyFiltersContainers(t *testing.T) {
 	}
 }
 
+func TestLogsScanCommandRemovesCompatibilityFlags(t *testing.T) {
+	cmd := NewLogsScanCommand()
+	for _, name := range []string{"all", "running-only"} {
+		if flag := cmd.Flags().Lookup(name); flag != nil {
+			t.Fatalf("%s compatibility flag should be removed", name)
+		}
+	}
+	if flag := cmd.Flags().Lookup("running"); flag == nil {
+		t.Fatal("running flag should remain available")
+	}
+}
+
 func TestLogsScanTargetsDefaultsToAllContainers(t *testing.T) {
 	fake := &fakeLogsScanDockerService{
 		containers: []container.Summary{
@@ -191,7 +203,6 @@ func TestValidateLogsScanArgsRejectsInvalidCombinations(t *testing.T) {
 		name string
 		opts LogsScanOptions
 	}{
-		{name: "all and running", opts: LogsScanOptions{All: true, RunningOnly: true, Tail: 1}},
 		{name: "bad context", opts: LogsScanOptions{Filters: []string{"api"}, Tail: 1, Context: -1}},
 		{name: "bad tail", opts: LogsScanOptions{Filters: []string{"api"}, Tail: 0}},
 	}

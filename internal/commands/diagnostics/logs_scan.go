@@ -37,7 +37,6 @@ type dockerLogsScanService struct {
 }
 
 type LogsScanOptions struct {
-	All           bool
 	RunningOnly   bool
 	Tail          int
 	Context       int
@@ -105,9 +104,7 @@ func NewLogsScanCommand() *cobra.Command {
 		},
 		ValidArgsFunction: completion.LocalContainers,
 	}
-	cmd.Flags().BoolVar(&opts.All, "all", false, "扫描所有容器（兼容选项；默认已扫描全部容器）")
 	cmd.Flags().BoolVar(&opts.RunningOnly, "running", false, "只扫描正在运行的容器")
-	cmd.Flags().BoolVar(&opts.RunningOnly, "running-only", false, "只扫描正在运行的容器（兼容旧参数）")
 	cmd.Flags().IntVar(&opts.Tail, "tail", opts.Tail, "每个容器扫描最近日志行数，-1 表示全部")
 	cmd.Flags().IntVar(&opts.Context, "context", opts.Context, "命中日志前后各输出多少行上下文")
 	cmd.Flags().StringVar(&opts.Since, "since", "", "只扫描该时间之后的日志，例如 30m、2h 或 RFC3339 时间")
@@ -120,9 +117,6 @@ func NewLogsScanCommand() *cobra.Command {
 }
 
 func validateLogsScanArgs(opts LogsScanOptions) error {
-	if opts.All && opts.RunningOnly {
-		return fmt.Errorf("不能同时指定 --all 和 --running/--running-only")
-	}
 	if opts.Context < 0 {
 		return fmt.Errorf("--context 不能小于 0")
 	}

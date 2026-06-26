@@ -118,7 +118,6 @@ func NewHealthCommand() *cobra.Command {
 		ValidArgsFunction: completion.LocalContainers,
 	}
 	cmd.Flags().BoolVar(&opts.RunningOnly, "running", false, "只检查正在运行的容器")
-	cmd.Flags().BoolVar(&opts.RunningOnly, "running-only", false, "只检查正在运行的容器（兼容旧参数）")
 	cmd.Flags().BoolVar(&opts.NoLogs, "no-logs", false, "不扫描容器日志")
 	cmd.Flags().IntVar(&opts.LogTail, "log-tail", opts.LogTail, "每个容器扫描最近日志行数")
 	cmd.Flags().IntVar(&opts.RestartThreshold, "restart-threshold", opts.RestartThreshold, "restart 次数达到该阈值时报告风险")

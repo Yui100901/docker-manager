@@ -121,6 +121,16 @@ func TestRunHealthReportRunningOnlyPassesContainerListFlag(t *testing.T) {
 	}
 }
 
+func TestHealthCommandRemovesRunningOnlyCompatibilityFlag(t *testing.T) {
+	cmd := NewHealthCommand()
+	if flag := cmd.Flags().Lookup("running-only"); flag != nil {
+		t.Fatal("running-only compatibility flag should be removed")
+	}
+	if flag := cmd.Flags().Lookup("running"); flag == nil {
+		t.Fatal("running flag should remain available")
+	}
+}
+
 func TestRunHealthReportFiltersContainersByWildcard(t *testing.T) {
 	fake := &fakeHealthDockerService{
 		containers: []container.Summary{
