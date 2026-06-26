@@ -11,8 +11,10 @@ import (
 )
 
 const (
-	FormatText = "text"
-	FormatJSON = "json"
+	FormatText     = "text"
+	FormatJSON     = "json"
+	FormatMarkdown = "markdown"
+	FormatHTML     = "html"
 )
 
 type FormatOptions struct {
@@ -20,8 +22,8 @@ type FormatOptions struct {
 }
 
 func AddFormatFlag(cmd *cobra.Command, format *string) {
-	cmd.Flags().StringVar(format, "format", FormatText, "输出格式: text | json")
-	_ = cmd.RegisterFlagCompletionFunc("format", completion.FixedValues(FormatText, FormatJSON))
+	cmd.Flags().StringVar(format, "format", FormatText, "输出格式: text | json | markdown | html")
+	_ = cmd.RegisterFlagCompletionFunc("format", completion.FixedValues(FormatText, FormatJSON, FormatMarkdown, "md", FormatHTML))
 }
 
 func Print(w io.Writer, format string, report interface{}, printText func(io.Writer)) error {
@@ -33,7 +35,13 @@ func Print(w io.Writer, format string, report interface{}, printText func(io.Wri
 		encoder := json.NewEncoder(w)
 		encoder.SetIndent("", "  ")
 		return encoder.Encode(report)
+	case FormatMarkdown, "md":
+		_, err := io.WriteString(w, RenderMarkdown(report))
+		return err
+	case FormatHTML:
+		_, err := io.WriteString(w, RenderHTML(report))
+		return err
 	default:
-		return fmt.Errorf("不支持的输出格式 %q，请使用 text 或 json", format)
+		return fmt.Errorf("不支持的输出格式 %q，请使用 text、json、markdown 或 html", format)
 	}
 }

@@ -445,7 +445,7 @@ dm prune-report --filter until=168h --apply --confirm
 
 ## 诊断命令
 
-下面这些诊断/报告命令默认输出文本，也支持机器可读 JSON:
+下面这些诊断/报告命令默认输出文本，也支持 `json`、`markdown` 和 `html`。JSON 适合脚本和 CI 消费，Markdown/HTML 适合巡检留档、工单附件或分享给团队:
 
 ```bash
 dm health --format json
@@ -456,6 +456,17 @@ dm inspect-diff app-old app-new --format json
 dm image tree nginx:latest --format json
 dm volume ls-unused --format json
 dm registry-login-check registry.local:5000 --format json
+dm doctor --format json
+```
+
+生成可归档报告:
+
+```bash
+dm health --format markdown > health-report.md
+dm network --format html > network-report.html
+dm prune-report --format markdown > prune-report.md
+dm volume ls-unused --format html > volume-report.html
+dm image tree nginx:latest --format markdown > image-tree.md
 ```
 
 网络关系和端口风险:
