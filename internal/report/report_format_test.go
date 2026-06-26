@@ -6,6 +6,8 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 func TestPrintReportJSON(t *testing.T) {
@@ -24,6 +26,19 @@ func TestPrintReportJSON(t *testing.T) {
 	}
 	if got["status"] != "ok" {
 		t.Fatalf("json = %#v, want status=ok", got)
+	}
+}
+
+func TestAddFormatFlagDescribesBusinessReportOutput(t *testing.T) {
+	var format string
+	cmd := &cobra.Command{Use: "demo"}
+	AddFormatFlag(cmd, &format)
+	flag := cmd.Flags().Lookup("format")
+	if flag == nil {
+		t.Fatal("format flag missing")
+	}
+	if !strings.Contains(flag.Usage, "业务报告输出格式") {
+		t.Fatalf("format usage = %q, want business report wording", flag.Usage)
 	}
 }
 

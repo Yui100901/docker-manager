@@ -235,6 +235,58 @@ func TestBackupContainerWritesOfflineBundleArtifacts(t *testing.T) {
 	}
 }
 
+func TestBackupContainerCommandBundleOutputFlagWritesArchive(t *testing.T) {
+	fake := &fakeBackupDockerService{
+		containers: []container.Summary{
+			{ID: "demo-id", Names: []string{"/demo"}, Image: "busybox:latest"},
+		},
+		inspect: container.InspectResponse{
+			ContainerJSONBase: &container.ContainerJSONBase{Name: "/demo", HostConfig: &container.HostConfig{}},
+			Config:            &container.Config{Image: "busybox:latest"},
+		},
+	}
+	restoreFactory := replaceBackupServiceFactory(fake)
+	defer restoreFactory()
+
+	root := t.TempDir()
+	archive := filepath.Join(root, "demo.tar.gz")
+	cmd := newBackupContainerCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{"demo", "--bundle", "--output-dir", filepath.Join(root, "backup"), "--bundle-output", archive})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if _, err := os.Stat(archive); err != nil {
+		t.Fatalf("expected archive %s: %v", archive, err)
+	}
+}
+
+func TestBackupContainerCommandOutputCompatibilityFlagIsHidden(t *testing.T) {
+	cmd := newBackupContainerCommand()
+	outputFlag := cmd.Flags().Lookup("output")
+	if outputFlag == nil {
+		t.Fatal("output compatibility flag missing")
+	}
+	if !outputFlag.Hidden {
+		t.Fatal("output compatibility flag should be hidden")
+	}
+	if flag := cmd.Flags().Lookup("bundle-output"); flag == nil {
+		t.Fatal("bundle-output flag missing")
+	}
+}
+
+func TestBackupContainerCommandRejectsOutputAndBundleOutputTogether(t *testing.T) {
+	cmd := newBackupContainerCommand()
+	cmd.SetArgs([]string{"demo", "--bundle", "--output", "old.tar.gz", "--bundle-output", "new.tar.gz"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want conflict error")
+	}
+	if !strings.Contains(err.Error(), "--output") || !strings.Contains(err.Error(), "--bundle-output") {
+		t.Fatalf("Execute() error = %q, want output conflict", err.Error())
+	}
+}
+
 func TestBackupContainerDryRunPrintsPlanWithoutWritingFiles(t *testing.T) {
 	fake := &fakeBackupDockerService{
 		inspect: container.InspectResponse{

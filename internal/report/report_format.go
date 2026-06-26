@@ -22,7 +22,7 @@ type FormatOptions struct {
 }
 
 func AddFormatFlag(cmd *cobra.Command, format *string) {
-	cmd.Flags().StringVar(format, "format", FormatText, "输出格式: text | json | markdown | html")
+	cmd.Flags().StringVar(format, "format", FormatText, "业务报告输出格式: text | json | markdown | html")
 	_ = cmd.RegisterFlagCompletionFunc("format", completion.FixedValues(FormatText, FormatJSON, FormatMarkdown, "md", FormatHTML))
 }
 

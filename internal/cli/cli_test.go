@@ -40,3 +40,46 @@ func TestWriteCommandErrorJSON(t *testing.T) {
 		t.Fatalf("error json = %#v, want level=error error=boom", got)
 	}
 }
+
+func TestRootCommandLogJSONFlagAlias(t *testing.T) {
+	cfg := appConfig{}
+	opts := outputOptions{}
+	cmd := newRootCommand(&cfg, &opts)
+
+	if flag := cmd.PersistentFlags().Lookup("log-json"); flag == nil {
+		t.Fatal("missing --log-json flag")
+	}
+	if flag := cmd.PersistentFlags().Lookup("json"); flag == nil {
+		t.Fatal("missing --json compatibility flag")
+	}
+
+	cmd.SetArgs([]string{"--log-json", "version"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !opts.JSON {
+		t.Fatal("--log-json did not enable JSON logs/errors")
+	}
+}
+
+func TestPreseedJSONErrorMode(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{name: "log json", args: []string{"--log-json", "missing"}, want: true},
+		{name: "json", args: []string{"--json", "missing"}, want: true},
+		{name: "log json false", args: []string{"--log-json=false", "missing"}, want: false},
+		{name: "json false", args: []string{"--json=false", "missing"}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := outputOptions{}
+			preseedJSONErrorMode(&opts, tt.args)
+			if opts.JSON != tt.want {
+				t.Fatalf("opts.JSON = %v, want %v", opts.JSON, tt.want)
+			}
+		})
+	}
+}

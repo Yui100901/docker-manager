@@ -8,6 +8,9 @@ import (
 	"docker-manager/internal/commands/reverse"
 	"docker-manager/internal/completion"
 	"docker-manager/internal/version"
+	"os"
+	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -21,11 +24,35 @@ func Run() int {
 	cfg := appConfig{}
 	opts := outputOptions{}
 	rootCmd := newRootCommand(&cfg, &opts)
+	preseedJSONErrorMode(&opts, os.Args[1:])
 	if err := rootCmd.Execute(); err != nil {
 		writeCommandError(rootCmd.ErrOrStderr(), err, opts)
 		return 1
 	}
 	return 0
+}
+
+func preseedJSONErrorMode(opts *outputOptions, args []string) {
+	for _, arg := range args {
+		var value string
+		switch {
+		case arg == "--json" || arg == "--log-json":
+			opts.JSON = true
+		case strings.HasPrefix(arg, "--json="):
+			value = strings.TrimPrefix(arg, "--json=")
+		case strings.HasPrefix(arg, "--log-json="):
+			value = strings.TrimPrefix(arg, "--log-json=")
+		default:
+			continue
+		}
+		if value == "" {
+			continue
+		}
+		parsed, err := strconv.ParseBool(value)
+		if err == nil {
+			opts.JSON = parsed
+		}
+	}
 }
 
 func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
@@ -60,7 +87,8 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 	rootCmd.PersistentFlags().StringVar(&configPath, "config", defaultConfigPath, "配置文件路径")
 	rootCmd.PersistentFlags().BoolVar(&opts.Verbose, "verbose", opts.Verbose, "输出详细日志")
 	rootCmd.PersistentFlags().BoolVar(&opts.Quiet, "quiet", opts.Quiet, "隐藏信息日志")
-	rootCmd.PersistentFlags().BoolVar(&opts.JSON, "json", opts.JSON, "以 JSON 输出日志和错误")
+	rootCmd.PersistentFlags().BoolVar(&opts.JSON, "log-json", opts.JSON, "以 JSON 输出日志和错误，不影响业务报告格式")
+	rootCmd.PersistentFlags().BoolVar(&opts.JSON, "json", opts.JSON, "兼容短写: 等同 --log-json，仅影响日志和错误")
 
 	rootCmd.AddCommand(images.NewLoadCommand())
 	rootCmd.AddCommand(images.NewSaveCommandWithDefaults(func() string { return cfg.OutputDir }))
@@ -109,7 +137,7 @@ func applyOutputDefaults(cmd *cobra.Command, cfg *appConfig, opts *outputOptions
 	if !flags.Changed("quiet") {
 		opts.Quiet = cfg.Quiet
 	}
-	if !flags.Changed("json") {
+	if !flags.Changed("json") && !flags.Changed("log-json") {
 		opts.JSON = cfg.JSON
 	}
 	if flags.Changed("verbose") && opts.Verbose {

@@ -62,7 +62,8 @@ scripts/                        # 端到端测试等辅助脚本
 --config string   配置文件路径，默认 .dm.yaml
 --verbose         输出详细日志
 --quiet           静默 info 日志
---json            以 JSON 格式输出日志和错误
+--log-json        以 JSON 格式输出日志和错误
+--json            兼容短写，等同 --log-json
 ```
 
 示例 `.dm.yaml`:
@@ -219,6 +220,15 @@ dm version --format json
 
 ```bash
 VERSION=v0.1.0 ./build.sh
+```
+
+## 输出格式
+
+全局 `--log-json` 只影响日志和错误输出，适合脚本统一解析命令执行状态；兼容短写 `--json` 等同于 `--log-json`。报告类命令的 `--format json` 输出的是业务报告内容，两者互不替代。
+
+```bash
+dm --log-json doctor
+dm doctor --format json
 ```
 
 ## 环境诊断
@@ -396,9 +406,9 @@ dm backup container app --dry-run
 
 ```bash
 dm backup container app --bundle
-dm backup container app ./backups/app --bundle --output ./app-offline.tar.gz
+dm backup container app --bundle --output-dir ./backups/app --bundle-output ./app-offline.tar.gz
 dm backup container "api-*" worker --bundle --output-dir ./backups/prod
-dm backup container "api-*" worker --merge --bundle --output-dir ./backups/prod-merged --output ./prod-offline.tar.gz
+dm backup container "api-*" worker --merge --bundle --output-dir ./backups/prod-merged --bundle-output ./prod-offline.tar.gz
 ```
 
 备份内容包括。单容器包和合并批量包都使用同一种 `manifest.json` 结构，通过 `containers` 数组描述一个或多个容器:
@@ -559,7 +569,7 @@ dm pull nginx:latest --to registry.local:5000 --plain-http
 把容器打包后迁移到另一台机器:
 
 ```bash
-dm backup container app --bundle --output app-offline.tar.gz
+dm backup container app --bundle --bundle-output app-offline.tar.gz
 dm restore app-offline.tar.gz --replace
 ```
 

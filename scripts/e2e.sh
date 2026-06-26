@@ -147,7 +147,7 @@ docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
 docker run -d --name "${CONTAINER_NAME}" "${TARGET_IMAGE}" sh -c "while true; do sleep 3600; done" >/dev/null
 
 log "测试 backup container --bundle"
-"${DM_BIN}" backup container "${CONTAINER_NAME}" --bundle --output-dir "${BACKUP_DIR}" --output "${BACKUP_ARCHIVE}"
+"${DM_BIN}" backup container "${CONTAINER_NAME}" --bundle --output-dir "${BACKUP_DIR}" --bundle-output "${BACKUP_ARCHIVE}"
 test -f "${BACKUP_ARCHIVE}"
 test -f "${BACKUP_DIR}/manifest.json"
 test -f "${BACKUP_DIR}/checksums.txt"

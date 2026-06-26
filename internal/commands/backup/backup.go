@@ -150,10 +150,14 @@ func newBackupContainerCommand() *cobra.Command {
 	opts := BackupOptions{IncludeImage: true}
 	var noImage bool
 	cmd := &cobra.Command{
-		Use:   "container <name-pattern...> [backup-dir]",
+		Use:   "container <name-pattern...> [legacy-backup-dir]",
 		Short: "批量备份容器 inspect、镜像、compose、volume 和 network 元数据",
+		Long:  "批量备份容器 inspect、镜像、compose、volume 和 network 元数据。\n\n推荐使用 --output-dir 指定备份输出目录；位置参数目录仅为旧写法兼容。",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.Flags().Changed("output") && cmd.Flags().Changed("bundle-output") {
+				return fmt.Errorf("不能同时指定 --output 和 --bundle-output")
+			}
 			targets, outputDir := splitBackupContainerArgs(args, opts.OutputDir)
 			runOpts := opts
 			if noImage {
@@ -183,8 +187,10 @@ func newBackupContainerCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&noImage, "no-image", false, "不导出容器镜像 tar")
 	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", false, "只预览备份动作，不写入文件")
 	cmd.Flags().BoolVar(&opts.Bundle, "bundle", false, "生成离线迁移包 tar.gz，并附带 README、restore 脚本和 checksums")
-	cmd.Flags().StringVar(&opts.BundleOutput, "output", "", "离线迁移包输出路径，默认 <backup-dir>.tar.gz")
-	cmd.Flags().StringVar(&opts.OutputDir, "output-dir", "", "批量备份输出根目录；单容器也可继续使用位置参数指定目录")
+	cmd.Flags().StringVar(&opts.BundleOutput, "bundle-output", "", "离线迁移包输出路径，默认 <backup-dir>.tar.gz")
+	cmd.Flags().StringVar(&opts.BundleOutput, "output", "", "兼容旧参数: 等同 --bundle-output")
+	_ = cmd.Flags().MarkHidden("output")
+	cmd.Flags().StringVar(&opts.OutputDir, "output-dir", "", "备份输出目录；批量目标会在该目录下拆分子目录")
 	cmd.Flags().BoolVar(&opts.Merge, "merge", false, "将多个容器合并为一个批量备份包，可整体 restore")
 	return cmd
 }
@@ -245,7 +251,7 @@ func backupContainers(ctx context.Context, patterns []string, opts BackupOptions
 		return BackupContainersResult{Paths: []string{outputDir}}, nil
 	}
 	if opts.BundleOutput != "" && !opts.Merge {
-		return BackupContainersResult{}, fmt.Errorf("多个独立备份不能使用单个 --output；请使用 --output-dir 或添加 --merge")
+		return BackupContainersResult{}, fmt.Errorf("多个独立备份不能使用单个 --bundle-output；请使用 --output-dir 或添加 --merge")
 	}
 	if opts.Merge {
 		return backupContainersMerged(ctx, targets, opts)
