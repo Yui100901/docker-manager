@@ -12,22 +12,68 @@
 
 > 说明: 工具里包含会修改 Docker 状态的命令，例如 `restore`、`report prune --apply`、`rerun --confirm`、`image pull --to`。在生产环境执行前建议先使用 `--dry-run` 或在测试机验证。
 
-## 构建
+## 构建和安装
+
+开发环境快速构建当前平台二进制:
 
 ```bash
-go build -o dm .
+bash scripts/dev-build.sh
+bash scripts/dev-build.sh --vet --race
 ```
 
-注入版本、commit 和构建时间:
-
-```bash
-go build -ldflags "-X docker-manager/internal/version.version=v0.1.0 -X docker-manager/internal/version.commit=$(git rev-parse --short HEAD) -X docker-manager/internal/version.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o dm .
-```
-
-Windows:
+Windows PowerShell:
 
 ```powershell
-go build -o dm.exe .
+.\scripts\dev-build.ps1
+.\scripts\dev-build.ps1 -Vet
+```
+
+发布构建仍可使用根目录脚本，默认生成 `linux/amd64` 和 `windows/amd64`:
+
+```bash
+VERSION=v0.1.0 ./build.sh
+```
+
+```powershell
+$env:VERSION = "v0.1.0"
+.\build.bat
+```
+
+Linux 安装。安装脚本会安装真实二进制为 `dm-bin`，并生成 `dm` 包装入口；包装入口默认读取 `DM_CONFIG`，未设置时使用安装脚本生成的配置文件:
+
+```bash
+sudo bash scripts/install.sh --binary ./bin/linux/dm
+sudo bash scripts/install.sh --install-dir /opt/docker-manager --binary ./bin/linux/dm
+sudo bash scripts/install.sh --build
+```
+
+默认安装位置:
+
+| 场景 | 二进制入口 | 配置 | 数据目录 |
+| --- | --- | --- | --- |
+| root | `/usr/local/bin/dm` | `/etc/docker-manager/dm.yaml` | `/var/lib/docker-manager` |
+| 普通用户 | `~/.local/bin/dm` | `~/.config/docker-manager/dm.yaml` | `~/.local/share/docker-manager` |
+
+安装脚本会设置 `DM_CONFIG`、`DM_HOME`、`DM_OUTPUT_DIR`，并将 bin 目录加入 shell profile。卸载:
+
+```bash
+sudo bash scripts/uninstall.sh
+sudo bash scripts/uninstall.sh --purge
+```
+
+Windows 安装:
+
+```powershell
+.\scripts\install.ps1 -Binary .\bin\windows\dm.exe
+.\scripts\install.ps1 -InstallDir C:\Tools\docker-manager -Binary .\bin\windows\dm.exe
+.\scripts\install.ps1 -Build
+```
+
+Windows 安装脚本会生成 `dm.cmd` 包装入口，设置用户级 `DM_CONFIG`、`DM_HOME`、`DM_OUTPUT_DIR`，并把安装 bin 目录加入用户 `PATH`。卸载:
+
+```powershell
+.\scripts\uninstall.ps1
+.\scripts\uninstall.ps1 -Purge
 ```
 
 查看帮助:
@@ -215,7 +261,7 @@ dm version
 dm version --format json
 ```
 
-`build.sh` 和 `build.bat` 会默认注入当前 git commit 和 UTC 构建时间。可通过环境变量覆盖版本号:
+`build.sh`、`build.bat` 和 `scripts/dev-build.*` 会默认注入当前 git commit 和 UTC 构建时间。可通过环境变量覆盖版本号:
 
 ```bash
 VERSION=v0.1.0 ./build.sh

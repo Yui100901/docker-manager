@@ -9,4 +9,4 @@ output_dir: images
 
 verbose: false
 quiet: false
-json: false
+log_json: false

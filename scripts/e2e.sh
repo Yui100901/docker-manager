@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
@@ -6,22 +6,47 @@ WORK_DIR=${DM_E2E_WORK_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/dm-e2e-XXXXXX")}
 SOURCE_IMAGE=${DM_E2E_IMAGE:-busybox:latest}
 REGISTRY_IMAGE=${DM_E2E_REGISTRY_IMAGE:-registry:2}
 SUFFIX=${DM_E2E_SUFFIX:-$(date +%s)}
+LABEL_KEY=${DM_E2E_LABEL_KEY:-dm.e2e}
+LABEL_VALUE=${DM_E2E_LABEL_VALUE:-${SUFFIX}}
+LABEL="${LABEL_KEY}=${LABEL_VALUE}"
 REGISTRY_NAME="dm_e2e_registry_${SUFFIX}"
 CONTAINER_NAME="dm_e2e_container_${SUFFIX}"
+SECOND_CONTAINER_NAME="dm_e2e_container_b_${SUFFIX}"
+RERUN_CONTAINER_NAME="dm_e2e_rerun_${SUFFIX}"
+STOPPED_CONTAINER_NAME="dm_e2e_stopped_${SUFFIX}"
 RESTORED_NAME="dm_e2e_restored_${SUFFIX}"
+RESTORED_REPLACE_NAME="dm_e2e_replace_${SUFFIX}"
+VOLUME_NAME="dm_e2e_volume_${SUFFIX}"
 SOURCE_LOCAL_TAG="dm-e2e-source-${SUFFIX}/busybox:latest"
 TARGET_NAMESPACE="dm-e2e-target-${SUFFIX}"
 BACKUP_DIR="${WORK_DIR}/backup"
 BACKUP_ARCHIVE="${WORK_DIR}/container-backup.tar.gz"
+BATCH_BACKUP_DIR="${WORK_DIR}/backup-batch"
+MERGED_BACKUP_DIR="${WORK_DIR}/backup-merged"
+MERGED_BACKUP_ARCHIVE="${WORK_DIR}/backup-merged.tar.gz"
 DM_BIN=${DM_E2E_DM_BIN:-"${WORK_DIR}/dm"}
 GOFLAGS_VALUE=${DM_E2E_GOFLAGS:-${GOFLAGS:-}}
+RESULTS_TSV="${WORK_DIR}/results.tsv"
+REPORT_MD="${WORK_DIR}/e2e-report.md"
+LOG_DIR="${WORK_DIR}/logs"
+
+mkdir -p "${WORK_DIR}" "${LOG_DIR}"
+printf 'case\tstatus\texit_code\tseconds\tlog\n' >"${RESULTS_TSV}"
 
 cleanup() {
-  docker rm -f "${CONTAINER_NAME}" "${RESTORED_NAME}" "${REGISTRY_NAME}" >/dev/null 2>&1 || true
+  docker rm -f \
+    "${CONTAINER_NAME}" \
+    "${SECOND_CONTAINER_NAME}" \
+    "${RERUN_CONTAINER_NAME}" \
+    "${STOPPED_CONTAINER_NAME}" \
+    "${RESTORED_NAME}" \
+    "${RESTORED_REPLACE_NAME}" \
+    "${REGISTRY_NAME}" >/dev/null 2>&1 || true
+  docker volume rm "${VOLUME_NAME}" >/dev/null 2>&1 || true
   if [ -n "${REGISTRY:-}" ]; then
     docker image rm "${REGISTRY}/${SOURCE_LOCAL_TAG}" >/dev/null 2>&1 || true
     docker image ls --format '{{.Repository}}:{{.Tag}}' |
-      grep -E "^${REGISTRY}/${TARGET_NAMESPACE}/" |
+      grep -E "^${REGISTRY}/${TARGET_NAMESPACE}/|^${REGISTRY}/dm-e2e-" |
       xargs -r docker image rm >/dev/null 2>&1 || true
   fi
   docker image rm "${SOURCE_LOCAL_TAG}" >/dev/null 2>&1 || true
@@ -44,9 +69,76 @@ need_cmd() {
   fi
 }
 
+safe_name() {
+  printf '%s' "$1" | tr -c 'A-Za-z0-9_.-' '_'
+}
+
+record_result() {
+  local name="$1"
+  local status="$2"
+  local code="$3"
+  local seconds="$4"
+  local log_file="$5"
+  printf '%s\t%s\t%s\t%s\t%s\n' "${name}" "${status}" "${code}" "${seconds}" "${log_file}" >>"${RESULTS_TSV}"
+}
+
+run_case() {
+  local name="$1"
+  shift
+  local log_file="${LOG_DIR}/$(safe_name "${name}").log"
+  local start end code status
+  log "测试 ${name}"
+  start=$(date +%s)
+  set +e
+  "$@" >"${log_file}" 2>&1
+  code=$?
+  set -e
+  end=$(date +%s)
+  if [ "${code}" -eq 0 ]; then
+    status="PASS"
+    printf 'PASS %s\n' "${name}"
+  else
+    status="FAIL"
+    printf 'FAIL %s, exit=%s, log=%s\n' "${name}" "${code}" "${log_file}" >&2
+    tail -n 80 "${log_file}" >&2 || true
+    record_result "${name}" "${status}" "${code}" "$((end - start))" "${log_file}"
+    exit "${code}"
+  fi
+  record_result "${name}" "${status}" "${code}" "$((end - start))" "${log_file}"
+}
+
+run_expect_fail() {
+  local name="$1"
+  shift
+  local log_file="${LOG_DIR}/$(safe_name "${name}").log"
+  local start end code status
+  log "测试 ${name} (期望失败)"
+  start=$(date +%s)
+  set +e
+  "$@" >"${log_file}" 2>&1
+  code=$?
+  set -e
+  end=$(date +%s)
+  if [ "${code}" -ne 0 ]; then
+    status="XFAIL"
+    printf 'XFAIL %s, exit=%s\n' "${name}" "${code}"
+    record_result "${name}" "${status}" "${code}" "$((end - start))" "${log_file}"
+    return 0
+  fi
+  status="FAIL"
+  printf 'FAIL %s, expected non-zero exit, log=%s\n' "${name}" "${log_file}" >&2
+  record_result "${name}" "${status}" "${code}" "$((end - start))" "${log_file}"
+  exit 1
+}
+
 ensure_image() {
   local image="$1"
   if docker image inspect "${image}" >/dev/null 2>&1; then
+    return 0
+  fi
+  if [ -n "${DM_E2E_PROXY:-}" ]; then
+    log "本地不存在镜像 ${image}，尝试通过 dm image pull --proxy 预拉并导入"
+    "${DM_BIN}" image pull "${image}" --proxy "${DM_E2E_PROXY}" --load --output-dir "${WORK_DIR}/preload"
     return 0
   fi
   if [ "${DM_E2E_OFFLINE:-0}" = "1" ]; then
@@ -76,7 +168,6 @@ wait_for_registry() {
 }
 
 build_dm() {
-  mkdir -p "${WORK_DIR}"
   (
     cd "${ROOT_DIR}"
     if [ -z "${GOFLAGS_VALUE}" ] && [ -d vendor ]; then
@@ -89,6 +180,23 @@ build_dm() {
       go build -o "${DM_BIN}" .
     fi
   )
+}
+
+write_report() {
+  {
+    echo "# docker-manager e2e 测试报告"
+    echo
+    echo "- 工作目录: \`${WORK_DIR}\`"
+    echo "- 测试标签: \`${LABEL}\`"
+    echo "- 测试镜像: \`${SOURCE_IMAGE}\`"
+    echo "- 临时 registry: \`${REGISTRY:-not-started}\`"
+    echo
+    echo "| 用例 | 状态 | 退出码 | 耗时(s) | 日志 |"
+    echo "| --- | --- | --- | --- | --- |"
+    tail -n +2 "${RESULTS_TSV}" | while IFS=$'\t' read -r name status code seconds log_file; do
+      echo "| ${name} | ${status} | ${code} | ${seconds} | ${log_file} |"
+    done
+  } >"${REPORT_MD}"
 }
 
 need_cmd docker
@@ -104,7 +212,14 @@ else
   need_cmd go
   build_dm
 fi
-"${DM_BIN}" version
+
+run_case "version text" "${DM_BIN}" version
+run_case "version json" "${DM_BIN}" version --format json
+run_case "root help" "${DM_BIN}" --help
+run_case "image help" "${DM_BIN}" image --help
+run_case "report help" "${DM_BIN}" report --help
+run_expect_fail "old root pull rejected" "${DM_BIN}" pull --help
+run_expect_fail "old global json rejected" "${DM_BIN}" --json version
 
 log "准备测试镜像"
 ensure_image "${REGISTRY_IMAGE}"
@@ -118,23 +233,23 @@ TARGET_PREFIX="${REGISTRY}/${TARGET_NAMESPACE}"
 SOURCE_REGISTRY_IMAGE="${REGISTRY}/${SOURCE_LOCAL_TAG}"
 wait_for_registry
 
+run_case "doctor basic" "${DM_BIN}" doctor --format json --check-e2e=false --output-dir "${WORK_DIR}"
+run_case "doctor registry plain-http" "${DM_BIN}" doctor --registry "${REGISTRY}" --plain-http --format markdown --check-e2e=false --output-dir "${WORK_DIR}"
+
 log "seed 本地临时 registry"
 docker tag "${SOURCE_IMAGE}" "${SOURCE_REGISTRY_IMAGE}"
 docker push "${SOURCE_REGISTRY_IMAGE}" >/dev/null
 
-log "测试 registry check --plain-http"
-"${DM_BIN}" registry check "${REGISTRY}" --plain-http
+run_case "registry check text" "${DM_BIN}" registry check "${REGISTRY}" --plain-http
+run_case "registry check json" "${DM_BIN}" registry check "${REGISTRY}" --plain-http --format json
+run_case "registry check markdown" "${DM_BIN}" registry check "${REGISTRY}" --plain-http --format markdown
+run_case "registry check html" "${DM_BIN}" registry check "${REGISTRY}" --plain-http --format html
 
-log "测试 image pull --plain-http --output"
-"${DM_BIN}" image pull "${SOURCE_REGISTRY_IMAGE}" --plain-http --output "${WORK_DIR}/pull-local.tar"
+run_case "image pull output" "${DM_BIN}" image pull "${SOURCE_REGISTRY_IMAGE}" --plain-http --output "${WORK_DIR}/pull-local.tar"
 test -f "${WORK_DIR}/pull-local.tar"
-
-log "测试 image pull --plain-http --load"
-"${DM_BIN}" image pull "${SOURCE_REGISTRY_IMAGE}" --plain-http --load --output "${WORK_DIR}/pull-load.tar"
+run_case "image pull load" "${DM_BIN}" image pull "${SOURCE_REGISTRY_IMAGE}" --plain-http --load --output "${WORK_DIR}/pull-load.tar"
 test -f "${WORK_DIR}/pull-load.tar"
-
-log "测试 image pull --to 推送到临时 registry"
-"${DM_BIN}" image pull "${SOURCE_REGISTRY_IMAGE}" --to "${TARGET_PREFIX}" --plain-http --output-dir "${WORK_DIR}/pulled"
+run_case "image pull to registry" "${DM_BIN}" image pull "${SOURCE_REGISTRY_IMAGE}" --to "${TARGET_PREFIX}" --plain-http --output-dir "${WORK_DIR}/pulled"
 TARGET_IMAGE=$(docker images --format '{{.Repository}}:{{.Tag}}' | awk -v prefix="${TARGET_PREFIX}/" 'index($0, prefix) == 1 && $0 !~ /:<none>$/ { print; exit }')
 if [ -z "${TARGET_IMAGE}" ]; then
   echo "未找到 image pull --to 生成的目标镜像，前缀: ${TARGET_PREFIX}" >&2
@@ -142,21 +257,80 @@ if [ -z "${TARGET_IMAGE}" ]; then
 fi
 docker pull "${TARGET_IMAGE}" >/dev/null
 
-log "创建测试容器 ${CONTAINER_NAME}"
-docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
-docker run -d --name "${CONTAINER_NAME}" "${TARGET_IMAGE}" sh -c "while true; do sleep 3600; done" >/dev/null
+printf '%s\n' "${SOURCE_REGISTRY_IMAGE}" >"${WORK_DIR}/images.txt"
+run_case "image pull mirror" "${DM_BIN}" image pull mirror --file "${WORK_DIR}/images.txt" --to "${REGISTRY}/dm-e2e-mirror-${SUFFIX}" --plain-http --concurrency 1 --retries 1 --resume --report "${WORK_DIR}/pull-mirror-report.json" --format markdown
+test -f "${WORK_DIR}/pull-mirror-report.json"
+run_case "image pull mirror skip-existing" "${DM_BIN}" image pull mirror --file "${WORK_DIR}/images.txt" --to "${REGISTRY}/dm-e2e-mirror-${SUFFIX}" --plain-http --concurrency 1 --skip-existing --format json
 
-log "测试 backup container --bundle"
-"${DM_BIN}" backup container "${CONTAINER_NAME}" --bundle --output-dir "${BACKUP_DIR}" --bundle-output "${BACKUP_ARCHIVE}"
+run_case "image save dry-run" "${DM_BIN}" image save "${WORK_DIR}/saved" --filter "repo:busybox" --dry-run
+run_case "image save filter" "${DM_BIN}" image save "${WORK_DIR}/saved" --filter "repo:busybox"
+run_case "image save merge" "${DM_BIN}" image save "${WORK_DIR}/saved-merged" --filter "repo:busybox" --merge
+run_case "image load saved dir" "${DM_BIN}" image load "${WORK_DIR}/saved"
+run_case "image tree" "${DM_BIN}" image tree "${SOURCE_IMAGE}" --format markdown --top 5
+
+log "创建测试容器"
+docker rm -f "${CONTAINER_NAME}" "${SECOND_CONTAINER_NAME}" "${RERUN_CONTAINER_NAME}" "${STOPPED_CONTAINER_NAME}" >/dev/null 2>&1 || true
+docker volume rm "${VOLUME_NAME}" >/dev/null 2>&1 || true
+docker volume create --label "${LABEL}" "${VOLUME_NAME}" >/dev/null
+docker run -d --name "${CONTAINER_NAME}" --label "${LABEL}" -v "${VOLUME_NAME}:/data" "${TARGET_IMAGE}" sh -c "while true; do echo dm-test-primary; sleep 5; done" >/dev/null
+docker run -d --name "${SECOND_CONTAINER_NAME}" --label "${LABEL}" "${TARGET_IMAGE}" sh -c "while true; do echo dm-test-secondary; sleep 5; done" >/dev/null
+docker run -d --name "${RERUN_CONTAINER_NAME}" --label "${LABEL}" "${TARGET_IMAGE}" sh -c "while true; do echo dm-test-rerun; sleep 5; done" >/dev/null
+docker run --name "${STOPPED_CONTAINER_NAME}" --label "${LABEL}" "${TARGET_IMAGE}" sh -c "echo dm-test-stopped" >/dev/null
+
+run_case "reverse cmd" "${DM_BIN}" reverse "${CONTAINER_NAME}" --pretty
+run_case "reverse compose" "${DM_BIN}" reverse "${CONTAINER_NAME}" --reverse-type compose
+run_case "reverse all filter" "${DM_BIN}" reverse --filter "label:${LABEL}" --reverse-type all --redact-secrets
+run_case "rerun dry-run" "${DM_BIN}" rerun "${RERUN_CONTAINER_NAME}" --dry-run
+run_expect_fail "rerun without confirm rejected" "${DM_BIN}" rerun "${RERUN_CONTAINER_NAME}"
+run_case "rerun confirm scoped test container" "${DM_BIN}" rerun "${RERUN_CONTAINER_NAME}" --confirm
+docker inspect "${RERUN_CONTAINER_NAME}" >/dev/null
+
+run_case "backup dry-run" "${DM_BIN}" backup container "${CONTAINER_NAME}" --dry-run
+run_case "backup single bundle" "${DM_BIN}" backup container "${CONTAINER_NAME}" --bundle --output-dir "${BACKUP_DIR}" --bundle-output "${BACKUP_ARCHIVE}"
 test -f "${BACKUP_ARCHIVE}"
 test -f "${BACKUP_DIR}/manifest.json"
 test -f "${BACKUP_DIR}/checksums.txt"
 test -f "${BACKUP_DIR}/README.md"
 test -f "${BACKUP_DIR}/restore.sh"
+run_case "backup batch separate" "${DM_BIN}" backup container "label:${LABEL}" --output-dir "${BATCH_BACKUP_DIR}" --no-image
+run_case "backup batch merge bundle" "${DM_BIN}" backup container "${CONTAINER_NAME}" "${SECOND_CONTAINER_NAME}" --merge --bundle --output-dir "${MERGED_BACKUP_DIR}" --bundle-output "${MERGED_BACKUP_ARCHIVE}" --no-image
+test -f "${MERGED_BACKUP_ARCHIVE}"
 
-log "删除原容器并测试 restore archive"
-docker rm -f "${CONTAINER_NAME}" >/dev/null
-"${DM_BIN}" restore "${BACKUP_ARCHIVE}" --name "${RESTORED_NAME}" --no-start
+run_case "restore dry-run archive" "${DM_BIN}" restore "${BACKUP_ARCHIVE}" --name "${RESTORED_NAME}" --no-start --dry-run
+run_case "restore no-start archive" "${DM_BIN}" restore "${BACKUP_ARCHIVE}" --name "${RESTORED_NAME}" --no-start
 docker inspect "${RESTORED_NAME}" >/dev/null
+run_expect_fail "restore existing without replace rejected" "${DM_BIN}" restore "${BACKUP_ARCHIVE}" --name "${RESTORED_NAME}" --no-start
+run_case "restore replace archive" "${DM_BIN}" restore "${BACKUP_ARCHIVE}" --name "${RESTORED_NAME}" --replace --no-start
+run_case "restore merged dry-run" "${DM_BIN}" restore "${MERGED_BACKUP_ARCHIVE}" --dry-run --no-start
 
+run_case "report health text" "${DM_BIN}" report health --filter "label:${LABEL}"
+run_case "report health markdown redact" "${DM_BIN}" report health --filter "label:${LABEL}" --redact-secrets --format markdown
+run_case "report network json" "${DM_BIN}" report network --filter "label:${LABEL}" --format json
+run_case "report network html" "${DM_BIN}" report network --filter "label:${LABEL}" --format html
+run_case "report logs markdown" "${DM_BIN}" report logs --filter "label:${LABEL}" --keyword dm-test --tail 100 --context 1 --format markdown
+run_case "report logs redact json" "${DM_BIN}" report logs --filter "label:${LABEL}" --keyword dm-test --redact-secrets --format json
+run_case "report diff markdown" "${DM_BIN}" report diff "${CONTAINER_NAME}" "${SECOND_CONTAINER_NAME}" --redact-secrets --format markdown
+run_case "volume ls-unused json" "${DM_BIN}" volume ls-unused "${VOLUME_NAME}" --all --format json
+run_case "report prune markdown" "${DM_BIN}" report prune --only container --filter "label=${LABEL}" --format markdown
+run_expect_fail "report prune apply without confirm rejected" "${DM_BIN}" report prune --only container --filter "label=${LABEL}" --apply
+run_case "report prune apply stopped container scoped" "${DM_BIN}" report prune --only container --filter "label=${LABEL}" --apply --confirm --format json
+if docker inspect "${CONTAINER_NAME}" >/dev/null 2>&1; then
+  :
+else
+  echo "运行中的测试容器被 prune 删除，安全边界失败: ${CONTAINER_NAME}" >&2
+  exit 1
+fi
+if docker inspect "${STOPPED_CONTAINER_NAME}" >/dev/null 2>&1; then
+  echo "停止的测试容器未被 prune 删除: ${STOPPED_CONTAINER_NAME}" >&2
+  exit 1
+fi
+
+run_expect_fail "backup old output flag rejected" "${DM_BIN}" backup container "${CONTAINER_NAME}" --output "${WORK_DIR}/old.tar.gz"
+run_expect_fail "backup old include-image flag rejected" "${DM_BIN}" backup container "${CONTAINER_NAME}" --include-image=false
+run_expect_fail "reverse old filter-default-envs flag rejected" "${DM_BIN}" reverse "${CONTAINER_NAME}" --filter-default-envs=false
+run_expect_fail "reverse old merge-ports flag rejected" "${DM_BIN}" reverse "${CONTAINER_NAME}" --merge-ports=false
+
+write_report
 log "端到端集成测试通过"
+echo "测试报告: ${REPORT_MD}"
+echo "测试明细: ${RESULTS_TSV}"
