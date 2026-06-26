@@ -39,6 +39,15 @@ $env:VERSION = "v0.1.0"
 .\build.bat
 ```
 
+生成发布归档、checksum 和版本清单:
+
+```bash
+VERSION=v0.1.0 bash scripts/package-release.sh
+bash scripts/package-release.sh --version v0.1.0 --platform linux/amd64 --platform windows/amd64
+```
+
+产物默认写入 `dist/`，包括按平台命名的 `tar.gz`/`zip`、`checksums.txt` 和 `release-manifest.json`。
+
 Linux 安装。安装脚本会安装真实二进制为 `dm-bin`，并生成 `dm` 包装入口；包装入口默认读取 `DM_CONFIG`，未设置时使用安装脚本生成的配置文件:
 
 ```bash
@@ -111,10 +120,14 @@ scripts/                        # 端到端测试等辅助脚本
 --log-json        以 JSON 格式输出日志和错误
 ```
 
+未显式传 `--config` 时，二进制会优先读取 `DM_CONFIG` 环境变量；未设置时再使用当前目录下的 `.dm.yaml`。
+
 示例 `.dm.yaml`:
 
 ```yaml
 proxy: http://127.0.0.1:7890
+# ca_file: /etc/ssl/certs/company-ca.pem
+# registry_ca_file: /etc/docker/certs.d/registry.local:5000/ca.crt
 os: linux
 arch: amd64
 output_dir: images
@@ -217,19 +230,24 @@ dm report volumes --filter 'option:type=nfs'
 
 ```bash
 bash scripts/e2e.sh
+bash scripts/e2e.sh --mode smoke
+bash scripts/e2e.sh --mode install
+bash scripts/e2e.sh --mode full
+bash scripts/e2e.sh --mode destructive
 ```
 
 可通过环境变量调整测试参数:
 
 ```bash
 DM_E2E_IMAGE=busybox:latest bash scripts/e2e.sh
+DM_E2E_MODE=smoke bash scripts/e2e.sh
 DM_E2E_GOFLAGS=-mod=vendor bash scripts/e2e.sh
 DM_E2E_DM_BIN=/root/dm bash scripts/e2e.sh
 DM_E2E_OFFLINE=1 bash scripts/e2e.sh
 DM_E2E_KEEP_WORKDIR=1 bash scripts/e2e.sh
 ```
 
-脚本会使用 Docker 随机绑定本地 registry 端口，避免端口冲突。默认测试镜像为 `busybox:latest`、registry 镜像为 `registry:2`；如果本地没有这些镜像，脚本会尝试 `docker pull`。离线测试机可先预拉镜像并设置 `DM_E2E_OFFLINE=1`，有 `vendor/` 目录时脚本会默认使用 `-mod=vendor` 构建，也可通过 `DM_E2E_GOFLAGS` 显式指定。若测试机没有 Go，可先上传已编译的 `dm` 并设置 `DM_E2E_DM_BIN=/path/to/dm` 跳过构建。脚本会创建并清理临时 registry 容器、测试容器、恢复容器和临时工作目录。执行前请确认当前 Docker 环境适合运行集成测试。
+`smoke` 模式不依赖 Docker，只验证构建、帮助、版本、配置加载和基础 `doctor`；`install` 模式会安装到临时目录并卸载；`full`/`destructive` 会使用 Docker 随机绑定本地 registry 端口，覆盖完整功能和破坏性命令安全边界。默认测试镜像为 `busybox:latest`、registry 镜像为 `registry:2`；如果本地没有这些镜像，脚本会尝试 `docker pull`。离线测试机可先预拉镜像并设置 `DM_E2E_OFFLINE=1`，有 `vendor/` 目录时脚本会默认使用 `-mod=vendor` 构建，也可通过 `DM_E2E_GOFLAGS` 显式指定。若测试机没有 Go，可先上传已编译的 `dm` 并设置 `DM_E2E_DM_BIN=/path/to/dm` 跳过构建。脚本会创建并清理临时 registry 容器、测试容器、恢复容器和临时工作目录。执行前请确认当前 Docker 环境适合运行集成测试。
 
 ## 命令速查
 
@@ -288,7 +306,7 @@ dm doctor --registry registry.local:5000 --docker-config /root/.docker/config.js
 dm doctor --output-dir /data/dm-work --min-disk-free-mb 10240
 ```
 
-检查范围包括 Docker daemon 权限和版本、dm 配置文件、代理环境变量和 `.dm.yaml` 代理、输出目录剩余空间、Docker config、credential helper、registry `/v2/` 连通性和 Docker RegistryLogin 结果，以及 Go/vendor/e2e 测试前置条件。未指定 `--registry` 时会跳过 registry 远端检查。
+检查范围包括 Docker daemon 权限和版本、dm 配置文件、代理环境变量和 `.dm.yaml` 代理格式、私有 CA 路径、Docker daemon registry 配置、输出目录剩余空间/剩余 inode/写入探测、Docker config、credential helper、registry `/v2/` 连通性和 Docker RegistryLogin 结果，以及 Go/vendor/e2e 测试前置条件。未指定 `--registry` 时会跳过 registry 远端检查。
 
 ## 镜像拉取和迁移
 

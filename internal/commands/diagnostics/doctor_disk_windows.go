@@ -2,7 +2,11 @@
 
 package diagnostics
 
-import "golang.org/x/sys/windows"
+import (
+	"errors"
+
+	"golang.org/x/sys/windows"
+)
 
 func diskFreeBytes(path string) (uint64, error) {
 	p, err := windows.UTF16PtrFromString(path)
@@ -14,4 +18,8 @@ func diskFreeBytes(path string) (uint64, error) {
 		return 0, err
 	}
 	return freeBytesAvailable, nil
+}
+
+func diskFreeInodes(path string) (uint64, error) {
+	return 0, errors.New("Windows 不提供 inode 语义")
 }

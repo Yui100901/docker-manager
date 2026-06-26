@@ -58,6 +58,59 @@ func TestCheckDoctorConfigParsesYaml(t *testing.T) {
 	}
 }
 
+func TestCheckDoctorProxyWarnsOnInvalidURL(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "")
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("http_proxy", "")
+	t.Setenv("https_proxy", "")
+
+	checks := checkDoctorProxy(doctorConfig{Proxy: "127.0.0.1:7890"})
+
+	if len(checks) != 1 || checks[0].Status != "warning" {
+		t.Fatalf("checks = %#v, want proxy warning", checks)
+	}
+}
+
+func TestCheckDoctorCAReportsConfiguredPaths(t *testing.T) {
+	dir := t.TempDir()
+	caFile := filepath.Join(dir, "ca.pem")
+	if err := os.WriteFile(caFile, []byte("test"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SSL_CERT_FILE", "")
+	t.Setenv("SSL_CERT_DIR", "")
+	t.Setenv("DOCKER_CERT_PATH", "")
+
+	checks := checkDoctorCA(doctorConfig{CAFile: caFile})
+
+	if len(checks) != 1 || checks[0].Status != "ok" {
+		t.Fatalf("checks = %#v, want private-ca ok", checks)
+	}
+}
+
+func TestCheckDoctorCAWarnsOnMissingPath(t *testing.T) {
+	t.Setenv("SSL_CERT_FILE", "")
+	t.Setenv("SSL_CERT_DIR", "")
+	t.Setenv("DOCKER_CERT_PATH", "")
+
+	checks := checkDoctorCA(doctorConfig{CAFile: filepath.Join(t.TempDir(), "missing.pem")})
+
+	if len(checks) != 1 || checks[0].Status != "warning" {
+		t.Fatalf("checks = %#v, want private-ca warning", checks)
+	}
+}
+
+func TestCheckDoctorDiskProbesWritableOutputDir(t *testing.T) {
+	check := checkDoctorDisk(t.TempDir(), 1)
+
+	if check.Status != "ok" {
+		t.Fatalf("check = %#v, want ok", check)
+	}
+	if check.Detail == "" {
+		t.Fatalf("check = %#v, want detail", check)
+	}
+}
+
 func TestRunDoctorReportsDockerFailureAndSkippedRegistry(t *testing.T) {
 	old := newDoctorDockerService
 	newDoctorDockerService = func() (doctorDockerService, error) {

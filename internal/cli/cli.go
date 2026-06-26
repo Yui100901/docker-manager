@@ -15,6 +15,7 @@ import (
 )
 
 const defaultConfigPath = ".dm.yaml"
+const configEnvName = "DM_CONFIG"
 
 type appConfig struct {
 	Proxy     string `yaml:"proxy"`
@@ -53,6 +54,22 @@ func loadAppConfig(path string) (appConfig, error) {
 		return cfg, err
 	}
 	return cfg, nil
+}
+
+func resolveConfigPath(path string, flagChanged bool) string {
+	if flagChanged {
+		if path == "" {
+			return defaultConfigPath
+		}
+		return path
+	}
+	if envPath := strings.TrimSpace(os.Getenv(configEnvName)); envPath != "" {
+		return envPath
+	}
+	if path == "" {
+		return defaultConfigPath
+	}
+	return path
 }
 
 func configureLogging(opts outputOptions) {

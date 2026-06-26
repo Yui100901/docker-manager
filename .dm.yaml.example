@@ -3,6 +3,11 @@
 # Copy this file to .dm.yaml and adjust values as needed.
 
 # proxy: http://127.0.0.1:7890
+# Optional private CA paths for doctor checks.
+# ca_file: /etc/ssl/certs/company-ca.pem
+# ca_path: /etc/ssl/certs
+# registry_ca_file: /etc/docker/certs.d/registry.local:5000/ca.crt
+# registry_ca_path: /etc/docker/certs.d/registry.local:5000
 os: linux
 arch: amd64
 output_dir: images

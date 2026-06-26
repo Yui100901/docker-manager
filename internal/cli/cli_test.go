@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -25,6 +26,50 @@ func TestLoadAppConfig(t *testing.T) {
 	}
 	if !cfg.Verbose || !cfg.JSON {
 		t.Fatalf("config flags = %#v, want verbose and json", cfg)
+	}
+}
+
+func TestResolveConfigPathUsesDMConfigWhenFlagUnset(t *testing.T) {
+	t.Setenv(configEnvName, filepath.Join(t.TempDir(), "dm.yaml"))
+
+	got := resolveConfigPath(defaultConfigPath, false)
+
+	if got != os.Getenv(configEnvName) {
+		t.Fatalf("resolveConfigPath() = %q, want DM_CONFIG", got)
+	}
+}
+
+func TestResolveConfigPathKeepsExplicitConfig(t *testing.T) {
+	t.Setenv(configEnvName, filepath.Join(t.TempDir(), "dm.yaml"))
+
+	got := resolveConfigPath("explicit.yaml", true)
+
+	if got != "explicit.yaml" {
+		t.Fatalf("resolveConfigPath() = %q, want explicit path", got)
+	}
+}
+
+func TestRootCommandLoadsDMConfigDefaults(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "dm.yaml")
+	if err := os.WriteFile(configPath, []byte("output_dir: from-env\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(configEnvName, configPath)
+
+	cfg := appConfig{}
+	opts := outputOptions{}
+	cmd := newRootCommand(&cfg, &opts)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"doctor", "--format", "json", "--check-e2e=false"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !strings.Contains(out.String(), "from-env") {
+		t.Fatalf("doctor output did not use DM_CONFIG output_dir, output=%s", out.String())
 	}
 }
 

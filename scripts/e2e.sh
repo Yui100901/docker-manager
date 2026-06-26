@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+MODE=${DM_E2E_MODE:-full}
 WORK_DIR=${DM_E2E_WORK_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/dm-e2e-XXXXXX")}
 SOURCE_IMAGE=${DM_E2E_IMAGE:-busybox:latest}
 REGISTRY_IMAGE=${DM_E2E_REGISTRY_IMAGE:-registry:2}
@@ -29,6 +30,52 @@ GOFLAGS_VALUE=${DM_E2E_GOFLAGS:-${GOFLAGS:-}}
 RESULTS_TSV="${WORK_DIR}/results.tsv"
 REPORT_MD="${WORK_DIR}/e2e-report.md"
 LOG_DIR="${WORK_DIR}/logs"
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/e2e.sh [--mode smoke|full|destructive|install]
+
+Modes:
+  smoke        Build or use dm, then run help/version/config/doctor checks without Docker.
+  full         Run the complete Docker e2e matrix. This is the default.
+  destructive  Alias of full, kept as an explicit opt-in label for safety-matrix runs.
+  install      Build or use dm, install into a temporary directory, verify wrapper/config, then uninstall.
+
+Environment:
+  DM_E2E_MODE       Default mode when --mode is not set.
+  DM_E2E_WORK_DIR   Directory for logs and temporary files.
+  DM_E2E_DM_BIN     Existing dm binary; skips building when set.
+  DM_E2E_KEEP_WORKDIR=1 keeps the work directory after the run.
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --mode)
+      MODE=${2:?missing value for --mode}
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+case "${MODE}" in
+  smoke|full|destructive|install)
+    ;;
+  *)
+    echo "Unsupported e2e mode: ${MODE}" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
 
 mkdir -p "${WORK_DIR}" "${LOG_DIR}"
 printf 'case\tstatus\texit_code\tseconds\tlog\n' >"${RESULTS_TSV}"
@@ -186,6 +233,7 @@ write_report() {
   {
     echo "# docker-manager e2e 测试报告"
     echo
+    echo "- 执行模式: \`${MODE}\`"
     echo "- 工作目录: \`${WORK_DIR}\`"
     echo "- 测试标签: \`${LABEL}\`"
     echo "- 测试镜像: \`${SOURCE_IMAGE}\`"
@@ -199,7 +247,23 @@ write_report() {
   } >"${REPORT_MD}"
 }
 
-need_cmd docker
+run_install_mode() {
+  local prefix="${WORK_DIR}/install-root"
+  local config_dir="${WORK_DIR}/install-config"
+  local data_dir="${WORK_DIR}/install-data"
+  local bin_dir="${prefix}/bin"
+  run_case "install script dry-run" bash "${ROOT_DIR}/scripts/install.sh" --binary "${DM_BIN}" --prefix "${prefix}" --config-dir "${config_dir}" --data-dir "${data_dir}" --no-profile --dry-run
+  run_case "install script" bash "${ROOT_DIR}/scripts/install.sh" --binary "${DM_BIN}" --prefix "${prefix}" --config-dir "${config_dir}" --data-dir "${data_dir}" --no-profile
+  run_case "installed wrapper version" "${bin_dir}/dm" version
+  run_case "installed wrapper doctor dm-config" "${bin_dir}/dm" doctor --format json --check-e2e=false
+  test -f "${config_dir}/dm.yaml"
+  test -f "${config_dir}/install.env"
+  run_case "uninstall script" bash "${ROOT_DIR}/scripts/uninstall.sh" --prefix "${prefix}" --config-dir "${config_dir}" --data-dir "${data_dir}" --purge
+  if [ -e "${bin_dir}/dm" ] || [ -e "${config_dir}" ] || [ -e "${data_dir}" ]; then
+    echo "install 模式清理失败" >&2
+    exit 1
+  fi
+}
 
 log "构建 dm 测试二进制"
 if [ -n "${DM_E2E_DM_BIN:-}" ]; then
@@ -220,6 +284,26 @@ run_case "image help" "${DM_BIN}" image --help
 run_case "report help" "${DM_BIN}" report --help
 run_expect_fail "old root pull rejected" "${DM_BIN}" pull --help
 run_expect_fail "old global json rejected" "${DM_BIN}" --json version
+run_case "doctor smoke" "${DM_BIN}" doctor --format json --check-e2e=false --output-dir "${WORK_DIR}"
+
+if [ "${MODE}" = "smoke" ]; then
+  write_report
+  log "smoke 测试通过"
+  echo "测试报告: ${REPORT_MD}"
+  echo "测试明细: ${RESULTS_TSV}"
+  exit 0
+fi
+
+if [ "${MODE}" = "install" ]; then
+  run_install_mode
+  write_report
+  log "install 测试通过"
+  echo "测试报告: ${REPORT_MD}"
+  echo "测试明细: ${RESULTS_TSV}"
+  exit 0
+fi
+
+need_cmd docker
 
 log "准备测试镜像"
 ensure_image "${REGISTRY_IMAGE}"

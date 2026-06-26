@@ -2,6 +2,7 @@ package diagnostics
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -82,13 +83,18 @@ type DoctorCheck struct {
 }
 
 type doctorConfig struct {
-	Proxy     string `yaml:"proxy"`
-	TargetOS  string `yaml:"os"`
-	Arch      string `yaml:"arch"`
-	OutputDir string `yaml:"output_dir"`
-	Verbose   bool   `yaml:"verbose"`
-	Quiet     bool   `yaml:"quiet"`
-	JSON      bool   `yaml:"json"`
+	Proxy          string `yaml:"proxy"`
+	TargetOS       string `yaml:"os"`
+	Arch           string `yaml:"arch"`
+	OutputDir      string `yaml:"output_dir"`
+	CAFile         string `yaml:"ca_file"`
+	CAPath         string `yaml:"ca_path"`
+	RegistryCAFile string `yaml:"registry_ca_file"`
+	RegistryCAPath string `yaml:"registry_ca_path"`
+	Verbose        bool   `yaml:"verbose"`
+	Quiet          bool   `yaml:"quiet"`
+	JSON           bool   `yaml:"json"`
+	LogJSON        bool   `yaml:"log_json"`
 }
 
 func NewDoctorCommand() *cobra.Command {
@@ -155,6 +161,8 @@ func runDoctor(ctx context.Context, opts DoctorOptions) DoctorReport {
 	cfg, configChecks := checkDoctorConfig(opts.ConfigPath)
 	report.Checks = append(report.Checks, configChecks...)
 	report.Checks = append(report.Checks, checkDoctorProxy(cfg)...)
+	report.Checks = append(report.Checks, checkDoctorCA(cfg)...)
+	report.Checks = append(report.Checks, checkDoctorDaemonConfig()...)
 	report.Checks = append(report.Checks, checkDoctorDisk(opts.OutputDir, opts.MinDiskFreeMB))
 	report.Checks = append(report.Checks, checkDoctorDockerConfig(ctx, opts)...)
 	for _, registry := range opts.Registries {
@@ -262,22 +270,33 @@ func checkDoctorConfig(path string) (doctorConfig, []DoctorCheck) {
 }
 
 func checkDoctorProxy(cfg doctorConfig) []DoctorCheck {
-	values := []string{
-		"HTTP_PROXY=" + os.Getenv("HTTP_PROXY"),
-		"HTTPS_PROXY=" + os.Getenv("HTTPS_PROXY"),
-		"NO_PROXY=" + os.Getenv("NO_PROXY"),
-		"http_proxy=" + os.Getenv("http_proxy"),
-		"https_proxy=" + os.Getenv("https_proxy"),
-		"no_proxy=" + os.Getenv("no_proxy"),
+	envNames := []string{
+		"HTTP_PROXY",
+		"HTTPS_PROXY",
+		"NO_PROXY",
+		"http_proxy",
+		"https_proxy",
+		"no_proxy",
 	}
 	var active []string
-	for _, value := range values {
-		if !strings.HasSuffix(value, "=") {
-			active = append(active, value)
+	var warnings []string
+	for _, name := range envNames {
+		value := strings.TrimSpace(os.Getenv(name))
+		if value == "" {
+			continue
+		}
+		active = append(active, name+"="+value)
+		if strings.Contains(strings.ToLower(name), "proxy") && !strings.Contains(strings.ToLower(name), "no_proxy") {
+			if err := validateProxyURL(value); err != nil {
+				warnings = append(warnings, name+": "+err.Error())
+			}
 		}
 	}
 	if cfg.Proxy != "" {
 		active = append(active, "dm.yaml proxy="+cfg.Proxy)
+		if err := validateProxyURL(cfg.Proxy); err != nil {
+			warnings = append(warnings, "dm.yaml proxy: "+err.Error())
+		}
 	}
 	if len(active) == 0 {
 		return []DoctorCheck{{
@@ -288,12 +307,169 @@ func checkDoctorProxy(cfg doctorConfig) []DoctorCheck {
 		}}
 	}
 	sort.Strings(active)
+	if len(warnings) > 0 {
+		sort.Strings(warnings)
+		return []DoctorCheck{{
+			Name:        "proxy",
+			Status:      "warning",
+			Message:     "代理配置格式可能无效",
+			Detail:      strings.Join(warnings, "; "),
+			Recommended: "代理应包含 scheme 和 host，例如 http://127.0.0.1:7890；NO_PROXY 使用主机名、域名或 CIDR 列表",
+		}}
+	}
 	return []DoctorCheck{{
 		Name:    "proxy",
 		Status:  "ok",
 		Message: "检测到代理相关配置",
 		Detail:  strings.Join(active, "; "),
 	}}
+}
+
+func validateProxyURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return err
+	}
+	if u.Scheme == "" || u.Host == "" {
+		return fmt.Errorf("缺少 scheme 或 host")
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https", "socks5":
+		return nil
+	default:
+		return fmt.Errorf("不常见的代理 scheme %q", u.Scheme)
+	}
+}
+
+func checkDoctorCA(cfg doctorConfig) []DoctorCheck {
+	candidates := []struct {
+		source string
+		path   string
+		isDir  bool
+	}{
+		{source: "dm.yaml ca_file", path: cfg.CAFile},
+		{source: "dm.yaml ca_path", path: cfg.CAPath, isDir: true},
+		{source: "dm.yaml registry_ca_file", path: cfg.RegistryCAFile},
+		{source: "dm.yaml registry_ca_path", path: cfg.RegistryCAPath, isDir: true},
+		{source: "SSL_CERT_FILE", path: os.Getenv("SSL_CERT_FILE")},
+		{source: "SSL_CERT_DIR", path: os.Getenv("SSL_CERT_DIR"), isDir: true},
+		{source: "DOCKER_CERT_PATH", path: os.Getenv("DOCKER_CERT_PATH"), isDir: true},
+	}
+	var active []string
+	var missing []string
+	for _, candidate := range candidates {
+		path := strings.TrimSpace(candidate.path)
+		if path == "" {
+			continue
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			missing = append(missing, candidate.source+"="+path+": "+err.Error())
+			continue
+		}
+		if candidate.isDir && !info.IsDir() {
+			missing = append(missing, candidate.source+"="+path+": 不是目录")
+			continue
+		}
+		if !candidate.isDir && info.IsDir() {
+			missing = append(missing, candidate.source+"="+path+": 不是文件")
+			continue
+		}
+		active = append(active, candidate.source+"="+path)
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		return []DoctorCheck{{
+			Name:        "private-ca",
+			Status:      "warning",
+			Message:     "发现 CA 配置但路径不可用",
+			Detail:      strings.Join(missing, "; "),
+			Recommended: "检查私有 CA 文件/目录是否存在，或修正 SSL_CERT_FILE、SSL_CERT_DIR、DOCKER_CERT_PATH、dm.yaml CA 配置",
+		}}
+	}
+	if len(active) == 0 {
+		return []DoctorCheck{{
+			Name:        "private-ca",
+			Status:      "skipped",
+			Message:     "未发现显式私有 CA 配置",
+			Recommended: "使用自签或企业 CA 的 registry，可配置系统信任、SSL_CERT_FILE/SSL_CERT_DIR、DOCKER_CERT_PATH 或 dm.yaml CA 路径",
+		}}
+	}
+	sort.Strings(active)
+	return []DoctorCheck{{
+		Name:    "private-ca",
+		Status:  "ok",
+		Message: "私有 CA 路径可访问",
+		Detail:  strings.Join(active, "; "),
+	}}
+}
+
+func checkDoctorDaemonConfig() []DoctorCheck {
+	path := dockerDaemonConfigPath()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []DoctorCheck{{
+				Name:        "docker-daemon-config",
+				Status:      "skipped",
+				Message:     "未找到 Docker daemon 配置文件",
+				Detail:      path,
+				Recommended: "需要 HTTP 或自签 registry 时，可在 daemon.json 中配置 insecure-registries 或 registry mirror，并重启 Docker",
+			}}
+		}
+		return []DoctorCheck{{
+			Name:        "docker-daemon-config",
+			Status:      "warning",
+			Message:     err.Error(),
+			Detail:      path,
+			Recommended: "检查 Docker daemon 配置文件读取权限",
+		}}
+	}
+	var cfg struct {
+		InsecureRegistries []string `json:"insecure-registries"`
+		RegistryMirrors    []string `json:"registry-mirrors"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return []DoctorCheck{{
+			Name:        "docker-daemon-config",
+			Status:      "warning",
+			Message:     err.Error(),
+			Detail:      path,
+			Recommended: "检查 daemon.json 是否为合法 JSON",
+		}}
+	}
+	var detail []string
+	if len(cfg.InsecureRegistries) > 0 {
+		detail = append(detail, "insecure-registries="+strings.Join(cfg.InsecureRegistries, ","))
+	}
+	if len(cfg.RegistryMirrors) > 0 {
+		detail = append(detail, "registry-mirrors="+strings.Join(cfg.RegistryMirrors, ","))
+	}
+	if len(detail) == 0 {
+		return []DoctorCheck{{
+			Name:    "docker-daemon-config",
+			Status:  "ok",
+			Message: "Docker daemon 配置可解析，未配置 insecure registry",
+			Detail:  path,
+		}}
+	}
+	return []DoctorCheck{{
+		Name:        "docker-daemon-config",
+		Status:      "ok",
+		Message:     "Docker daemon registry 相关配置可解析",
+		Detail:      path + " " + strings.Join(detail, "; "),
+		Recommended: "确认 insecure-registries 仅用于可信内网 registry",
+	}}
+}
+
+func dockerDaemonConfigPath() string {
+	if runtime.GOOS == "windows" {
+		if programData := os.Getenv("ProgramData"); programData != "" {
+			return filepath.Join(programData, "docker", "config", "daemon.json")
+		}
+		return filepath.Join(`C:\ProgramData`, "docker", "config", "daemon.json")
+	}
+	return "/etc/docker/daemon.json"
 }
 
 func checkDoctorDisk(outputDir string, minFreeMB int64) DoctorCheck {
@@ -306,17 +482,19 @@ func checkDoctorDisk(outputDir string, minFreeMB int64) DoctorCheck {
 			Recommended: "检查输出目录权限或改用 --output-dir 指定可写目录",
 		}
 	}
+	writeProbe, writeErr := probeOutputDirWritable(outputDir)
 	freeBytes, err := diskFreeBytes(outputDir)
 	if err != nil {
 		return DoctorCheck{
 			Name:        "disk",
 			Status:      "warning",
-			Message:     err.Error(),
+			Message:     err.Error() + writeProbe,
 			Detail:      outputDir,
 			Recommended: "无法读取剩余空间，仍建议确认镜像 tar、backup 离线包和日志报告有足够空间",
 		}
 	}
 	freeMB := freeBytes / 1024 / 1024
+	freeInodes, inodeErr := diskFreeInodes(outputDir)
 	minFree := uint64(minFreeMB)
 	status := "ok"
 	msg := fmt.Sprintf("输出目录剩余空间约 %d MB", freeMB)
@@ -325,7 +503,47 @@ func checkDoctorDisk(outputDir string, minFreeMB int64) DoctorCheck {
 		status = "warning"
 		recommend = fmt.Sprintf("剩余空间低于 %d MB，建议清理磁盘或改用更大的 --output-dir", minFreeMB)
 	}
-	return DoctorCheck{Name: "disk", Status: status, Message: msg, Detail: outputDir, Recommended: recommend}
+	if writeErr != nil {
+		status = "failed"
+		msg += "；写入探测失败: " + writeErr.Error()
+		recommend = "检查输出目录权限或改用 --output-dir 指定可写目录"
+	} else {
+		msg += writeProbe
+	}
+	detail := outputDir
+	if inodeErr == nil {
+		detail += fmt.Sprintf(" free_inodes=%d", freeInodes)
+		if freeInodes > 0 && freeInodes < 1024 && status == "ok" {
+			status = "warning"
+			recommend = "剩余 inode 较少，批量备份、日志报告或镜像导出可能失败"
+		}
+	} else {
+		detail += " free_inodes=unknown(" + inodeErr.Error() + ")"
+	}
+	return DoctorCheck{Name: "disk", Status: status, Message: msg, Detail: detail, Recommended: recommend}
+}
+
+func probeOutputDirWritable(outputDir string) (string, error) {
+	start := time.Now()
+	file, err := os.CreateTemp(outputDir, ".dm-doctor-write-*")
+	if err != nil {
+		return "", err
+	}
+	name := file.Name()
+	_, writeErr := file.Write([]byte("docker-manager doctor write probe\n"))
+	closeErr := file.Close()
+	removeErr := os.Remove(name)
+	elapsed := time.Since(start)
+	if writeErr != nil {
+		return "", writeErr
+	}
+	if closeErr != nil {
+		return "", closeErr
+	}
+	if removeErr != nil {
+		return "", removeErr
+	}
+	return fmt.Sprintf("；写入探测 %dms", elapsed.Milliseconds()), nil
 }
 
 func checkDoctorDockerConfig(ctx context.Context, opts DoctorOptions) []DoctorCheck {

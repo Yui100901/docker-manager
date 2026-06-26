@@ -55,13 +55,15 @@ func preseedJSONErrorMode(opts *outputOptions, args []string) {
 
 func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 	configPath := defaultConfigPath
+	effectiveConfigPath := configPath
 	rootCmd := &cobra.Command{
 		Use:           "dm <command>",
 		Short:         "Docker 运维辅助工具",
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			loaded, err := loadAppConfig(configPath)
+			effectiveConfigPath = resolveConfigPath(configPath, cmd.Root().PersistentFlags().Changed("config"))
+			loaded, err := loadAppConfig(effectiveConfigPath)
 			if err != nil {
 				if isDoctorCommand(cmd) {
 					configureLogging(*opts)
@@ -93,7 +95,7 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 	rootCmd.AddCommand(diagnostics.NewRegistryCommand())
 	rootCmd.AddCommand(diagnostics.NewReportCommand())
 	rootCmd.AddCommand(diagnostics.NewDoctorCommandWithDefaults(func() diagnostics.DoctorDefaults {
-		return diagnostics.DoctorDefaults{ConfigPath: configPath, OutputDir: cfg.OutputDir}
+		return diagnostics.DoctorDefaults{ConfigPath: effectiveConfigPath, OutputDir: cfg.OutputDir}
 	}))
 	rootCmd.AddCommand(completion.NewCommand())
 	rootCmd.AddCommand(version.NewCommand())
