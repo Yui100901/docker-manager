@@ -14,15 +14,12 @@ import (
 
 func NewReverseCommand() *cobra.Command {
 	var (
-		rerun             bool
 		save              bool
 		reverseType       string
 		preserveVolumes   bool
 		mergePorts        bool
 		filterDefaultEnvs bool
 		prettyFormat      bool
-		dryRun            bool
-		confirm           bool
 		running           bool
 		redactSecrets     bool
 		filters           []string
@@ -32,9 +29,6 @@ func NewReverseCommand() *cobra.Command {
 		Use:   "reverse [container-filter...]",
 		Short: "逆向 Docker 容器到启动命令",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if rerun && !dryRun && !confirm {
-				return fmt.Errorf("reverse --rerun 会停止、删除并重建容器；如确认执行，请添加 --confirm；如仅审计，请使用 --dry-run")
-			}
 			if running && !cmd.Flags().Changed("reverse-type") {
 				reverseType = string(ReverseCompose)
 			}
@@ -54,11 +48,8 @@ func NewReverseCommand() *cobra.Command {
 				FilterDefaultEnvs: filterDefaultEnvs,
 				PrettyFormat:      prettyFormat,
 				MergePorts:        mergePorts,
-				Rerun:             rerun,
 				Save:              save,
 				ReverseType:       rt,
-				DryRun:            dryRun,
-				Confirm:           confirm,
 				RedactSecrets:     redactSecrets,
 			}
 
@@ -83,27 +74,17 @@ func NewReverseCommand() *cobra.Command {
 				}
 			}
 
-			// 重新运行容器
-			if rerun {
-				if err := reverseResult.rerunContainers(); err != nil {
-					return fmt.Errorf("重新运行容器失败: %w", err)
-				}
-			}
-
 			return nil
 		},
 		ValidArgsFunction: completion.LocalContainers,
 	}
 
-	cmd.Flags().BoolVarP(&rerun, "rerun", "r", false, "逆向解析完成后删除原有容器并重新创建容器（谨慎使用），cmd 模式下会调用 Docker API 而不是运行命令行")
 	cmd.Flags().BoolVarP(&save, "save", "s", false, "保存输出到文件")
 	cmd.Flags().StringVarP(&reverseType, "reverse-type", "t", "cmd", "输出类型: cmd | compose | all")
 	cmd.Flags().BoolVar(&preserveVolumes, "preserve-volumes", false, "是否保留匿名卷名称（默认关闭）")
 	cmd.Flags().BoolVar(&filterDefaultEnvs, "filter-default-envs", true, "是否过滤掉 Docker 默认环境变量（默认开启）")
 	cmd.Flags().BoolVar(&mergePorts, "merge-ports", true, "命令是否合并连续端口，compose 无法合并（默认开启）")
 	cmd.Flags().BoolVar(&prettyFormat, "pretty", false, "是否格式化输出 docker run 命令（默认关闭）")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "仅打印将要执行的操作，不实际重新运行容器（用于审计/确认）")
-	cmd.Flags().BoolVar(&confirm, "confirm", false, "确认执行 --rerun 的停止、删除并重建容器操作")
 	cmd.Flags().BoolVar(&running, "running", false, "仅筛选正在运行的容器；未指定 --reverse-type 时默认输出 compose")
 	cmd.Flags().StringArrayVarP(&filters, "filter", "f", nil, "筛选容器，支持 name:/id:/image:/state:/status:/label: 和 * ? 通配符，可重复指定")
 	cmd.Flags().BoolVar(&redactSecrets, "redact-secrets", false, "脱敏 env/label 中疑似敏感字段，便于分享输出")

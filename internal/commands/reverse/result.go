@@ -11,7 +11,6 @@ import (
 
 	"docker-manager/internal/docker"
 
-	"github.com/Yui100901/MyGo/command"
 	"gopkg.in/yaml.v3"
 )
 
@@ -284,62 +283,6 @@ func reverseWithOptions(names []string, options ReverseOptions) (*ReverseResult,
 	}
 
 	return NewReverseResult(results, options), nil
-}
-
-func (rr *ReverseResult) rerunContainers() error {
-	// rerun docker run
-	var firstErr error
-	backupDir := inspectBackupDir(time.Now())
-	for name := range rr.RunCommands {
-		if rr.options.DryRun {
-			fmt.Printf("Dry run: backup inspect for %s to %s\n", name, inspectBackupPath(backupDir, name))
-			fmt.Printf("Dry run: recreate container %s\n", name)
-		} else {
-			backupPath, err := backupContainerInspect(name, backupDir)
-			if err != nil {
-				if firstErr == nil {
-					firstErr = fmt.Errorf("备份容器 %s inspect 失败: %w", name, err)
-				}
-				log.Printf("备份容器 %s inspect 失败，跳过重建: %v", name, err)
-				continue
-			}
-			fmt.Println("Backup inspect", name, "to", backupPath)
-
-			containerID, err := containerManager.RecreateContainer(name, name)
-			if err != nil {
-				if firstErr == nil {
-					firstErr = fmt.Errorf("重建容器 %s 失败: %w", name, err)
-				}
-				log.Printf("重建容器 %s 失败: %v", name, err)
-				continue
-			}
-			fmt.Println("Recreate container", name, "id", containerID)
-		}
-	}
-
-	// rerun compose
-	if rr.options.ReverseType == ReverseCompose || rr.options.ReverseType == ReverseAll {
-		ymlString := rr.DockerComposeFileString()
-		tmp := "docker-compose.reverse.yml"
-		if err := os.WriteFile(tmp, []byte(ymlString), 0644); err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-			return err
-		}
-		if rr.options.DryRun {
-			fmt.Printf("Dry run: docker compose -f %s up -d\n", tmp)
-		} else {
-			if err := command.RunCommand("docker", "compose", "-f", tmp, "up", "-d"); err != nil {
-				if firstErr == nil {
-					firstErr = err
-				}
-				return err
-			}
-		}
-	}
-
-	return firstErr
 }
 
 func backupContainerInspect(name, backupDir string) (string, error) {

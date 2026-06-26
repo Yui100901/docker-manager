@@ -73,6 +73,7 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 	rootCmd.AddCommand(completion.NewCommand())
 	rootCmd.AddCommand(version.NewCommand())
 	rootCmd.AddCommand(reverse.NewReverseCommand())
+	rootCmd.AddCommand(reverse.NewRerunCommand())
 	rootCmd.AddCommand(pull.NewPullCommandWithDefaults(func() pull.CommandDefaults {
 		return pull.CommandDefaults{
 			Proxy:     cfg.Proxy,

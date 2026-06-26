@@ -10,7 +10,7 @@
 - 本机 Docker 资源清理预览、网络/健康/日志/volume/镜像层诊断。
 - registry 登录配置和连通性检查。
 
-> 说明: 工具里包含会修改 Docker 状态的命令，例如 `restore`、`prune-report --apply`、`reverse --rerun --confirm`、`pull --to`。在生产环境执行前建议先使用 `--dry-run` 或在测试机验证。
+> 说明: 工具里包含会修改 Docker 状态的命令，例如 `restore`、`prune-report --apply`、`rerun --confirm`、`pull --to`。在生产环境执行前建议先使用 `--dry-run` 或在测试机验证。
 
 ## 构建
 
@@ -123,6 +123,7 @@ DM_E2E_KEEP_WORKDIR=1 bash scripts/e2e.sh
 | `dm load` | 从目录或单个 tar 文件导入 Docker 镜像 |
 | `dm save` | 导出本地 Docker 镜像，支持筛选、合并和 dry-run |
 | `dm reverse` | 从运行容器反向生成 `docker run` 或 compose |
+| `dm rerun` | 基于 Docker inspect 停止、删除并重建容器 |
 | `dm backup container` | 备份容器 inspect、镜像、compose、network 和 volume 元数据 |
 | `dm restore` | 从备份目录或离线 tar.gz 包恢复容器 |
 | `dm prune-report` | 生成可清理资源报告，可选执行清理 |
@@ -257,14 +258,20 @@ dm reverse my-container --reverse-type all
 dm reverse my-container --save
 ```
 
-谨慎重建容器:
+`reverse` 是只读命令，只输出 `docker run` 或 compose 配置，不会修改 Docker 状态。
+
+## 容器重建
+
+`rerun` 会基于 Docker inspect 的 `Config`、`HostConfig` 和网络配置，通过 Docker API 停止、删除并重建容器。该命令不会执行 `reverse` 生成的 shell 命令。
 
 ```bash
-dm reverse my-container --rerun --dry-run
-dm reverse my-container --rerun --confirm
+dm rerun my-container --dry-run
+dm rerun my-container --confirm
+dm rerun --filter 'name:app-*' --dry-run
+dm rerun --filter 'name:app-*' --confirm
 ```
 
-`--rerun --confirm` 会停止、删除并重建目标容器，执行前会保存 inspect JSON 备份。
+`rerun --confirm` 会停止、删除并重建目标容器，执行前会保存 inspect JSON 备份。为避免误操作，`rerun` 必须显式提供容器名称、`--filter` 或 `--running`。
 
 ## 离线备份和恢复
 
@@ -452,6 +459,6 @@ dm logs-scan app --since 2h --context 3
 - `pull` 直接实现 registry HTTP 拉取流程，不完全等价于 Docker daemon 的所有行为；私有 registry 已支持常见 Basic/Bearer challenge，但复杂企业 SSO 或自定义认证仍建议先测试。
 - `pull --to` 会使用本地 Docker daemon 执行 load、tag、push，目标 registry 的 push 权限依赖本机 Docker 登录状态。
 - `restore` 会重建 network、volume 和容器。遇到已有容器时默认拒绝覆盖，需要显式使用 `--replace`。
-- `reverse --rerun --confirm` 会删除并重建容器，建议先运行 `--dry-run`。
+- `rerun --confirm` 会删除并重建容器，建议先运行 `--dry-run`。
 - `prune-report --apply` 会删除 Docker 资源，适合在确认报告后执行。
 - 日志和 inspect 可能包含敏感信息，分享输出前请检查 env、label、命令行参数和日志内容。

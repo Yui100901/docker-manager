@@ -1,0 +1,84 @@
+package reverse
+
+import (
+	"fmt"
+	"time"
+
+	"docker-manager/internal/completion"
+
+	"github.com/spf13/cobra"
+)
+
+func NewRerunCommand() *cobra.Command {
+	var (
+		dryRun  bool
+		confirm bool
+		running bool
+		filters []string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "rerun [container-filter...]",
+		Short: "基于 Docker inspect 停止、删除并重建容器",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 && len(filters) == 0 && !running {
+				return fmt.Errorf("rerun 是破坏性操作，必须提供容器名称/筛选条件，或显式使用 --running")
+			}
+			if !dryRun && !confirm {
+				return fmt.Errorf("rerun 会停止、删除并重建容器；如确认执行，请添加 --confirm；如仅审计，请使用 --dry-run")
+			}
+			targetFilters := append(append([]string(nil), filters...), args...)
+			targets, err := resolveReverseContainerTargets(targetFilters, running)
+			if err != nil {
+				return err
+			}
+			return rerunContainers(targets, rerunOptions{
+				DryRun: dryRun,
+			})
+		},
+		ValidArgsFunction: completion.LocalContainers,
+	}
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "仅打印将要执行的重建动作，不修改 Docker")
+	cmd.Flags().BoolVar(&confirm, "confirm", false, "确认执行停止、删除并重建容器操作")
+	cmd.Flags().BoolVar(&running, "running", false, "仅筛选正在运行的容器")
+	cmd.Flags().StringArrayVarP(&filters, "filter", "f", nil, "筛选容器，支持 name:/id:/image:/state:/status:/label: 和 * ? 通配符，可重复指定")
+	_ = cmd.RegisterFlagCompletionFunc("filter", completion.LocalContainers)
+	return cmd
+}
+
+type rerunOptions struct {
+	DryRun bool
+}
+
+func rerunContainers(names []string, opts rerunOptions) error {
+	if err := ensureContainerManager(); err != nil {
+		return err
+	}
+	var firstErr error
+	backupDir := inspectBackupDir(time.Now())
+	for _, name := range names {
+		if opts.DryRun {
+			fmt.Printf("Dry run: backup inspect for %s to %s\n", name, inspectBackupPath(backupDir, name))
+			fmt.Printf("Dry run: stop, remove and recreate container %s via Docker API\n", name)
+			continue
+		}
+		backupPath, err := backupContainerInspect(name, backupDir)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("备份容器 %s inspect 失败: %w", name, err)
+			}
+			continue
+		}
+		fmt.Println("Backup inspect", name, "to", backupPath)
+
+		containerID, err := containerManager.RecreateContainer(name, name)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("重建容器 %s 失败: %w", name, err)
+			}
+			continue
+		}
+		fmt.Println("Recreate container", name, "id", containerID)
+	}
+	return firstErr
+}
