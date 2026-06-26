@@ -3,13 +3,13 @@ package images
 import (
 	"context"
 	"docker-manager/internal/docker"
+	"docker-manager/internal/resourcefilter"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"docker-manager/internal/completion"
@@ -311,156 +311,7 @@ func buildImageExportTargets(images []image.Summary, opts SaveOptions) ([]imageE
 }
 
 func matchesImageFilters(img image.Summary, filters []string) bool {
-	if len(filters) == 0 {
-		return true
-	}
-	candidates := imageFilterCandidates(img)
-	for _, filter := range filters {
-		if matchesImageFilterCandidate(candidates, filter) {
-			return true
-		}
-	}
-	return false
-}
-
-func imageFilterCandidates(img image.Summary) []string {
-	cleanID := strings.TrimPrefix(img.ID, "sha256:")
-	candidates := []string{img.ID, cleanID, "id:" + img.ID, "id:" + cleanID}
-	if len(cleanID) > 12 {
-		candidates = append(candidates, cleanID[:12], "id:"+cleanID[:12])
-	}
-	for _, tag := range img.RepoTags {
-		candidates = append(candidates, tag, "image:"+tag)
-		repo, version := splitRepoTag(tag)
-		if repo != "" {
-			candidates = append(candidates, repo, "repo:"+repo, "image:"+repo)
-			if slash := strings.Index(repo, "/"); slash >= 0 && slash < len(repo)-1 {
-				candidates = append(candidates, repo[slash+1:], "repo:"+repo[slash+1:], "image:"+repo[slash+1:])
-			}
-			if slash := strings.LastIndex(repo, "/"); slash >= 0 && slash < len(repo)-1 {
-				candidates = append(candidates, repo[slash+1:], "repo:"+repo[slash+1:], "image:"+repo[slash+1:])
-			}
-		}
-		if version != "" {
-			candidates = append(candidates, version, "tag:"+version, "image:"+version)
-		}
-	}
-	for _, digest := range img.RepoDigests {
-		candidates = append(candidates, digest, "digest:"+digest, "image:"+digest)
-	}
-	for key, value := range img.Labels {
-		candidates = append(candidates, key, "label:"+key)
-		if value != "" {
-			candidates = append(candidates, value, key+"="+value, "label:"+key+"="+value)
-		}
-	}
-	return uniqueImageFilterCandidates(candidates)
-}
-
-func matchesImageFilterCandidate(candidates []string, filter string) bool {
-	key, pattern, keyed := splitImageFilter(filter)
-	if strings.TrimSpace(pattern) == "" {
-		return false
-	}
-	for _, candidate := range candidates {
-		candidateKey, candidateValue, candidateKeyed := splitImageFilter(candidate)
-		if keyed {
-			if !candidateKeyed || candidateKey != key {
-				continue
-			}
-			if imageFilterValueMatches(pattern, candidateValue) {
-				return true
-			}
-			continue
-		}
-		if imageFilterValueMatches(pattern, candidate) {
-			return true
-		}
-	}
-	return false
-}
-
-func splitImageFilter(filter string) (string, string, bool) {
-	filter = strings.TrimSpace(filter)
-	for _, sep := range []string{":", "="} {
-		if idx := strings.Index(filter, sep); idx > 0 {
-			key := strings.ToLower(strings.TrimSpace(filter[:idx]))
-			if isImageFilterKey(key) {
-				return key, strings.TrimSpace(filter[idx+1:]), true
-			}
-		}
-	}
-	return "", filter, false
-}
-
-func isImageFilterKey(key string) bool {
-	switch key {
-	case "id", "image", "repo", "tag", "digest", "label":
-		return true
-	default:
-		return false
-	}
-}
-
-func imageFilterValueMatches(pattern, value string) bool {
-	pattern = strings.TrimSpace(pattern)
-	value = strings.TrimSpace(value)
-	if pattern == "" || value == "" {
-		return false
-	}
-	if wildcardMatch(pattern, value) || strings.EqualFold(pattern, value) || strings.HasPrefix(strings.ToLower(value), strings.ToLower(pattern)) {
-		return true
-	}
-	if strings.ContainsAny(pattern, "*?") {
-		return wildcardMatch(strings.ToLower(pattern), strings.ToLower(value))
-	}
-	return false
-}
-
-func uniqueImageFilterCandidates(values []string) []string {
-	seen := map[string]bool{}
-	var result []string
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" || seen[value] {
-			continue
-		}
-		seen[value] = true
-		result = append(result, value)
-	}
-	return result
-}
-
-func splitRepoTag(ref string) (string, string) {
-	lastSlash := strings.LastIndex(ref, "/")
-	lastColon := strings.LastIndex(ref, ":")
-	if lastColon > lastSlash {
-		return ref[:lastColon], ref[lastColon+1:]
-	}
-	return ref, ""
-}
-
-func wildcardMatch(pattern, value string) bool {
-	re, err := regexp.Compile("^" + wildcardToRegex(pattern) + "$")
-	if err != nil {
-		return false
-	}
-	return re.MatchString(value)
-}
-
-func wildcardToRegex(pattern string) string {
-	var sb strings.Builder
-	for _, r := range pattern {
-		switch r {
-		case '*':
-			sb.WriteString(".*")
-		case '?':
-			sb.WriteByte('.')
-		default:
-			sb.WriteString(regexp.QuoteMeta(string(r)))
-		}
-	}
-	return sb.String()
+	return resourcefilter.Match(resourcefilter.ImageCandidates(img), filters, resourcefilter.ImageKeys...)
 }
 
 func ensureImageManager() error {

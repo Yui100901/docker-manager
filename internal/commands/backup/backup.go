@@ -14,7 +14,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -23,6 +22,7 @@ import (
 	"docker-manager/internal/commands/reverse"
 	"docker-manager/internal/completion"
 	"docker-manager/internal/docker"
+	"docker-manager/internal/resourcefilter"
 	"docker-manager/internal/version"
 
 	"github.com/docker/docker/api/types/container"
@@ -367,95 +367,11 @@ func matchBackupContainerTargets(containers []container.Summary, pattern string)
 }
 
 func backupContainerMatchesPattern(c container.Summary, pattern string) bool {
-	pattern = strings.TrimSpace(pattern)
-	if pattern == "" {
-		return false
-	}
-	hasWildcard := strings.ContainsAny(pattern, "*?")
-	for _, candidate := range containerFilterCandidates(c) {
-		if hasWildcard {
-			if wildcardMatch(pattern, candidate) {
-				return true
-			}
-			continue
-		}
-		if candidate == pattern {
-			return true
-		}
-	}
-	return false
-}
-
-func containerFilterCandidates(c container.Summary) []string {
-	candidates := []string{
-		c.ID,
-		strings.TrimPrefix(c.ID, "sha256:"),
-		c.Image,
-		string(c.State),
-	}
-	if short := shortID(c.ID); short != "" && short != c.ID {
-		candidates = append(candidates, short)
-	}
-	for _, name := range c.Names {
-		name = strings.TrimPrefix(name, "/")
-		candidates = append(candidates, name)
-	}
-	if name := firstContainerName(c.Names); name != "" {
-		candidates = append(candidates, name)
-	}
-	return uniqueNonEmptyStrings(candidates)
+	return resourcefilter.Match(resourcefilter.ContainerCandidates(c), []string{pattern}, resourcefilter.ContainerKeys...)
 }
 
 func firstContainerName(names []string) string {
-	if len(names) == 0 {
-		return ""
-	}
-	return strings.TrimPrefix(names[0], "/")
-}
-
-func shortID(id string) string {
-	id = strings.TrimPrefix(id, "sha256:")
-	if len(id) > 12 {
-		return id[:12]
-	}
-	return id
-}
-
-func wildcardMatch(pattern, value string) bool {
-	re, err := regexp.Compile("^" + wildcardToRegex(pattern) + "$")
-	if err != nil {
-		return false
-	}
-	return re.MatchString(value)
-}
-
-func wildcardToRegex(pattern string) string {
-	var sb strings.Builder
-	for _, r := range pattern {
-		switch r {
-		case '*':
-			sb.WriteString(".*")
-		case '?':
-			sb.WriteByte('.')
-		default:
-			sb.WriteString(regexp.QuoteMeta(string(r)))
-		}
-	}
-	return sb.String()
-}
-
-func uniqueNonEmptyStrings(values []string) []string {
-	seen := map[string]bool{}
-	var result []string
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" || seen[value] {
-			continue
-		}
-		seen[value] = true
-		result = append(result, value)
-	}
-	return result
+	return resourcefilter.FirstContainerName(names)
 }
 
 func backupContainerTargetName(c container.Summary) string {
@@ -1544,7 +1460,7 @@ func readJSON(path string, value interface{}) error {
 }
 
 func normalizeContainerName(name string) string {
-	return strings.TrimPrefix(strings.TrimSpace(name), "/")
+	return resourcefilter.NormalizeContainerName(name)
 }
 
 func defaultBackupDir(now time.Time, containerName string) string {

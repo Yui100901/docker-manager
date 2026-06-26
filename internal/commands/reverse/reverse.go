@@ -2,11 +2,11 @@ package reverse
 
 import (
 	"fmt"
-	"regexp"
 	"sort"
 	"strings"
 
 	"docker-manager/internal/completion"
+	"docker-manager/internal/resourcefilter"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/spf13/cobra"
@@ -248,80 +248,11 @@ func reverseContainerMatchesPattern(c container.Summary, pattern string) bool {
 }
 
 func reverseContainerMatchesAnyFilter(c container.Summary, filters []string) bool {
-	for _, filter := range filters {
-		if reverseContainerMatchesFilter(c, filter) {
-			return true
-		}
-	}
-	return false
+	return resourcefilter.Match(resourcefilter.ContainerCandidates(c), filters, resourcefilter.ContainerKeys...)
 }
 
 func reverseContainerMatchesFilter(c container.Summary, filter string) bool {
-	key, pattern, keyed := splitReverseFilter(filter)
-	if strings.TrimSpace(pattern) == "" {
-		return false
-	}
-	for _, candidate := range reverseContainerCandidates(c) {
-		candidateKey, candidateValue, candidateKeyed := splitReverseFilter(candidate)
-		if keyed {
-			if !candidateKeyed || candidateKey != key {
-				continue
-			}
-			if reverseValueMatchesFilter(pattern, candidateValue) {
-				return true
-			}
-			continue
-		}
-		if reverseValueMatchesFilter(pattern, candidate) {
-			return true
-		}
-	}
-	return false
-}
-
-func reverseContainerCandidates(c container.Summary) []string {
-	cleanID := strings.TrimPrefix(c.ID, "sha256:")
-	candidates := []string{c.ID, cleanID, "id:" + c.ID, "id:" + cleanID}
-	if len(cleanID) > 12 {
-		candidates = append(candidates, cleanID[:12], "id:"+cleanID[:12])
-	}
-	for _, name := range c.Names {
-		name = strings.TrimPrefix(name, "/")
-		candidates = append(candidates, name, "name:"+name)
-	}
-	if c.Image != "" {
-		candidates = append(candidates, c.Image, "image:"+c.Image)
-		repo, tag := splitReverseRepoTag(c.Image)
-		if repo != "" {
-			candidates = append(candidates, repo, "image:"+repo)
-			if slash := strings.Index(repo, "/"); slash >= 0 && slash < len(repo)-1 {
-				candidates = append(candidates, repo[slash+1:], "image:"+repo[slash+1:])
-			}
-			if slash := strings.LastIndex(repo, "/"); slash >= 0 && slash < len(repo)-1 {
-				candidates = append(candidates, repo[slash+1:], "image:"+repo[slash+1:])
-			}
-		}
-		if tag != "" {
-			candidates = append(candidates, tag, "image:"+tag)
-		}
-	}
-	if c.ImageID != "" {
-		imageID := strings.TrimPrefix(c.ImageID, "sha256:")
-		candidates = append(candidates, c.ImageID, imageID, "id:"+imageID)
-	}
-	if c.State != "" {
-		candidates = append(candidates, string(c.State), "state:"+string(c.State))
-	}
-	if c.Status != "" {
-		candidates = append(candidates, c.Status, "status:"+c.Status)
-	}
-	for key, value := range c.Labels {
-		candidates = append(candidates, key, "label:"+key)
-		if value != "" {
-			candidates = append(candidates, value, key+"="+value, "label:"+key+"="+value)
-		}
-	}
-	return uniqueReverseCandidates(candidates)
+	return resourcefilter.Match(resourcefilter.ContainerCandidates(c), []string{filter}, resourcefilter.ContainerKeys...)
 }
 
 func reverseContainerDisplayName(c container.Summary) string {
@@ -329,87 +260,4 @@ func reverseContainerDisplayName(c container.Summary) string {
 		return strings.TrimPrefix(c.Names[0], "/")
 	}
 	return c.ID
-}
-
-func splitReverseFilter(filter string) (string, string, bool) {
-	filter = strings.TrimSpace(filter)
-	for _, sep := range []string{":", "="} {
-		if idx := strings.Index(filter, sep); idx > 0 {
-			key := strings.ToLower(strings.TrimSpace(filter[:idx]))
-			if isReverseFilterKey(key) {
-				return key, strings.TrimSpace(filter[idx+1:]), true
-			}
-		}
-	}
-	return "", filter, false
-}
-
-func isReverseFilterKey(key string) bool {
-	switch key {
-	case "name", "id", "image", "state", "status", "label":
-		return true
-	default:
-		return false
-	}
-}
-
-func reverseValueMatchesFilter(pattern, value string) bool {
-	pattern = strings.TrimSpace(pattern)
-	value = strings.TrimSpace(value)
-	if pattern == "" || value == "" {
-		return false
-	}
-	if wildcardMatch(pattern, value) || strings.EqualFold(pattern, value) || strings.HasPrefix(strings.ToLower(value), strings.ToLower(pattern)) {
-		return true
-	}
-	if strings.ContainsAny(pattern, "*?") {
-		return wildcardMatch(strings.ToLower(pattern), strings.ToLower(value))
-	}
-	return false
-}
-
-func splitReverseRepoTag(ref string) (string, string) {
-	lastSlash := strings.LastIndex(ref, "/")
-	lastColon := strings.LastIndex(ref, ":")
-	if lastColon > lastSlash {
-		return ref[:lastColon], ref[lastColon+1:]
-	}
-	return ref, ""
-}
-
-func uniqueReverseCandidates(values []string) []string {
-	seen := map[string]bool{}
-	var result []string
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" || seen[value] {
-			continue
-		}
-		seen[value] = true
-		result = append(result, value)
-	}
-	return result
-}
-
-func wildcardMatch(pattern, value string) bool {
-	re, err := regexp.Compile("^" + wildcardToRegex(pattern) + "$")
-	if err != nil {
-		return false
-	}
-	return re.MatchString(value)
-}
-
-func wildcardToRegex(pattern string) string {
-	var sb strings.Builder
-	for _, r := range pattern {
-		switch r {
-		case '*':
-			sb.WriteString(".*")
-		case '?':
-			sb.WriteByte('.')
-		default:
-			sb.WriteString(regexp.QuoteMeta(string(r)))
-		}
-	}
-	return sb.String()
 }
