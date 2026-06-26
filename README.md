@@ -161,6 +161,8 @@ dm volume ls-unused --filter 'option:type=nfs'
 
 `prune-report --filter` 使用 Docker prune 语义，和上面的本地资源筛选器不同。它只支持 `label=...`、`label!=...`、`until=...`，并会影响实际 `--apply` 清理范围。
 
+`reverse`、`health`、`network`、`logs-scan` 在不传容器目标和 `--filter` 时默认处理全部本地容器。文本输出会显示本次目标数量提示；JSON/Markdown/HTML 报告会在 `target` 字段或对应小节中保留结构化目标信息。`reverse` 的提示以 `# 目标: ...` 注释形式输出，避免破坏 shell/YAML 内容。
+
 ## 端到端集成测试
 
 仓库提供 `scripts/e2e.sh`，用于在有 Docker 的测试机上启动临时 registry，并覆盖 `registry-login-check --plain-http`、`pull --plain-http --output`、`pull --plain-http --load`、`pull --to`、`backup container --bundle` 和 `restore <archive>`。

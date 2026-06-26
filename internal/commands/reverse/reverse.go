@@ -59,6 +59,10 @@ func NewReverseCommand() *cobra.Command {
 				return err
 			}
 
+			if comment := reverseTargetSelectionComment(len(targets), running, targetFilters); comment != "" {
+				fmt.Println(comment)
+			}
+
 			reverseResult, err := reverseWithOptions(targets, opts)
 			if err != nil {
 				return err
@@ -92,6 +96,16 @@ func NewReverseCommand() *cobra.Command {
 	_ = cmd.RegisterFlagCompletionFunc("filter", completion.LocalContainers)
 
 	return cmd
+}
+
+func reverseTargetSelectionComment(count int, running bool, filters []string) string {
+	if len(filters) > 0 {
+		return ""
+	}
+	if running {
+		return fmt.Sprintf("# 目标: --running 筛选运行中容器 %d 个", count)
+	}
+	return fmt.Sprintf("# 目标: 未指定容器筛选，默认解析全部本地容器 %d 个", count)
 }
 
 func completeReverseTypes(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {

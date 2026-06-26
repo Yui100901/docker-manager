@@ -51,6 +51,7 @@ type HealthOptions struct {
 
 type HealthReport struct {
 	GeneratedAt string            `json:"generated_at"`
+	Target      TargetSelection   `json:"target"`
 	Summary     HealthSummary     `json:"summary"`
 	Containers  []HealthContainer `json:"containers"`
 	Issues      []HealthIssue     `json:"issues,omitempty"`
@@ -139,7 +140,9 @@ func runHealthReport(ctx context.Context, opts HealthOptions) (HealthReport, err
 		return HealthReport{}, err
 	}
 	containers = filterContainerSummaries(containers, opts.ContainerFilters)
-	return buildHealthReport(ctx, svc, containers, opts), nil
+	report := buildHealthReport(ctx, svc, containers, opts)
+	report.Target = buildContainerTargetSelection("检查", len(containers), opts.RunningOnly, opts.ContainerFilters)
+	return report, nil
 }
 
 func buildHealthReport(ctx context.Context, svc healthDockerService, containers []container.Summary, opts HealthOptions) HealthReport {
@@ -400,6 +403,7 @@ func normalizeKeywords(keywords []string) []string {
 
 func printHealthReport(w io.Writer, report HealthReport) {
 	fmt.Fprintf(w, "Docker 体检报告 (%s)\n", report.GeneratedAt)
+	printTargetSelection(w, report.Target)
 	fmt.Fprintf(w, "容器: 总数=%d 运行中=%d 已停止=%d 重启中=%d 不健康=%d\n", report.Summary.Total, report.Summary.Running, report.Summary.Stopped, report.Summary.Restarting, report.Summary.Unhealthy)
 	fmt.Fprintf(w, "风险: 重启=%d 日志=%d 公网端口=%d 问题=%d\n\n", report.Summary.RestartWarnings, report.Summary.LogWarnings, report.Summary.PublicBindings, len(report.Issues))
 

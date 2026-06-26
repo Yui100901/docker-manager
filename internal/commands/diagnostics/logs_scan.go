@@ -50,6 +50,7 @@ type LogsScanOptions struct {
 
 type LogsScanReport struct {
 	GeneratedAt string              `json:"generated_at"`
+	Target      TargetSelection     `json:"target"`
 	Keywords    []string            `json:"keywords"`
 	Containers  []LogsScanContainer `json:"containers"`
 	Summary     LogsScanSummary     `json:"summary"`
@@ -140,7 +141,9 @@ func runLogsScan(ctx context.Context, opts LogsScanOptions) (LogsScanReport, err
 	if err != nil {
 		return LogsScanReport{}, err
 	}
-	return buildLogsScanReport(ctx, svc, targets, opts), nil
+	report := buildLogsScanReport(ctx, svc, targets, opts)
+	report.Target = buildContainerTargetSelection("扫描", len(targets), opts.RunningOnly, opts.Filters)
+	return report, nil
 }
 
 func logsScanTargets(ctx context.Context, svc logsScanDockerService, opts LogsScanOptions) ([]container.Summary, error) {
@@ -327,6 +330,7 @@ func surroundingLines(lines []string, start, end int) []string {
 
 func printLogsScanReport(w io.Writer, report LogsScanReport) {
 	fmt.Fprintf(w, "Docker 日志扫描 (%s)\n", report.GeneratedAt)
+	printTargetSelection(w, report.Target)
 	fmt.Fprintf(w, "关键词: %s\n", strings.Join(report.Keywords, ", "))
 	fmt.Fprintf(w, "摘要: 已扫描=%d 命中容器=%d 命中行=%d 错误=%d\n\n", report.Summary.ScannedContainers, report.Summary.ContainersMatched, report.Summary.TotalMatches, report.Summary.Errors)
 

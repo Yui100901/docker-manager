@@ -152,3 +152,15 @@ func TestReverseRunningFilterCanBeCombinedWithPatterns(t *testing.T) {
 		t.Fatalf("running filtered names = %#v, want %#v", got, want)
 	}
 }
+
+func TestReverseTargetSelectionComment(t *testing.T) {
+	if got := reverseTargetSelectionComment(3, false, nil); !strings.Contains(got, "默认解析全部本地容器 3 个") || !strings.HasPrefix(got, "#") {
+		t.Fatalf("default comment = %q", got)
+	}
+	if got := reverseTargetSelectionComment(2, true, nil); !strings.Contains(got, "运行中容器 2 个") || !strings.HasPrefix(got, "#") {
+		t.Fatalf("running comment = %q", got)
+	}
+	if got := reverseTargetSelectionComment(1, false, []string{"api"}); got != "" {
+		t.Fatalf("filtered comment = %q, want empty", got)
+	}
+}

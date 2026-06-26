@@ -41,6 +41,7 @@ type NetworkOptions struct {
 }
 
 type NetworkReport struct {
+	Target     TargetSelection       `json:"target"`
 	Networks   []NetworkRef          `json:"networks"`
 	Containers []NetworkContainerRef `json:"containers"`
 	Ports      []PortMappingRef      `json:"ports"`
@@ -128,7 +129,9 @@ func runNetworkReport(ctx context.Context, opts NetworkOptions) (NetworkReport, 
 	if hasContainerFilter {
 		networks = filterNetworksForContainers(networks, containers)
 	}
-	return buildNetworkReport(containers, networks), nil
+	report := buildNetworkReport(containers, networks)
+	report.Target = buildContainerTargetSelection("查看", len(containers), opts.RunningOnly, opts.ContainerFilters)
+	return report, nil
 }
 
 func filterNetworksForContainers(networks []network.Summary, containers []container.Summary) []network.Summary {
@@ -274,6 +277,7 @@ func addPortConflictRisks(report *NetworkReport) {
 
 func printNetworkReport(w io.Writer, report NetworkReport) {
 	fmt.Fprintln(w, "Docker 网络报告")
+	printTargetSelection(w, report.Target)
 	fmt.Fprintf(w, "网络=%d 容器=%d 端口映射=%d 风险=%d\n\n", len(report.Networks), len(report.Containers), len(report.Ports), len(report.Risks))
 
 	fmt.Fprintln(w, "网络:")
