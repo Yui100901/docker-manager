@@ -110,7 +110,7 @@ type dockerCredentialHelperResponse struct {
 func NewRegistryLoginCheckCommand() *cobra.Command {
 	opts := RegistryLoginCheckOptions{Timeout: 5 * time.Second}
 	cmd := &cobra.Command{
-		Use:   "registry-login-check <registry>",
+		Use:   "check <registry>",
 		Short: "检查 Docker registry 登录配置、凭据和连通性",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -127,6 +127,16 @@ func NewRegistryLoginCheckCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&opts.PlainHTTP, "plain-http", false, "使用 http:// 访问 registry /v2/，用于未启用 TLS 的内网 registry")
 	cmd.Flags().DurationVar(&opts.Timeout, "timeout", opts.Timeout, "registry 连通性检查超时时间")
 	rpt.AddFormatFlag(cmd, &opts.Format)
+	return cmd
+}
+
+func NewRegistryCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "registry",
+		Short: "Docker registry 诊断工具",
+	}
+	checkCmd := NewRegistryLoginCheckCommand()
+	cmd.AddCommand(checkCmd)
 	return cmd
 }
 

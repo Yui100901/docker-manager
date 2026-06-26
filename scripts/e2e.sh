@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+﻿#!/usr/bin/env bash
 set -euo pipefail
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
@@ -66,7 +66,7 @@ wait_for_registry() {
   local attempts=30
   local i
   for i in $(seq 1 "${attempts}"); do
-    if "${DM_BIN}" registry-login-check "${REGISTRY}" --plain-http --format json >/dev/null 2>&1; then
+    if "${DM_BIN}" registry check "${REGISTRY}" --plain-http --format json >/dev/null 2>&1; then
       return 0
     fi
     sleep 1
@@ -122,22 +122,22 @@ log "seed 本地临时 registry"
 docker tag "${SOURCE_IMAGE}" "${SOURCE_REGISTRY_IMAGE}"
 docker push "${SOURCE_REGISTRY_IMAGE}" >/dev/null
 
-log "测试 registry-login-check --plain-http"
-"${DM_BIN}" registry-login-check "${REGISTRY}" --plain-http
+log "测试 registry check --plain-http"
+"${DM_BIN}" registry check "${REGISTRY}" --plain-http
 
-log "测试 pull --plain-http --output"
-"${DM_BIN}" pull "${SOURCE_REGISTRY_IMAGE}" --plain-http --output "${WORK_DIR}/pull-local.tar"
+log "测试 image pull --plain-http --output"
+"${DM_BIN}" image pull "${SOURCE_REGISTRY_IMAGE}" --plain-http --output "${WORK_DIR}/pull-local.tar"
 test -f "${WORK_DIR}/pull-local.tar"
 
-log "测试 pull --plain-http --load"
-"${DM_BIN}" pull "${SOURCE_REGISTRY_IMAGE}" --plain-http --load --output "${WORK_DIR}/pull-load.tar"
+log "测试 image pull --plain-http --load"
+"${DM_BIN}" image pull "${SOURCE_REGISTRY_IMAGE}" --plain-http --load --output "${WORK_DIR}/pull-load.tar"
 test -f "${WORK_DIR}/pull-load.tar"
 
-log "测试 pull --to 推送到临时 registry"
-"${DM_BIN}" pull "${SOURCE_REGISTRY_IMAGE}" --to "${TARGET_PREFIX}" --plain-http --output-dir "${WORK_DIR}/pulled"
+log "测试 image pull --to 推送到临时 registry"
+"${DM_BIN}" image pull "${SOURCE_REGISTRY_IMAGE}" --to "${TARGET_PREFIX}" --plain-http --output-dir "${WORK_DIR}/pulled"
 TARGET_IMAGE=$(docker images --format '{{.Repository}}:{{.Tag}}' | awk -v prefix="${TARGET_PREFIX}/" 'index($0, prefix) == 1 && $0 !~ /:<none>$/ { print; exit }')
 if [ -z "${TARGET_IMAGE}" ]; then
-  echo "未找到 pull --to 生成的目标镜像，前缀: ${TARGET_PREFIX}" >&2
+  echo "未找到 image pull --to 生成的目标镜像，前缀: ${TARGET_PREFIX}" >&2
   exit 1
 fi
 docker pull "${TARGET_IMAGE}" >/dev/null

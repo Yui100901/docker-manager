@@ -11,7 +11,7 @@ import (
 
 func TestLoadAppConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".dm.yaml")
-	data := []byte("proxy: http://127.0.0.1:7890\nos: linux\narch: arm64\noutput_dir: dist\nverbose: true\njson: true\n")
+	data := []byte("proxy: http://127.0.0.1:7890\nos: linux\narch: arm64\noutput_dir: dist\nverbose: true\nlog_json: true\n")
 	if err := os.WriteFile(path, data, 0644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
@@ -49,8 +49,8 @@ func TestRootCommandLogJSONFlagAlias(t *testing.T) {
 	if flag := cmd.PersistentFlags().Lookup("log-json"); flag == nil {
 		t.Fatal("missing --log-json flag")
 	}
-	if flag := cmd.PersistentFlags().Lookup("json"); flag == nil {
-		t.Fatal("missing --json compatibility flag")
+	if flag := cmd.PersistentFlags().Lookup("json"); flag != nil {
+		t.Fatal("--json compatibility flag should be removed")
 	}
 
 	cmd.SetArgs([]string{"--log-json", "version"})
@@ -69,9 +69,7 @@ func TestPreseedJSONErrorMode(t *testing.T) {
 		want bool
 	}{
 		{name: "log json", args: []string{"--log-json", "missing"}, want: true},
-		{name: "json", args: []string{"--json", "missing"}, want: true},
 		{name: "log json false", args: []string{"--log-json=false", "missing"}, want: false},
-		{name: "json false", args: []string{"--json=false", "missing"}, want: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

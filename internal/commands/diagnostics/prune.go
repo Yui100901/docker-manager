@@ -128,7 +128,7 @@ type pruneDockerFilters struct {
 func NewPruneReportCommand() *cobra.Command {
 	opts := PruneReportOptions{}
 	cmd := &cobra.Command{
-		Use:   "prune-report",
+		Use:   "prune",
 		Short: "生成 Docker 可清理资源报告，可选执行清理",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -449,7 +449,7 @@ func runPruneReport(ctx context.Context, opts PruneReportOptions) (PruneReport, 
 		return PruneReport{}, err
 	}
 	if opts.Apply && !opts.Confirm {
-		return PruneReport{}, fmt.Errorf("prune-report --apply 会删除 Docker 资源；如确认执行，请添加 --confirm")
+		return PruneReport{}, fmt.Errorf("report prune --apply 会删除 Docker 资源；如确认执行，请添加 --confirm")
 	}
 	svc, err := newPruneDockerService()
 	if err != nil {

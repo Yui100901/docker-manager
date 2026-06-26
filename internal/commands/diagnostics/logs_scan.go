@@ -86,7 +86,7 @@ func NewLogsScanCommand() *cobra.Command {
 		Keywords: []string{"error", "panic", "exception", "fatal", "oom", "killed"},
 	}
 	cmd := &cobra.Command{
-		Use:   "logs-scan [container-pattern...]",
+		Use:   "logs [container-pattern...]",
 		Short: "扫描容器最近日志中的错误关键词",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			runOpts := opts

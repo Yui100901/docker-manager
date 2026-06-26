@@ -1,4 +1,4 @@
-# docker-manager
+﻿# docker-manager
 
 `docker-manager` 是一个面向 Docker 日常运维、镜像迁移和容器诊断的命令行工具。二进制默认命名为 `dm`。
 
@@ -10,7 +10,7 @@
 - 本机 Docker 资源清理预览、网络/健康/日志/volume/镜像层诊断。
 - registry 登录配置和连通性检查。
 
-> 说明: 工具里包含会修改 Docker 状态的命令，例如 `restore`、`prune-report --apply`、`rerun --confirm`、`pull --to`。在生产环境执行前建议先使用 `--dry-run` 或在测试机验证。
+> 说明: 工具里包含会修改 Docker 状态的命令，例如 `restore`、`report prune --apply`、`rerun --confirm`、`image pull --to`。在生产环境执行前建议先使用 `--dry-run` 或在测试机验证。
 
 ## 构建
 
@@ -47,7 +47,7 @@ internal/commands/images/       # load/save 镜像导入导出命令
 internal/commands/pull/         # pull 镜像拉取、导入和重新推送命令
 internal/commands/reverse/      # reverse 容器 inspect 到 docker run/compose 的逆向解析命令
 internal/commands/backup/       # backup/restore 容器备份、迁移包和恢复命令
-internal/commands/diagnostics/  # health、network、logs-scan、prune、volume、image tree 等诊断命令
+internal/commands/diagnostics/  # report、registry、volume、image tree 等诊断命令
 internal/completion/            # shell 补全命令和本地 Docker 资源补全
 internal/docker/                # Docker API client 和镜像/容器管理封装
 internal/report/                # text/json 报告输出格式
@@ -63,7 +63,6 @@ scripts/                        # 端到端测试等辅助脚本
 --verbose         输出详细日志
 --quiet           静默 info 日志
 --log-json        以 JSON 格式输出日志和错误
---json            兼容短写，等同 --log-json
 ```
 
 示例 `.dm.yaml`:
@@ -75,7 +74,7 @@ arch: amd64
 output_dir: images
 verbose: false
 quiet: false
-json: false
+log_json: false
 ```
 
 ## Shell 自动补全
@@ -89,7 +88,7 @@ dm completion fish
 dm completion powershell
 ```
 
-资源参数会尽量从本机 Docker 补齐，例如容器、镜像和 volume。已支持的典型位置包括 `backup container`、`reverse`、`inspect-diff`、`logs-scan`、`health`、`network`、`image tree`、`volume ls-unused`，以及 `save --filter` 等筛选参数。
+资源参数会尽量从本机 Docker 补齐，例如容器、镜像和 volume。已支持的典型位置包括 `backup container`、`reverse`、`report diff`、`report logs`、`report health`、`report network`、`image tree`、`volume ls-unused`，以及 `image save --filter` 等筛选参数。
 
 PowerShell 临时加载示例:
 
@@ -101,7 +100,7 @@ dm completion powershell | Out-String | Invoke-Expression
 
 处理本地 Docker 资源的命令支持统一筛选规则。裸值会匹配资源的常用候选字段，也可以使用 `key:value` 或 `key=value` 指定字段；多个筛选条件之间是或关系，匹配任意一个即选中。筛选值支持 `*` 和 `?` 通配符，也支持大小写不敏感的精确匹配和前缀匹配。建议在 shell 中给带通配符的条件加引号，避免被 shell 提前展开。
 
-容器筛选适用于 `reverse`、`rerun`、`backup container`、`health`、`network`、`logs-scan` 等容器目标或报告命令:
+容器筛选适用于 `reverse`、`rerun`、`backup container`、`report health`、`report network`、`report logs` 等容器目标或报告命令:
 
 | 字段 | 匹配内容 |
 | --- | --- |
@@ -115,9 +114,9 @@ dm completion powershell | Out-String | Invoke-Expression
 ```bash
 dm reverse --filter 'name:api-*'
 dm reverse --running --filter 'image:nginx*'
-dm health --filter 'state=running' --filter 'label:env=prod'
-dm network --filter 'status:Up*'
-dm logs-scan --filter 'image:team/api' --keyword timeout
+dm report health --filter 'state=running' --filter 'label:env=prod'
+dm report network --filter 'status:Up*'
+dm report logs --filter 'image:team/api' --keyword timeout
 dm backup container 'name:api-*' --dry-run
 dm rerun --filter 'label:dm.managed=true' --dry-run
 ```
@@ -134,11 +133,11 @@ dm rerun --filter 'label:dm.managed=true' --dry-run
 | `label` | label key、value 或 `key=value` |
 
 ```bash
-dm save images --filter 'repo:team/api'
-dm save images --filter 'tag:v1'
-dm save images --filter 'image:busybox'
-dm save images --filter 'digest:*deadbeef'
-dm save images --filter 'label:org.opencontainers.image.source=*github*' --dry-run
+dm image save images --filter 'repo:team/api'
+dm image save images --filter 'tag:v1'
+dm image save images --filter 'image:busybox'
+dm image save images --filter 'digest:*deadbeef'
+dm image save images --filter 'label:org.opencontainers.image.source=*github*' --dry-run
 ```
 
 Volume 筛选适用于 `volume ls-unused`:
@@ -160,13 +159,13 @@ dm volume ls-unused --filter 'label:env=dev'
 dm volume ls-unused --filter 'option:type=nfs'
 ```
 
-`prune-report --filter` 使用 Docker prune 语义，和上面的本地资源筛选器不同。它只支持 `label=...`、`label!=...`、`until=...`，并会影响实际 `--apply` 清理范围。
+`report prune --filter` 使用 Docker prune 语义，和上面的本地资源筛选器不同。它只支持 `label=...`、`label!=...`、`until=...`，并会影响实际 `--apply` 清理范围。
 
-`reverse`、`health`、`network`、`logs-scan` 在不传容器目标和 `--filter` 时默认处理全部本地容器。文本输出会显示本次目标数量提示；JSON/Markdown/HTML 报告会在 `target` 字段或对应小节中保留结构化目标信息。`reverse` 的提示以 `# 目标: ...` 注释形式输出，避免破坏 shell/YAML 内容。
+`reverse`、`report health`、`report network`、`report logs` 在不传容器目标和 `--filter` 时默认处理全部本地容器。文本输出会显示本次目标数量提示；JSON/Markdown/HTML 报告会在 `target` 字段或对应小节中保留结构化目标信息。`reverse` 的提示以 `# 目标: ...` 注释形式输出，避免破坏 shell/YAML 内容。
 
 ## 端到端集成测试
 
-仓库提供 `scripts/e2e.sh`，用于在有 Docker 的测试机上启动临时 registry，并覆盖 `registry-login-check --plain-http`、`pull --plain-http --output`、`pull --plain-http --load`、`pull --to`、`backup container --bundle` 和 `restore <archive>`。
+仓库提供 `scripts/e2e.sh`，用于在有 Docker 的测试机上启动临时 registry，并覆盖 `registry check --plain-http`、`image pull --plain-http --output`、`image pull --plain-http --load`、`image pull --to`、`backup container --bundle` 和 `restore <archive>`。
 
 生产前或远程服务器验收可参考 [docs/REMOTE_TESTING.md](docs/REMOTE_TESTING.md)，其中整理了临时目录、日志留档、代理、测试资源命名、手工验证命令、通过标准和清理步骤。
 
@@ -190,22 +189,22 @@ DM_E2E_KEEP_WORKDIR=1 bash scripts/e2e.sh
 
 | 命令 | 功能 |
 | --- | --- |
-| `dm pull` | 无需 Docker CLI 直接拉取镜像并打包为 tar，可选导入或推送到目标 registry |
-| `dm pull mirror` | 从参数或列表文件批量同步镜像到目标 registry |
-| `dm load` | 从目录或单个 tar 文件导入 Docker 镜像 |
-| `dm save` | 导出本地 Docker 镜像，支持筛选、合并和 dry-run |
+| `dm image pull` | 无需 Docker CLI 直接拉取镜像并打包为 tar，可选导入或推送到目标 registry |
+| `dm image pull mirror` | 从参数或列表文件批量同步镜像到目标 registry |
+| `dm image load` | 从目录或单个 tar 文件导入 Docker 镜像 |
+| `dm image save` | 导出本地 Docker 镜像，支持筛选、合并和 dry-run |
 | `dm reverse` | 从运行容器反向生成 `docker run` 或 compose |
 | `dm rerun` | 基于 Docker inspect 停止、删除并重建容器 |
 | `dm backup container` | 备份容器 inspect、镜像、compose、network 和 volume 元数据 |
 | `dm restore` | 从备份目录或离线 tar.gz 包恢复容器 |
-| `dm prune-report` | 生成可清理资源报告，可选执行清理 |
-| `dm network` | 查看容器网络关系、端口映射和网络风险 |
-| `dm health` | 输出 Docker 体检报告 |
-| `dm logs-scan` | 扫描容器日志关键词 |
-| `dm inspect-diff` | 对比两个容器关键配置差异 |
+| `dm report prune` | 生成可清理资源报告，可选执行清理 |
+| `dm report network` | 查看容器网络关系、端口映射和网络风险 |
+| `dm report health` | 输出 Docker 体检报告 |
+| `dm report logs` | 扫描容器日志关键词 |
+| `dm report diff` | 对比两个容器关键配置差异 |
 | `dm image tree` | 分析镜像层、大小和构建历史 |
 | `dm volume ls-unused` | 查找未使用或疑似未使用 volume |
-| `dm registry-login-check` | 检查 registry 登录配置、凭据和连通性 |
+| `dm registry check` | 检查 registry 登录配置、凭据和连通性 |
 | `dm doctor` | 检查 Docker、registry、代理、磁盘和测试前置条件 |
 | `dm version` | 输出版本、commit、构建时间和运行平台 |
 
@@ -224,7 +223,7 @@ VERSION=v0.1.0 ./build.sh
 
 ## 输出格式
 
-全局 `--log-json` 只影响日志和错误输出，适合脚本统一解析命令执行状态；兼容短写 `--json` 等同于 `--log-json`。报告类命令的 `--format json` 输出的是业务报告内容，两者互不替代。
+全局 `--log-json` 只影响日志和错误输出，适合脚本统一解析命令执行状态。报告类命令的 `--format json` 输出的是业务报告内容，两者互不替代。
 
 ```bash
 dm --log-json doctor
@@ -250,21 +249,21 @@ dm doctor --output-dir /data/dm-work --min-disk-free-mb 10240
 拉取 Docker Hub 镜像:
 
 ```bash
-dm pull nginx:latest
-dm pull busybox:latest --output-dir pulled
-dm pull nginx:1.25 --output ./nginx-1.25.tar
+dm image pull nginx:latest
+dm image pull busybox:latest --output-dir pulled
+dm image pull nginx:1.25 --output ./nginx-1.25.tar
 ```
 
 指定平台:
 
 ```bash
-dm pull nginx:latest --os linux --arch arm64
+dm image pull nginx:latest --os linux --arch arm64
 ```
 
 代理:
 
 ```bash
-dm pull nginx:latest --proxy http://127.0.0.1:7890
+dm image pull nginx:latest --proxy http://127.0.0.1:7890
 ```
 
 不指定 `--proxy` 时，默认读取 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 等环境变量；未设置则直连。
@@ -272,25 +271,25 @@ dm pull nginx:latest --proxy http://127.0.0.1:7890
 私有 registry / 内网 registry:
 
 ```bash
-dm pull harbor.example.com/project/app:v1
-dm pull registry.local:5000/team/app:v1 --plain-http
-dm pull ghcr.io/org/app:v1 --docker-config /root/.docker/config.json
+dm image pull harbor.example.com/project/app:v1
+dm image pull registry.local:5000/team/app:v1 --plain-http
+dm image pull ghcr.io/org/app:v1 --docker-config /root/.docker/config.json
 ```
 
-`pull` 支持匿名 registry、Basic challenge、Bearer token challenge，以及 Docker config 中的 `auths`、`credHelpers`、`credsStore`。
+`image pull` 支持匿名 registry、Basic challenge、Bearer token challenge，以及 Docker config 中的 `auths`、`credHelpers`、`credsStore`。
 
 拉取后导入 Docker:
 
 ```bash
-dm pull busybox:latest --load
+dm image pull busybox:latest --load
 ```
 
 拉取后重新 tag 并推送到目标 registry:
 
 ```bash
-dm pull busybox:latest --to registry.local:5000
-dm pull nginx:1.25 --to registry.local/mirror
-dm pull nginx:1.25 --to registry.local/mirror/nginx:stable
+dm image pull busybox:latest --to registry.local:5000
+dm image pull nginx:1.25 --to registry.local/mirror
+dm image pull nginx:1.25 --to registry.local/mirror/nginx:stable
 ```
 
 目标规则:
@@ -304,40 +303,40 @@ dm pull nginx:1.25 --to registry.local/mirror/nginx:stable
 批量镜像同步:
 
 ```bash
-dm pull mirror busybox:latest nginx:1.25 --to registry.local:5000
-dm pull mirror --file images.txt --to registry.local/mirror --concurrency 2 --retries 2
-dm pull mirror --file images.txt --to registry.local/mirror --skip-existing --resume
-dm pull mirror --file images.txt --to registry.local/mirror --state-file ./mirror-state.json --report ./mirror-report.json
-dm pull mirror --file images.txt --to registry.local:5000 --plain-http --docker-config /root/.docker/config.json
+dm image pull mirror busybox:latest nginx:1.25 --to registry.local:5000
+dm image pull mirror --file images.txt --to registry.local/mirror --concurrency 2 --retries 2
+dm image pull mirror --file images.txt --to registry.local/mirror --skip-existing --resume
+dm image pull mirror --file images.txt --to registry.local/mirror --state-file ./mirror-state.json --report ./mirror-report.json
+dm image pull mirror --file images.txt --to registry.local:5000 --plain-http --docker-config /root/.docker/config.json
 ```
 
-镜像列表文件一行一个镜像，空行和以 `#` 开头的行会被忽略。`pull mirror` 会复用 `pull --to` 的拉取、digest 校验、导入、tag、push、代理、认证和 registry 预检流程；`--skip-existing` 会在同步前检查目标 manifest，已存在则跳过；`--resume` 会读取状态文件并跳过上次已成功的镜像。`--to` 使用完整镜像名时只适合单个镜像；批量同步请使用 registry 或 namespace 前缀。
+镜像列表文件一行一个镜像，空行和以 `#` 开头的行会被忽略。`image pull mirror` 会复用 `image pull --to` 的拉取、digest 校验、导入、tag、push、代理、认证和 registry 预检流程；`--skip-existing` 会在同步前检查目标 manifest，已存在则跳过；`--resume` 会读取状态文件并跳过上次已成功的镜像。`--to` 使用完整镜像名时只适合单个镜像；批量同步请使用 registry 或 namespace 前缀。
 
 ## 镜像导入和导出
 
 导入镜像:
 
 ```bash
-dm load
-dm load images
-dm load ./busybox.tar
+dm image load
+dm image load images
+dm image load ./busybox.tar
 ```
 
-`load` 会递归查找 `.tar`、`.tar.gz`、`.tgz` 镜像归档。
+`image load` 会递归查找 `.tar`、`.tar.gz`、`.tgz` 镜像归档。
 
 导出镜像:
 
 ```bash
-dm save images
-dm save images --filter 'nginx*'
-dm save images --filter busybox:latest --dry-run
-dm save images --filter 'repo:team/api'
-dm save images --filter 'tag:v1' --filter 'label:env=prod'
-dm save images --merge
-dm save images --all
+dm image save images
+dm image save images --filter 'nginx*'
+dm image save images --filter busybox:latest --dry-run
+dm image save images --filter 'repo:team/api'
+dm image save images --filter 'tag:v1' --filter 'label:env=prod'
+dm image save images --merge
+dm image save images --all
 ```
 
-`save --filter` 支持裸镜像名、tag、ID、短 ID，也支持 `id:`、`image:`、`repo:`、`tag:`、`digest:`、`label:` 字段筛选和 `*`、`?` 通配符。
+`image save --filter` 支持裸镜像名、tag、ID、短 ID，也支持 `id:`、`image:`、`repo:`、`tag:`、`digest:`、`label:` 字段筛选和 `*`、`?` 通配符。
 
 ## 容器反向解析
 
@@ -393,7 +392,7 @@ dm rerun --filter 'name:app-*' --confirm
 
 ```bash
 dm backup container app
-dm backup container app ./docker-backups/app
+dm backup container app --output-dir ./docker-backups/app
 dm backup container app --no-image
 dm backup container "api-*" worker --output-dir ./docker-backups/prod
 dm backup container "image:team/api" "label:env=prod" --output-dir ./docker-backups/prod
@@ -445,16 +444,16 @@ dm restore ./app-offline.tar.gz --skip-checksum
 仅生成报告:
 
 ```bash
-dm prune-report
+dm report prune
 ```
 
 执行清理:
 
 ```bash
-dm prune-report --apply --confirm
-dm prune-report --only container --filter label=dmtest=true --apply --confirm
-dm prune-report --only volume --protect-label keep=true --apply --confirm
-dm prune-report --filter until=168h --apply --confirm
+dm report prune --apply --confirm
+dm report prune --only container --filter label=dmtest=true --apply --confirm
+dm report prune --only volume --protect-label keep=true --apply --confirm
+dm report prune --filter until=168h --apply --confirm
 ```
 
 `--apply` 会调用 Docker prune API 删除可清理资源，必须同时指定 `--confirm`。可用 `--only container|image|volume|build-cache` 限制资源类型，用 `--filter label=...`、`--filter label!=...`、`--filter until=...` 或 `--until` 收窄范围，用 `--protect-label` 保护带指定 label 的资源。使用 label 或 protect-label 范围时不会清理 build cache，因为 Docker 的 build cache 缺少可与报告一致核对的 label 元数据。执行前请确认报告内容。
@@ -464,23 +463,23 @@ dm prune-report --filter until=168h --apply --confirm
 下面这些诊断/报告命令默认输出文本，也支持 `json`、`markdown` 和 `html`。JSON 适合脚本和 CI 消费，Markdown/HTML 适合巡检留档、工单附件或分享给团队:
 
 ```bash
-dm health --format json
-dm network --format json
-dm prune-report --format json
-dm logs-scan app --format json
-dm inspect-diff app-old app-new --format json
+dm report health --format json
+dm report network --format json
+dm report prune --format json
+dm report logs app --format json
+dm report diff app-old app-new --format json
 dm image tree nginx:latest --format json
 dm volume ls-unused --format json
-dm registry-login-check registry.local:5000 --format json
+dm registry check registry.local:5000 --format json
 dm doctor --format json
 ```
 
 生成可归档报告:
 
 ```bash
-dm health --format markdown > health-report.md
-dm network --format html > network-report.html
-dm prune-report --format markdown > prune-report.md
+dm report health --format markdown > health-report.md
+dm report network --format html > network-report.html
+dm report prune --format markdown > prune-report.md
 dm volume ls-unused --format html > volume-report.html
 dm image tree nginx:latest --format markdown > image-tree.md
 ```
@@ -488,45 +487,45 @@ dm image tree nginx:latest --format markdown > image-tree.md
 网络关系和端口风险:
 
 ```bash
-dm network
-dm network --running
-dm network --filter 'image:nginx*'
-dm network --filter 'label:env=prod'
-dm network --filter 'status:Up*'
+dm report network
+dm report network --running
+dm report network --filter 'image:nginx*'
+dm report network --filter 'label:env=prod'
+dm report network --filter 'status:Up*'
 ```
 
 健康检查:
 
 ```bash
-dm health
-dm health --running
-dm health --filter 'name:api-*'
-dm health --filter 'state=running'
-dm health --no-logs
-dm health --keyword error --keyword timeout --log-tail 200
-dm health --redact-secrets
+dm report health
+dm report health --running
+dm report health --filter 'name:api-*'
+dm report health --filter 'state=running'
+dm report health --no-logs
+dm report health --keyword error --keyword timeout --log-tail 200
+dm report health --redact-secrets
 ```
 
 日志扫描:
 
 ```bash
-dm logs-scan app
-dm logs-scan --running
-dm logs-scan --filter 'image:team/api'
-dm logs-scan --filter 'label:env=prod'
-dm logs-scan --keyword panic --keyword oom --tail 1000 --context 2
-dm logs-scan app --since 30m
-dm logs-scan app --redact-secrets
+dm report logs app
+dm report logs --running
+dm report logs --filter 'image:team/api'
+dm report logs --filter 'label:env=prod'
+dm report logs --keyword panic --keyword oom --tail 1000 --context 2
+dm report logs app --since 30m
+dm report logs app --redact-secrets
 ```
 
 容器配置对比:
 
 ```bash
-dm inspect-diff app-old app-new
-dm inspect-diff app-old app-new --redact-secrets
+dm report diff app-old app-new
+dm report diff app-old app-new --redact-secrets
 ```
 
-该工具默认按管理员视角输出完整信息。需要分享报告或命令片段时，可对 `reverse`、`health`、`logs-scan`、`inspect-diff` 使用 `--redact-secrets`，隐藏 env、label 和日志行中疑似敏感字段。
+该工具默认按管理员视角输出完整信息。需要分享报告或命令片段时，可对 `reverse`、`report health`、`report logs`、`report diff` 使用 `--redact-secrets`，隐藏 env、label 和日志行中疑似敏感字段。
 
 镜像层分析:
 
@@ -550,9 +549,9 @@ dm volume ls-unused --filter 'label:env=dev'
 Registry 登录检查:
 
 ```bash
-dm registry-login-check registry.local:5000
-dm registry-login-check registry.local:5000 --plain-http
-dm registry-login-check registry.local:5000 --docker-config /root/.docker/config.json
+dm registry check registry.local:5000
+dm registry check registry.local:5000 --plain-http
+dm registry check registry.local:5000 --docker-config /root/.docker/config.json
 ```
 
 该命令会检查 Docker config、`auths`、credential helper、registry `/v2/` 连通性和 Docker RegistryLogin 认证结果。
@@ -562,8 +561,8 @@ dm registry-login-check registry.local:5000 --docker-config /root/.docker/config
 拉取镜像并迁移到内网 registry:
 
 ```bash
-dm registry-login-check registry.local:5000 --plain-http
-dm pull nginx:latest --to registry.local:5000 --plain-http
+dm registry check registry.local:5000 --plain-http
+dm image pull nginx:latest --to registry.local:5000 --plain-http
 ```
 
 把容器打包后迁移到另一台机器:
@@ -576,9 +575,9 @@ dm restore app-offline.tar.gz --replace
 审计当前 Docker 状态:
 
 ```bash
-dm health
-dm network
-dm prune-report
+dm report health
+dm report network
+dm report prune
 dm volume ls-unused
 ```
 
@@ -586,15 +585,15 @@ dm volume ls-unused
 
 ```bash
 dm reverse app --reverse-type compose
-dm inspect-diff app app-new
-dm logs-scan app --since 2h --context 3
+dm report diff app app-new
+dm report logs app --since 2h --context 3
 ```
 
 ## 注意事项
 
-- `pull` 直接实现 registry HTTP 拉取流程，不完全等价于 Docker daemon 的所有行为；私有 registry 已支持常见 Basic/Bearer challenge，但复杂企业 SSO 或自定义认证仍建议先测试。
-- `pull --to` 会使用本地 Docker daemon 执行 load、tag、push，目标 registry 的 push 权限依赖本机 Docker 登录状态。
+- `image pull` 直接实现 registry HTTP 拉取流程，不完全等价于 Docker daemon 的所有行为；私有 registry 已支持常见 Basic/Bearer challenge，但复杂企业 SSO 或自定义认证仍建议先测试。
+- `image pull --to` 会使用本地 Docker daemon 执行 load、tag、push，目标 registry 的 push 权限依赖本机 Docker 登录状态。
 - `restore` 会重建 network、volume 和容器。遇到已有容器时默认拒绝覆盖，需要显式使用 `--replace`。
 - `rerun --confirm` 会删除并重建容器，建议先运行 `--dry-run`。
-- `prune-report --apply` 会删除 Docker 资源，适合在确认报告后执行。
+- `report prune --apply` 会删除 Docker 资源，适合在确认报告后执行。
 - 日志和 inspect 可能包含敏感信息，分享输出前请检查 env、label、命令行参数和日志内容。

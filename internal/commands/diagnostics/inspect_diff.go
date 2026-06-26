@@ -57,7 +57,7 @@ type InspectDiffEntry struct {
 func NewInspectDiffCommand() *cobra.Command {
 	opts := InspectDiffOptions{}
 	cmd := &cobra.Command{
-		Use:   "inspect-diff <containerA> <containerB>",
+		Use:   "diff <containerA> <containerB>",
 		Short: "对比两个容器的关键配置差异",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {

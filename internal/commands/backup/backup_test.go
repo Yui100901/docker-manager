@@ -261,29 +261,13 @@ func TestBackupContainerCommandBundleOutputFlagWritesArchive(t *testing.T) {
 	}
 }
 
-func TestBackupContainerCommandOutputCompatibilityFlagIsHidden(t *testing.T) {
+func TestBackupContainerCommandOnlyExposesBundleOutputFlag(t *testing.T) {
 	cmd := newBackupContainerCommand()
-	outputFlag := cmd.Flags().Lookup("output")
-	if outputFlag == nil {
-		t.Fatal("output compatibility flag missing")
-	}
-	if !outputFlag.Hidden {
-		t.Fatal("output compatibility flag should be hidden")
+	if flag := cmd.Flags().Lookup("output"); flag != nil {
+		t.Fatal("output compatibility flag should be removed")
 	}
 	if flag := cmd.Flags().Lookup("bundle-output"); flag == nil {
 		t.Fatal("bundle-output flag missing")
-	}
-}
-
-func TestBackupContainerCommandRejectsOutputAndBundleOutputTogether(t *testing.T) {
-	cmd := newBackupContainerCommand()
-	cmd.SetArgs([]string{"demo", "--bundle", "--output", "old.tar.gz", "--bundle-output", "new.tar.gz"})
-	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("Execute() error = nil, want conflict error")
-	}
-	if !strings.Contains(err.Error(), "--output") || !strings.Contains(err.Error(), "--bundle-output") {
-		t.Fatalf("Execute() error = %q, want output conflict", err.Error())
 	}
 }
 
@@ -404,18 +388,6 @@ func TestBackupContainerCommandNoImageDisablesImageExport(t *testing.T) {
 	}
 	if hasCallPrefix(fake.calls, "save-image:") {
 		t.Fatalf("calls = %#v, --no-image should skip image export", fake.calls)
-	}
-}
-
-func TestBackupContainerCommandRejectsConflictingImageFlags(t *testing.T) {
-	cmd := newBackupContainerCommand()
-	cmd.SetArgs([]string{"demo", "--no-image", "--include-image=true"})
-	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("Execute() error = nil, want conflict error")
-	}
-	if !strings.Contains(err.Error(), "--no-image") || !strings.Contains(err.Error(), "--include-image=true") {
-		t.Fatalf("Execute() error = %q, want image flag conflict", err.Error())
 	}
 }
 

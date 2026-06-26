@@ -23,7 +23,7 @@ type appConfig struct {
 	OutputDir string `yaml:"output_dir"`
 	Verbose   bool   `yaml:"verbose"`
 	Quiet     bool   `yaml:"quiet"`
-	JSON      bool   `yaml:"json"`
+	JSON      bool   `yaml:"log_json"`
 }
 
 type outputOptions struct {

@@ -36,10 +36,8 @@ func preseedJSONErrorMode(opts *outputOptions, args []string) {
 	for _, arg := range args {
 		var value string
 		switch {
-		case arg == "--json" || arg == "--log-json":
+		case arg == "--log-json":
 			opts.JSON = true
-		case strings.HasPrefix(arg, "--json="):
-			value = strings.TrimPrefix(arg, "--json=")
 		case strings.HasPrefix(arg, "--log-json="):
 			value = strings.TrimPrefix(arg, "--log-json=")
 		default:
@@ -88,20 +86,13 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 	rootCmd.PersistentFlags().BoolVar(&opts.Verbose, "verbose", opts.Verbose, "输出详细日志")
 	rootCmd.PersistentFlags().BoolVar(&opts.Quiet, "quiet", opts.Quiet, "隐藏信息日志")
 	rootCmd.PersistentFlags().BoolVar(&opts.JSON, "log-json", opts.JSON, "以 JSON 输出日志和错误，不影响业务报告格式")
-	rootCmd.PersistentFlags().BoolVar(&opts.JSON, "json", opts.JSON, "兼容短写: 等同 --log-json，仅影响日志和错误")
 
-	rootCmd.AddCommand(images.NewLoadCommand())
-	rootCmd.AddCommand(images.NewSaveCommandWithDefaults(func() string { return cfg.OutputDir }))
 	rootCmd.AddCommand(backup.NewBackupCommand())
 	rootCmd.AddCommand(backup.NewRestoreCommand())
-	rootCmd.AddCommand(diagnostics.NewPruneReportCommand())
-	rootCmd.AddCommand(diagnostics.NewNetworkCommand())
-	rootCmd.AddCommand(diagnostics.NewHealthCommand())
-	rootCmd.AddCommand(diagnostics.NewInspectDiffCommand())
-	rootCmd.AddCommand(diagnostics.NewImageCommand())
+	rootCmd.AddCommand(newImageCommand(cfg))
 	rootCmd.AddCommand(diagnostics.NewVolumeCommand())
-	rootCmd.AddCommand(diagnostics.NewLogsScanCommand())
-	rootCmd.AddCommand(diagnostics.NewRegistryLoginCheckCommand())
+	rootCmd.AddCommand(diagnostics.NewRegistryCommand())
+	rootCmd.AddCommand(diagnostics.NewReportCommand())
 	rootCmd.AddCommand(diagnostics.NewDoctorCommandWithDefaults(func() diagnostics.DoctorDefaults {
 		return diagnostics.DoctorDefaults{ConfigPath: configPath, OutputDir: cfg.OutputDir}
 	}))
@@ -109,7 +100,14 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 	rootCmd.AddCommand(version.NewCommand())
 	rootCmd.AddCommand(reverse.NewReverseCommand())
 	rootCmd.AddCommand(reverse.NewRerunCommand())
-	rootCmd.AddCommand(pull.NewPullCommandWithDefaults(func() pull.CommandDefaults {
+	return rootCmd
+}
+
+func newImageCommand(cfg *appConfig) *cobra.Command {
+	imageCmd := diagnostics.NewImageCommand()
+	imageCmd.AddCommand(images.NewLoadCommand())
+	imageCmd.AddCommand(images.NewSaveCommandWithDefaults(func() string { return cfg.OutputDir }))
+	imageCmd.AddCommand(pull.NewPullCommandWithDefaults(func() pull.CommandDefaults {
 		return pull.CommandDefaults{
 			Proxy:     cfg.Proxy,
 			TargetOS:  cfg.TargetOS,
@@ -117,7 +115,7 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 			OutputDir: cfg.OutputDir,
 		}
 	}))
-	return rootCmd
+	return imageCmd
 }
 
 func isDoctorCommand(cmd *cobra.Command) bool {
@@ -137,7 +135,7 @@ func applyOutputDefaults(cmd *cobra.Command, cfg *appConfig, opts *outputOptions
 	if !flags.Changed("quiet") {
 		opts.Quiet = cfg.Quiet
 	}
-	if !flags.Changed("json") && !flags.Changed("log-json") {
+	if !flags.Changed("log-json") {
 		opts.JSON = cfg.JSON
 	}
 	if flags.Changed("verbose") && opts.Verbose {
