@@ -167,6 +167,8 @@ dm volume ls-unused --filter 'option:type=nfs'
 
 仓库提供 `scripts/e2e.sh`，用于在有 Docker 的测试机上启动临时 registry，并覆盖 `registry-login-check --plain-http`、`pull --plain-http --output`、`pull --plain-http --load`、`pull --to`、`backup container --bundle` 和 `restore <archive>`。
 
+生产前或远程服务器验收可参考 [docs/REMOTE_TESTING.md](docs/REMOTE_TESTING.md)，其中整理了临时目录、日志留档、代理、测试资源命名、手工验证命令、通过标准和清理步骤。
+
 ```bash
 bash scripts/e2e.sh
 ```
