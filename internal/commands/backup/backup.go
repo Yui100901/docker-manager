@@ -76,6 +76,7 @@ type BackupOptions struct {
 	Bundle       bool
 	BundleOutput string
 	Merge        bool
+	Output       io.Writer
 }
 
 type RestoreOptions struct {
@@ -121,6 +122,21 @@ type BackupResourceRef struct {
 	File string `json:"file"`
 }
 
+type restoreDryRunPlan struct {
+	ContainerName string
+	SourceName    string
+	EntryDir      string
+	Image         string
+	ImageArchive  string
+	Networks      []BackupResourceRef
+	Volumes       []BackupResourceRef
+	Ports         []string
+	Exists        bool
+	Replace       bool
+	NoStart       bool
+	Conflicts     []string
+}
+
 func NewBackupCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "backup",
@@ -140,12 +156,17 @@ func newBackupContainerCommand() *cobra.Command {
 			targets, outputDir := splitBackupContainerArgs(args, opts.OutputDir)
 			runOpts := opts
 			runOpts.OutputDir = outputDir
+			runOpts.Output = cmd.OutOrStdout()
 			result, err := backupContainers(cmd.Context(), targets, runOpts)
 			if err != nil {
 				return fmt.Errorf("备份容器失败: %w", err)
 			}
 			for _, path := range result.Paths {
-				fmt.Fprintf(cmd.OutOrStdout(), "备份已创建: %s\n", path)
+				if runOpts.DryRun {
+					fmt.Fprintf(cmd.OutOrStdout(), "备份 dry-run 完成: %s\n", path)
+				} else {
+					fmt.Fprintf(cmd.OutOrStdout(), "备份已创建: %s\n", path)
+				}
 			}
 			return nil
 		},
@@ -175,7 +196,11 @@ func NewRestoreCommand() *cobra.Command {
 				if err := restoreBackup(cmd.Context(), arg, opts); err != nil {
 					return fmt.Errorf("恢复失败: %w", err)
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "恢复完成: %s\n", arg)
+				if opts.DryRun {
+					fmt.Fprintf(cmd.OutOrStdout(), "恢复 dry-run 完成: %s\n", arg)
+				} else {
+					fmt.Fprintf(cmd.OutOrStdout(), "恢复完成: %s\n", arg)
+				}
 			}
 			return nil
 		},
@@ -459,6 +484,9 @@ func looksLikeBackupPathArg(value string) bool {
 }
 
 func backupContainer(ctx context.Context, name string, opts BackupOptions) (string, error) {
+	if opts.Output == nil {
+		opts.Output = io.Discard
+	}
 	svc, err := newBackupDockerService()
 	if err != nil {
 		return "", err
@@ -489,7 +517,29 @@ func backupContainer(ctx context.Context, name string, opts BackupOptions) (stri
 	}
 
 	if opts.DryRun {
-		log.Printf("Dry run backup container: name=%s output=%s includeImage=%v", name, outputDir, opts.IncludeImage)
+		if opts.IncludeImage && containerManifest.Image != "" {
+			imageFile := filepath.Join("images", safeBackupName(containerManifest.Image)+".tar")
+			containerManifest.ImageArchive = filepath.ToSlash(imageFile)
+		}
+		networks, err := inspectBackupNetworkRefs(ctx, svc, inspect)
+		if err != nil {
+			return "", err
+		}
+		containerManifest.Networks = networks
+		volumes, err := inspectBackupVolumeRefs(ctx, svc, inspect)
+		if err != nil {
+			return "", err
+		}
+		containerManifest.Volumes = volumes
+		manifest := BackupManifest{
+			Version:        1,
+			CreatedAt:      createdAt,
+			Tool:           version.CurrentInfo(),
+			SourcePlatform: currentSourcePlatform(),
+			Containers:     []BackupContainerManifest{containerManifest},
+		}
+		printBackupDryRunPlan(opts.Output, outputDir, manifest, opts)
+		log.Printf("Dry run backup container: name=%s output=%s includeImage=%v networks=%d volumes=%d bundle=%v", name, outputDir, opts.IncludeImage, len(networks), len(volumes), opts.Bundle)
 		return outputDir, nil
 	}
 
@@ -586,6 +636,9 @@ func restoreBackup(ctx context.Context, backupDir string, opts RestoreOptions) e
 }
 
 func restoreBackupDir(ctx context.Context, backupDir string, opts RestoreOptions) error {
+	if opts.Output == nil {
+		opts.Output = io.Discard
+	}
 	svc, err := newBackupDockerService()
 	if err != nil {
 		return err
@@ -599,6 +652,11 @@ func restoreBackupDir(ctx context.Context, backupDir string, opts RestoreOptions
 	}
 	if opts.Name != "" && len(manifest.Containers) != 1 {
 		return fmt.Errorf("--name 只支持恢复单个备份")
+	}
+	if opts.DryRun {
+		fmt.Fprintf(opts.Output, "恢复 dry-run 计划: %s\n", backupDir)
+		fmt.Fprintf(opts.Output, "  容器数量: %d\n", len(manifest.Containers))
+		fmt.Fprintf(opts.Output, "  checksum: %s\n", checksumPlanText(opts.SkipChecksum, filepath.Join(backupDir, backupChecksumName)))
 	}
 	for _, entry := range manifest.Containers {
 		if err := restoreBackupContainerEntry(ctx, svc, backupDir, entry, opts); err != nil {
@@ -638,11 +696,18 @@ func restoreBackupContainerEntry(ctx context.Context, svc backupDockerService, b
 		return err
 	}
 	if exists && !opts.Replace {
-		return fmt.Errorf("container %s already exists; use --replace to overwrite", targetName)
+		if !opts.DryRun {
+			return fmt.Errorf("container %s already exists; use --replace to overwrite", targetName)
+		}
 	}
 
 	if opts.DryRun {
-		log.Printf("Dry run restore: backup=%s container=%s replace=%v noStart=%v", entryDir, targetName, opts.Replace, opts.NoStart)
+		plan, err := buildRestoreDryRunPlan(entryDir, entry, inspect, targetName, exists, opts)
+		if err != nil {
+			return err
+		}
+		printRestoreDryRunContainerPlan(opts.Output, plan)
+		log.Printf("Dry run restore: backup=%s container=%s replace=%v noStart=%v image=%v networks=%d volumes=%d", entryDir, targetName, opts.Replace, opts.NoStart, plan.ImageArchive != "", len(plan.Networks), len(plan.Volumes))
 		return nil
 	}
 
@@ -695,6 +760,93 @@ func restoreBackupContainerEntry(ctx context.Context, svc backupDockerService, b
 	return nil
 }
 
+func buildRestoreDryRunPlan(entryDir string, entry BackupContainerManifest, inspect container.InspectResponse, targetName string, exists bool, opts RestoreOptions) (restoreDryRunPlan, error) {
+	plan := restoreDryRunPlan{
+		ContainerName: targetName,
+		SourceName:    entry.ContainerName,
+		EntryDir:      entryDir,
+		Image:         entry.Image,
+		Networks:      append([]BackupResourceRef(nil), entry.Networks...),
+		Volumes:       append([]BackupResourceRef(nil), entry.Volumes...),
+		Ports:         restorePortBindings(inspect),
+		Exists:        exists,
+		Replace:       opts.Replace,
+		NoStart:       opts.NoStart,
+	}
+	if plan.Image == "" && inspect.Config != nil {
+		plan.Image = inspect.Config.Image
+	}
+	if entry.ImageArchive != "" {
+		imagePath, err := backupFilePath(entryDir, entry.ImageArchive)
+		if err != nil {
+			return plan, err
+		}
+		if _, err := os.Stat(imagePath); err != nil {
+			return plan, fmt.Errorf("image archive %s: %w", entry.ImageArchive, err)
+		}
+		plan.ImageArchive = entry.ImageArchive
+	}
+	for _, ref := range entry.Networks {
+		if _, err := readNetworkInspect(entryDir, ref); err != nil {
+			return plan, err
+		}
+	}
+	for _, ref := range entry.Volumes {
+		if _, err := readVolumeInspect(entryDir, ref); err != nil {
+			return plan, err
+		}
+	}
+	if exists && !opts.Replace {
+		plan.Conflicts = append(plan.Conflicts, fmt.Sprintf("目标容器 %s 已存在；实际恢复需要 --replace 或更换 --name", targetName))
+	}
+	if len(plan.Ports) > 0 {
+		plan.Conflicts = append(plan.Conflicts, "请确认目标宿主机端口未被占用: "+strings.Join(plan.Ports, ", "))
+	}
+	return plan, nil
+}
+
+func printRestoreDryRunContainerPlan(w io.Writer, plan restoreDryRunPlan) {
+	fmt.Fprintf(w, "  - 容器: %s", plan.ContainerName)
+	if plan.SourceName != "" && plan.SourceName != plan.ContainerName {
+		fmt.Fprintf(w, " source=%s", plan.SourceName)
+	}
+	fmt.Fprintf(w, " backup=%s\n", plan.EntryDir)
+	if plan.Image != "" {
+		fmt.Fprintf(w, "    镜像: %s\n", plan.Image)
+	}
+	if plan.ImageArchive != "" {
+		fmt.Fprintf(w, "    将导入镜像归档: %s\n", plan.ImageArchive)
+	}
+	if len(plan.Networks) > 0 {
+		fmt.Fprintf(w, "    将创建/复用 network: %s\n", resourceRefNames(plan.Networks))
+	}
+	if len(plan.Volumes) > 0 {
+		fmt.Fprintf(w, "    将创建/复用 volume: %s\n", resourceRefNames(plan.Volumes))
+	}
+	if len(plan.Ports) > 0 {
+		fmt.Fprintf(w, "    端口绑定: %s\n", strings.Join(plan.Ports, ", "))
+	}
+	switch {
+	case plan.Exists && plan.Replace:
+		fmt.Fprintln(w, "    目标状态: 已存在，实际恢复会先删除后重建")
+	case plan.Exists:
+		fmt.Fprintln(w, "    目标状态: 已存在，存在覆盖冲突")
+	default:
+		fmt.Fprintln(w, "    目标状态: 不存在，将创建")
+	}
+	if plan.NoStart {
+		fmt.Fprintln(w, "    启动策略: 只创建，不启动")
+	} else {
+		fmt.Fprintln(w, "    启动策略: 创建后启动")
+	}
+	if len(plan.Conflicts) > 0 {
+		fmt.Fprintln(w, "    预检提示:")
+		for _, conflict := range plan.Conflicts {
+			fmt.Fprintf(w, "      - %s\n", conflict)
+		}
+	}
+}
+
 func backupNetworks(ctx context.Context, svc backupDockerService, outputDir string, inspect container.InspectResponse) ([]BackupResourceRef, error) {
 	if inspect.NetworkSettings == nil || len(inspect.NetworkSettings.Networks) == 0 {
 		return nil, nil
@@ -743,6 +895,43 @@ func backupVolumes(ctx context.Context, svc backupDockerService, outputDir strin
 	return refs, nil
 }
 
+func inspectBackupNetworkRefs(ctx context.Context, svc backupDockerService, inspect container.InspectResponse) ([]BackupResourceRef, error) {
+	if inspect.NetworkSettings == nil || len(inspect.NetworkSettings.Networks) == 0 {
+		return nil, nil
+	}
+	var names []string
+	for name := range inspect.NetworkSettings.Networks {
+		if isBuiltinNetwork(name) {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	refs := make([]BackupResourceRef, 0, len(names))
+	for _, name := range names {
+		if _, err := svc.InspectNetwork(ctx, name); err != nil {
+			return nil, fmt.Errorf("inspect network %s: %w", name, err)
+		}
+		rel := filepath.Join("networks", safeBackupName(name)+".json")
+		refs = append(refs, BackupResourceRef{Name: name, File: filepath.ToSlash(rel)})
+	}
+	return refs, nil
+}
+
+func inspectBackupVolumeRefs(ctx context.Context, svc backupDockerService, inspect container.InspectResponse) ([]BackupResourceRef, error) {
+	names := namedVolumes(inspect)
+	refs := make([]BackupResourceRef, 0, len(names))
+	for _, name := range names {
+		if _, err := svc.InspectVolume(ctx, name); err != nil {
+			return nil, fmt.Errorf("inspect volume %s: %w", name, err)
+		}
+		rel := filepath.Join("volumes", safeBackupName(name)+".json")
+		refs = append(refs, BackupResourceRef{Name: name, File: filepath.ToSlash(rel)})
+	}
+	return refs, nil
+}
+
 func namedVolumes(inspect container.InspectResponse) []string {
 	seen := map[string]bool{}
 	for _, mount := range inspect.Mounts {
@@ -757,6 +946,46 @@ func namedVolumes(inspect container.InspectResponse) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+func printBackupDryRunPlan(w io.Writer, outputDir string, manifest BackupManifest, opts BackupOptions) {
+	fmt.Fprintf(w, "备份 dry-run 计划: %s\n", outputDir)
+	fmt.Fprintf(w, "  容器数量: %d\n", len(manifest.Containers))
+	fmt.Fprintf(w, "  源平台: %s\n", manifest.SourcePlatform)
+	fmt.Fprintf(w, "  将生成文件: %s, %s, %s\n", backupManifestName, backupInspectName, backupComposeName)
+	if opts.IncludeImage {
+		fmt.Fprintln(w, "  镜像归档: 启用")
+	} else {
+		fmt.Fprintln(w, "  镜像归档: 跳过 (--include-image=false)")
+	}
+	if opts.Bundle {
+		archivePath := opts.BundleOutput
+		if archivePath == "" {
+			archivePath = outputDir + ".tar.gz"
+		}
+		fmt.Fprintf(w, "  离线包: %s\n", archivePath)
+		fmt.Fprintf(w, "  将生成附加文件: %s, %s, %s\n", backupReadmeName, backupRestoreName, backupChecksumName)
+	}
+	for _, entry := range manifest.Containers {
+		location := outputDir
+		if entry.Path != "" {
+			location = filepath.Join(outputDir, filepath.FromSlash(entry.Path))
+		}
+		fmt.Fprintf(w, "  - 容器: %s source=%s location=%s\n", entry.ContainerName, entry.SourceName, location)
+		if entry.Image != "" {
+			fmt.Fprintf(w, "    镜像: %s\n", entry.Image)
+		}
+		if entry.ImageArchive != "" {
+			fmt.Fprintf(w, "    镜像归档路径: %s\n", entry.ImageArchive)
+		}
+		if len(entry.Networks) > 0 {
+			fmt.Fprintf(w, "    network 元数据: %s\n", resourceRefNames(entry.Networks))
+		}
+		if len(entry.Volumes) > 0 {
+			fmt.Fprintf(w, "    volume 元数据: %s\n", resourceRefNames(entry.Volumes))
+		}
+	}
+	fmt.Fprintln(w, "  校验: dry-run 已确认 inspect 可读、compose 可生成、network/volume 元数据可读取；不会写入文件或导出镜像。")
 }
 
 func writeComposeFile(path string, inspect container.InspectResponse) error {
@@ -889,6 +1118,56 @@ func valueOrUnknown(value string) string {
 		return "unknown"
 	}
 	return value
+}
+
+func resourceRefNames(refs []BackupResourceRef) string {
+	names := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		if ref.Name != "" {
+			names = append(names, ref.Name)
+		}
+	}
+	if len(names) == 0 {
+		return "-"
+	}
+	sort.Strings(names)
+	return strings.Join(names, ",")
+}
+
+func checksumPlanText(skip bool, checksumPath string) string {
+	if skip {
+		return "跳过 (--skip-checksum)"
+	}
+	if _, err := os.Stat(checksumPath); err == nil {
+		return "已校验 checksums.txt"
+	}
+	return "未找到 checksums.txt，将跳过校验"
+}
+
+func restorePortBindings(inspect container.InspectResponse) []string {
+	if inspect.HostConfig == nil || len(inspect.HostConfig.PortBindings) == 0 {
+		return nil
+	}
+	var ports []string
+	for port, bindings := range inspect.HostConfig.PortBindings {
+		if len(bindings) == 0 {
+			ports = append(ports, string(port))
+			continue
+		}
+		for _, binding := range bindings {
+			host := binding.HostIP
+			if host == "" {
+				host = "0.0.0.0"
+			}
+			if binding.HostPort == "" {
+				ports = append(ports, fmt.Sprintf("%s->%s", host, port))
+				continue
+			}
+			ports = append(ports, fmt.Sprintf("%s:%s->%s", host, binding.HostPort, port))
+		}
+	}
+	sort.Strings(ports)
+	return ports
 }
 
 func writeChecksums(root string) error {

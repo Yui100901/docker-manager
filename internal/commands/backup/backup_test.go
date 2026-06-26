@@ -15,6 +15,7 @@ import (
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/volume"
+	"github.com/docker/go-connections/nat"
 )
 
 type fakeBackupDockerService struct {
@@ -231,6 +232,61 @@ func TestBackupContainerWritesOfflineBundleArtifacts(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(extracted, backupManifestName)); err != nil {
 		t.Fatalf("archive missing manifest: %v", err)
+	}
+}
+
+func TestBackupContainerDryRunPrintsPlanWithoutWritingFiles(t *testing.T) {
+	fake := &fakeBackupDockerService{
+		inspect: container.InspectResponse{
+			ContainerJSONBase: &container.ContainerJSONBase{
+				Name:       "/demo",
+				HostConfig: &container.HostConfig{},
+			},
+			Config: &container.Config{Image: "busybox:latest"},
+			Mounts: []container.MountPoint{
+				{Type: mount.TypeVolume, Name: "demo_data", Destination: "/data"},
+			},
+			NetworkSettings: &container.NetworkSettings{
+				Networks: map[string]*network.EndpointSettings{"demo_net": {}},
+			},
+		},
+		network: network.Inspect{Name: "demo_net", Driver: "bridge"},
+		volume:  volume.Volume{Name: "demo_data", Driver: "local"},
+	}
+	restoreFactory := replaceBackupServiceFactory(fake)
+	defer restoreFactory()
+
+	dir := filepath.Join(t.TempDir(), "dry-run")
+	var out bytes.Buffer
+	got, err := backupContainer(context.Background(), "demo", BackupOptions{
+		OutputDir:    dir,
+		IncludeImage: true,
+		Bundle:       true,
+		DryRun:       true,
+		Output:       &out,
+	})
+	if err != nil {
+		t.Fatalf("backupContainer() error = %v", err)
+	}
+	if got != dir {
+		t.Fatalf("backupContainer() dir = %q, want %q", got, dir)
+	}
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dry-run created output dir: %v", err)
+	}
+	if hasCallPrefix(fake.calls, "save-image:") {
+		t.Fatalf("calls = %#v, dry-run should not save image", fake.calls)
+	}
+	for _, want := range []string{"inspect-network:demo_net", "inspect-volume:demo_data"} {
+		if !hasCall(fake.calls, want) {
+			t.Fatalf("calls = %#v, want metadata validation %s", fake.calls, want)
+		}
+	}
+	gotOutput := out.String()
+	for _, want := range []string{"备份 dry-run 计划", "manifest.json", "checksums.txt", "demo_net", "demo_data", "不会写入文件"} {
+		if !strings.Contains(gotOutput, want) {
+			t.Fatalf("output = %q, want %q", gotOutput, want)
+		}
 	}
 }
 
@@ -564,6 +620,68 @@ func TestRestoreBackupCanSkipChecksumVerification(t *testing.T) {
 	}
 	if !hasCall(fake.calls, "container-exists:demo") || !hasCall(fake.calls, "create-container:demo") {
 		t.Fatalf("calls = %#v, want restore to continue when checksum is skipped", fake.calls)
+	}
+}
+
+func TestRestoreBackupDryRunPrintsPlanWithoutDockerMutations(t *testing.T) {
+	dir := t.TempDir()
+	imageArchive := filepath.ToSlash(filepath.Join("images", "busybox.tar"))
+	networkFile := filepath.ToSlash(filepath.Join("networks", "demo_net.json"))
+	volumeFile := filepath.ToSlash(filepath.Join("volumes", "demo_data.json"))
+	writeTestJSON(t, filepath.Join(dir, backupManifestName), BackupManifest{
+		Version:       1,
+		ContainerName: "demo",
+		Image:         "busybox:latest",
+		ImageArchive:  imageArchive,
+		InspectFile:   backupInspectName,
+		ComposeFile:   backupComposeName,
+		Networks:      []BackupResourceRef{{Name: "demo_net", File: networkFile}},
+		Volumes:       []BackupResourceRef{{Name: "demo_data", File: volumeFile}},
+	})
+	writeTestJSON(t, filepath.Join(dir, backupInspectName), container.InspectResponse{
+		ContainerJSONBase: &container.ContainerJSONBase{
+			Name: "/demo",
+			HostConfig: &container.HostConfig{
+				PortBindings: nat.PortMap{
+					"80/tcp": []nat.PortBinding{{HostIP: "0.0.0.0", HostPort: "8080"}},
+				},
+			},
+		},
+		Config: &container.Config{Image: "busybox:latest"},
+	})
+	writeTestJSON(t, filepath.Join(dir, filepath.FromSlash(networkFile)), network.Inspect{Name: "demo_net"})
+	writeTestJSON(t, filepath.Join(dir, filepath.FromSlash(volumeFile)), volume.Volume{Name: "demo_data"})
+	if err := os.MkdirAll(filepath.Join(dir, "images"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(imageArchive)), []byte("image tar"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeChecksums(dir); err != nil {
+		t.Fatalf("writeChecksums() error = %v", err)
+	}
+
+	fake := &fakeBackupDockerService{containerExists: true}
+	restoreFactory := replaceBackupServiceFactory(fake)
+	defer restoreFactory()
+
+	var out bytes.Buffer
+	if err := restoreBackup(context.Background(), dir, RestoreOptions{DryRun: true, Output: &out}); err != nil {
+		t.Fatalf("restoreBackup() error = %v", err)
+	}
+	for _, forbidden := range []string{"load-image:", "create-network:", "create-volume:", "remove-container:", "create-container:", "start-container:"} {
+		if hasCallPrefix(fake.calls, forbidden) {
+			t.Fatalf("calls = %#v, dry-run should not call %s", fake.calls, forbidden)
+		}
+	}
+	if !hasCall(fake.calls, "container-exists:demo") {
+		t.Fatalf("calls = %#v, want existence check", fake.calls)
+	}
+	gotOutput := out.String()
+	for _, want := range []string{"恢复 dry-run 计划", "已校验 checksums.txt", "将导入镜像归档", "demo_net", "demo_data", "0.0.0.0:8080->80/tcp", "存在覆盖冲突"} {
+		if !strings.Contains(gotOutput, want) {
+			t.Fatalf("output = %q, want %q", gotOutput, want)
+		}
 	}
 }
 

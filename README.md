@@ -277,6 +277,8 @@ dm backup container "api-*" worker --output-dir ./docker-backups/prod
 dm backup container app --dry-run
 ```
 
+`backup container --dry-run` 不写入文件、不导出镜像，但会读取容器 inspect，确认 compose 可生成，检查 network/volume 元数据可读取，并输出将生成的 manifest、inspect、compose、镜像归档、离线包和 checksum 计划。
+
 生成离线迁移包。多个目标默认仍然拆成多个独立包；需要整体恢复时使用 `--merge` 合并为一个批量包:
 
 ```bash
@@ -313,7 +315,7 @@ dm restore ./app-offline.tar.gz --dry-run
 dm restore ./app-offline.tar.gz --skip-checksum
 ```
 
-如果备份目录或离线包内包含 `checksums.txt`，`restore` 默认会在接触 Docker 前先校验文件完整性。只有在确认需要绕过校验时才使用 `--skip-checksum`。
+如果备份目录或离线包内包含 `checksums.txt`，`restore` 默认会在接触 Docker 前先校验文件完整性。只有在确认需要绕过校验时才使用 `--skip-checksum`。`restore --dry-run` 会执行 manifest/checksum/inspect/镜像归档/network/volume 元数据预检，并输出将导入的镜像、创建或复用的 network/volume、容器覆盖风险、端口绑定和启动策略；不会 load 镜像、创建资源、删除或启动容器。
 
 ## 资源清理
 
