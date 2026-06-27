@@ -342,9 +342,9 @@ fi
 docker pull "${TARGET_IMAGE}" >/dev/null
 
 printf '%s\n' "${SOURCE_REGISTRY_IMAGE}" >"${WORK_DIR}/images.txt"
-run_case "image pull mirror" "${DM_BIN}" image pull mirror --file "${WORK_DIR}/images.txt" --to "${REGISTRY}/dm-e2e-mirror-${SUFFIX}" --plain-http --concurrency 1 --retries 1 --resume --report "${WORK_DIR}/pull-mirror-report.json" --format markdown
-test -f "${WORK_DIR}/pull-mirror-report.json"
-run_case "image pull mirror skip-existing" "${DM_BIN}" image pull mirror --file "${WORK_DIR}/images.txt" --to "${REGISTRY}/dm-e2e-mirror-${SUFFIX}" --plain-http --concurrency 1 --skip-existing --format json
+run_case "image pull batch to registry" "${DM_BIN}" image pull --file "${WORK_DIR}/images.txt" --to "${REGISTRY}/dm-e2e-mirror-${SUFFIX}" --plain-http --concurrency 1 --retries 1 --resume --report "${WORK_DIR}/pull-report.json" --format markdown
+test -f "${WORK_DIR}/pull-report.json"
+run_case "image pull batch skip-existing" "${DM_BIN}" image pull --file "${WORK_DIR}/images.txt" --to "${REGISTRY}/dm-e2e-mirror-${SUFFIX}" --plain-http --concurrency 1 --skip-existing --format json
 
 run_case "image save dry-run" "${DM_BIN}" image save "${WORK_DIR}/saved" --filter "repo:busybox" --dry-run
 run_case "image save filter" "${DM_BIN}" image save "${WORK_DIR}/saved" --filter "repo:busybox"

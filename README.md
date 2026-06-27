@@ -46,6 +46,13 @@ VERSION=v0.1.0 bash scripts/package-release.sh
 bash scripts/package-release.sh --version v0.1.0 --platform linux/amd64 --platform windows/amd64
 ```
 
+Windows PowerShell:
+
+```powershell
+.\scripts\package-release.ps1 -Version v0.1.0
+.\scripts\package-release.ps1 -Version v0.1.0 -Platform linux/amd64,windows/amd64
+```
+
 产物默认写入 `dist/`，包括按平台命名的 `tar.gz`/`zip`、`checksums.txt`、`release-manifest.json` 和 `release-summary.md`。每个归档内包含 `INSTALL.md`，记录对应平台的安装和验证命令。发布前可按 [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) 逐项检查。
 
 Linux 安装。安装脚本会安装真实二进制为 `dm-bin`，并生成 `dm` 包装入口；包装入口默认读取 `DM_CONFIG`，未设置时使用安装脚本生成的配置文件:
@@ -232,6 +239,15 @@ dm report volumes --filter 'option:type=nfs'
 
 生产前或远程服务器验收可参考 [docs/REMOTE_TESTING.md](docs/REMOTE_TESTING.md)，其中整理了临时目录、日志留档、代理、测试资源命名、手工验证命令、通过标准和清理步骤。
 
+当前机器没有 bash 或 Docker 时，可先运行 Windows 本地 smoke:
+
+```powershell
+.\scripts\local-test.ps1
+.\scripts\local-test.ps1 -OutputDir .\dist\local-test
+```
+
+该脚本会运行 Go 静态测试、race 测试、帮助输出、completion 生成、`DM_CONFIG`、旧入口拒绝、PowerShell 安装/卸载和 Docker 不可用时的错误路径，并生成 `local-test-report.md` 和 `results.tsv`。
+
 ```bash
 bash scripts/e2e.sh
 bash scripts/e2e.sh --mode smoke
@@ -258,7 +274,7 @@ DM_E2E_KEEP_WORKDIR=1 bash scripts/e2e.sh
 | 命令 | 功能 |
 | --- | --- |
 | `dm image pull` | 无需 Docker CLI 直接拉取镜像并打包为 tar，可选导入或推送到目标 registry |
-| `dm image pull mirror` | 从参数或列表文件批量同步镜像到目标 registry |
+| `dm image pull --file` | 从参数或列表文件批量拉取镜像，可选同步到目标 registry |
 | `dm image load` | 从目录或单个 tar 文件导入 Docker 镜像 |
 | `dm image save` | 导出本地 Docker 镜像，支持筛选、合并和 dry-run |
 | `dm reverse` | 从运行容器反向生成 `docker run` 或 compose |
@@ -371,14 +387,14 @@ dm image pull nginx:1.25 --to registry.local/mirror/nginx:stable
 批量镜像同步:
 
 ```bash
-dm image pull mirror busybox:latest nginx:1.25 --to registry.local:5000
-dm image pull mirror --file images.txt --to registry.local/mirror --concurrency 2 --retries 2
-dm image pull mirror --file images.txt --to registry.local/mirror --skip-existing --resume
-dm image pull mirror --file images.txt --to registry.local/mirror --state-file ./mirror-state.json --report ./mirror-report.json
-dm image pull mirror --file images.txt --to registry.local:5000 --plain-http --docker-config /root/.docker/config.json
+dm image pull busybox:latest nginx:1.25 --to registry.local:5000
+dm image pull --file images.txt --to registry.local/mirror --concurrency 2 --retries 2
+dm image pull --file images.txt --to registry.local/mirror --skip-existing --resume
+dm image pull --file images.txt --to registry.local/mirror --state-file ./pull-state.json --report ./pull-report.json
+dm image pull --file images.txt --to registry.local:5000 --plain-http --docker-config /root/.docker/config.json
 ```
 
-镜像列表文件一行一个镜像，空行和以 `#` 开头的行会被忽略。`image pull mirror` 会复用 `image pull --to` 的拉取、digest 校验、导入、tag、push、代理、认证和 registry 预检流程；`--skip-existing` 会在同步前检查目标 manifest，已存在则跳过；`--resume` 会读取状态文件并跳过上次已成功的镜像。`--to` 使用完整镜像名时只适合单个镜像；批量同步请使用 registry 或 namespace 前缀。
+镜像列表文件一行一个镜像，空行和以 `#` 开头的行会被忽略。`image pull` 在传入多个镜像或 `--file` 时进入批量模式，可直接批量拉取 tar、配合 `--load` 批量导入，或配合 `--to` 批量同步到目标 registry。`--skip-existing` 会在同步前检查目标 manifest，已存在则跳过；`--resume` 会读取状态文件并跳过上次已成功的镜像。`--to` 使用完整镜像名时只适合单个镜像；批量同步请使用 registry 或 namespace 前缀。
 
 ## 镜像导入和导出
 

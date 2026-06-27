@@ -12,6 +12,7 @@ import (
 	"io"
 
 	"docker-manager/internal/docker"
+	rpt "docker-manager/internal/report"
 
 	"github.com/Yui100901/MyGo/file_utils"
 	"github.com/Yui100901/MyGo/network/http_utils"
@@ -122,27 +123,63 @@ func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command 
 	var dockerConfig string
 	var plainHTTP bool
 	var verboseHTTP bool
+	batchOpts := PullBatchOptions{
+		OutputDir:   ".",
+		Concurrency: 1,
+		Retries:     1,
+	}
 	cmd := &cobra.Command{
 		Use:   "pull <images...>",
 		Short: "无需 Docker 客户端下载 Docker 镜像",
 		Long: `无需 Docker 客户端下载 Docker 镜像，从官方镜像源拉取。
 默认使用 HTTP_PROXY/HTTPS_PROXY 环境变量代理；未设置则直连。可通过 --proxy 强制指定代理。
-默认拉取 linux/amd64 镜像。`,
+默认拉取 linux/amd64 镜像。
+支持直接传多个镜像或通过 --file 读取镜像列表；批量模式可使用 --concurrency、--retries、--resume、--skip-existing 和 --report。`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
 			defer stop()
 
 			applyCommandDefaults(cmd, defaults, &proxy, &targetOS, &arch, &outputDir)
+			if !cmd.Flags().Changed("output-dir") {
+				batchOpts.OutputDir = outputDir
+			}
 			configureHTTPLogging(verboseHTTP)
 			runner, err := NewPullRunner(proxy, targetOS, arch)
 			if err != nil {
 				return fmt.Errorf("配置代理失败: %w", err)
 			}
-			if output != "" && len(args) > 1 {
-				return fmt.Errorf("--output 只能在拉取单个镜像时使用，请改用 --output-dir")
-			}
 			imageNameList = args
+			if shouldRunPullBatch(cmd, imageNameList, batchOpts) {
+				if output != "" {
+					return fmt.Errorf("--output 只能在拉取单个镜像时使用，请改用 --output-dir")
+				}
+				batchOpts.Images = append([]string(nil), imageNameList...)
+				batchOpts.To = to
+				batchOpts.OutputDir = outputDir
+				batchOpts.Load = load
+				batchOpts.DockerConfig = dockerConfig
+				batchOpts.PlainHTTP = plainHTTP
+				batchOpts.ProgressOutput = cmd.OutOrStdout()
+				report, err := runPullBatch(ctx, runner, batchOpts)
+				if report.GeneratedAt != "" {
+					printErr := rpt.Print(cmd.OutOrStdout(), batchOpts.Format, report, func(w io.Writer) {
+						printPullBatchReport(w, report)
+					})
+					if printErr != nil {
+						return printErr
+					}
+					if batchOpts.ReportFile != "" {
+						if writeErr := writePullBatchReport(batchOpts.ReportFile, report); writeErr != nil {
+							return writeErr
+						}
+					}
+				}
+				return err
+			}
+			if len(imageNameList) == 0 {
+				return fmt.Errorf("pull 需要至少一个镜像，可通过位置参数或 --file 指定")
+			}
 			opts := PullOptions{
 				Context:        ctx,
 				Output:         output,
@@ -180,10 +217,30 @@ func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command 
 	cmd.Flags().StringVar(&to, "to", "", "pull 后导入 Docker、tag 并 push 到目标 registry/repository")
 	cmd.Flags().StringVar(&dockerConfig, "docker-config", "", "Docker config.json 路径，默认使用 DOCKER_CONFIG/config.json 或 ~/.docker/config.json")
 	cmd.Flags().BoolVar(&plainHTTP, "plain-http", false, "使用 http:// 拉取 registry，适用于未启用 TLS 的内网 registry")
+	cmd.Flags().StringVarP(&batchOpts.File, "file", "f", "", "镜像列表文件，空行和 # 注释会被忽略")
+	cmd.Flags().IntVar(&batchOpts.Concurrency, "concurrency", batchOpts.Concurrency, "批量模式并发数量")
+	cmd.Flags().IntVar(&batchOpts.Retries, "retries", batchOpts.Retries, "批量模式单个镜像失败后的重试次数")
+	cmd.Flags().BoolVar(&batchOpts.SkipExisting, "skip-existing", false, "批量推送时目标 registry 已存在同名 manifest 则跳过，需要配合 --to")
+	cmd.Flags().BoolVar(&batchOpts.Resume, "resume", false, "批量模式读取状态文件并跳过已经成功的镜像")
+	cmd.Flags().StringVar(&batchOpts.StateFile, "state-file", "", "批量模式状态文件路径，默认写入 <output-dir>/pull-state.json")
+	cmd.Flags().StringVar(&batchOpts.ReportFile, "report", "", "批量模式额外写入 JSON 汇总报告文件")
+	rpt.AddFormatFlag(cmd, &batchOpts.Format)
 	_ = cmd.RegisterFlagCompletionFunc("os", completePullValues("linux", "windows"))
 	_ = cmd.RegisterFlagCompletionFunc("arch", completePullValues("amd64", "arm64", "arm", "386", "ppc64le", "s390x"))
-	cmd.AddCommand(NewPullMirrorCommandWithDefaults(defaults))
 	return cmd
+}
+
+func shouldRunPullBatch(cmd *cobra.Command, images []string, opts PullBatchOptions) bool {
+	flags := cmd.Flags()
+	return len(images) > 1 ||
+		opts.File != "" ||
+		opts.Resume ||
+		opts.SkipExisting ||
+		opts.ReportFile != "" ||
+		opts.StateFile != "" ||
+		flags.Changed("concurrency") ||
+		flags.Changed("retries") ||
+		flags.Changed("format")
 }
 
 func completePullValues(values ...string) cobra.CompletionFunc {

@@ -360,6 +360,21 @@ func TestPullCommandRejectsOutputWithMultipleImages(t *testing.T) {
 	}
 }
 
+func TestPullCommandHasNoMirrorSubcommand(t *testing.T) {
+	cmd := NewPullCommand()
+	for _, sub := range cmd.Commands() {
+		if sub.Name() == "mirror" {
+			t.Fatal("pull should not expose mirror subcommand")
+		}
+	}
+	if flag := cmd.Flags().Lookup("file"); flag == nil {
+		t.Fatal("pull should expose --file for batch mode")
+	}
+	if flag := cmd.Flags().Lookup("concurrency"); flag == nil {
+		t.Fatal("pull should expose --concurrency for batch mode")
+	}
+}
+
 func TestPullCommandReturnsImageParseError(t *testing.T) {
 	cmd := NewPullCommand()
 	cmd.SetOut(io.Discard)
