@@ -28,6 +28,7 @@ DRY_RUN=0
 OVERWRITE_CONFIG=0
 COMPLETION_SHELLS=()
 COMPLETION_DIR=""
+NO_COMPLETION=0
 
 usage() {
   cat <<'EOF'
@@ -45,8 +46,10 @@ Options:
   --binary PATH         Existing dm binary to install
   --build               Build dm from the current source tree when --binary is not set
   --overwrite-config    Replace existing config file
-  --completion SHELL    Install shell completion for bash, zsh, fish, powershell or all. Repeatable
+  --completion SHELL    Install shell completion for bash, zsh, fish, powershell or all. Repeatable.
+                        Default: bash
   --completion-dir DIR  Base directory for completion files. Default: <prefix>/share
+  --no-completion       Do not install shell completion
   --no-profile          Do not write shell environment profile
   --dry-run             Print actions without changing files
   -h, --help            Show this help
@@ -101,6 +104,11 @@ while [ "$#" -gt 0 ]; do
       COMPLETION_DIR=${2:?missing value for --completion-dir}
       shift 2
       ;;
+    --no-completion)
+      NO_COMPLETION=1
+      COMPLETION_SHELLS=()
+      shift
+      ;;
     --no-profile)
       NO_PROFILE=1
       shift
@@ -130,6 +138,9 @@ WRAPPER="${BIN_DIR}/dm"
 MANIFEST="${CONFIG_DIR}/install.env"
 COMPLETION_BASE_DIR=${COMPLETION_DIR:-"${PREFIX}/share"}
 COMPLETION_FILES=()
+if [ "${NO_COMPLETION}" != "1" ] && [ "${#COMPLETION_SHELLS[@]}" -eq 0 ]; then
+  COMPLETION_SHELLS=(bash)
+fi
 
 run() {
   if [ "${DRY_RUN}" = "1" ]; then
@@ -209,6 +220,9 @@ normalize_completion_shells() {
 
 install_completions() {
   local shell path dir
+  if [ "${NO_COMPLETION}" = "1" ]; then
+    return 0
+  fi
   normalize_completion_shells
   for shell in "${COMPLETION_SHELLS[@]}"; do
     path=$(completion_file_for_shell "${shell}")

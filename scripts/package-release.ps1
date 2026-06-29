@@ -50,12 +50,14 @@ function Write-InstallGuide {
 ````bash
 bash scripts/install.sh --binary ./$Binary
 bash scripts/install.sh --binary ./$Binary --completion bash --completion zsh --completion fish
+bash scripts/install.sh --binary ./$Binary --no-completion
 ````
 
 ## Windows install
 
 ````powershell
-.\scripts\install.ps1 -Binary .\$Binary -Completion PowerShell
+.\scripts\install.ps1 -Binary .\$Binary
+.\scripts\install.ps1 -Binary .\$Binary -NoCompletion
 ````
 
 Verify after installation:

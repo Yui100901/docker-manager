@@ -132,12 +132,14 @@ archive_platform() {
 \`\`\`bash
 bash scripts/install.sh --binary ./${binary}
 bash scripts/install.sh --binary ./${binary} --completion bash --completion zsh --completion fish
+bash scripts/install.sh --binary ./${binary} --no-completion
 \`\`\`
 
 ## Windows install
 
 \`\`\`powershell
-.\scripts\install.ps1 -Binary .\${binary} -Completion PowerShell
+.\scripts\install.ps1 -Binary .\${binary}
+.\scripts\install.ps1 -Binary .\${binary} -NoCompletion
 \`\`\`
 
 Verify after installation:

@@ -180,7 +180,7 @@ try {
         $configRoot = Join-Path $WorkDir "install-config"
         Push-Location $RootDir
         try {
-            & (Join-Path $RootDir "scripts/install.ps1") -Binary $DmBin -InstallDir $installRoot -ConfigDir $configRoot -Completion PowerShell -NoPathUpdate -NoCompletionProfile
+            & (Join-Path $RootDir "scripts/install.ps1") -Binary $DmBin -InstallDir $installRoot -ConfigDir $configRoot -NoPathUpdate -NoCompletionProfile
             & (Join-Path $installRoot "bin/dm.cmd") version
             $completion = Join-Path $installRoot "completions/dm-completion.ps1"
             if (-not (Test-Path $completion)) {

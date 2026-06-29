@@ -9,6 +9,7 @@ param(
     [switch]$Build,
     [switch]$OverwriteConfig,
     [switch]$NoPathUpdate,
+    [switch]$NoCompletion,
     [switch]$NoCompletionProfile,
     [switch]$MachineScope,
     [switch]$DryRun
@@ -86,6 +87,10 @@ function Resolve-DmBinary {
 }
 
 function Get-CompletionShells {
+    if ($NoCompletion) { return @() }
+    if (-not $Completion -or $Completion.Count -eq 0) {
+        return @("powershell")
+    }
     $items = @()
     foreach ($entry in $Completion) {
         foreach ($part in ($entry -split ',')) {
