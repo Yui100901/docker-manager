@@ -342,7 +342,7 @@ dm image pull nginx:latest --os linux --arch arm64
 dm image pull nginx:latest --proxy http://127.0.0.1:7890
 ```
 
-不指定 `--proxy` 时，默认读取 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 等环境变量；未设置则直连。单次 HTTP 请求默认超时为 30 秒，慢网络或大镜像可通过 `--timeout 2m`、`--timeout 5m` 调整。
+不指定 `--proxy` 时，默认读取 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 等环境变量；未设置则直连。`--timeout` 控制连接、TLS 握手和响应头超时，默认 30 秒；镜像层 body 下载不设置总时限，慢网络下可用 Ctrl+C 取消。
 
 私有 registry / 内网 registry:
 

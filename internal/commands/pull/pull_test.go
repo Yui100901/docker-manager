@@ -258,13 +258,23 @@ func TestProxyFuncFromSettingRespectsNoProxy(t *testing.T) {
 	}
 }
 
-func TestNewPullHTTPClientUsesConfiguredTimeout(t *testing.T) {
+func TestNewPullHTTPClientUsesConfiguredTransportTimeouts(t *testing.T) {
 	client, err := newPullHTTPClient("", 2*time.Second)
 	if err != nil {
 		t.Fatalf("newPullHTTPClient() error = %v", err)
 	}
-	if client.Client.Timeout != 2*time.Second {
-		t.Fatalf("timeout = %v, want 2s", client.Client.Timeout)
+	if client.Client.Timeout != 0 {
+		t.Fatalf("client timeout = %v, want no whole-response timeout", client.Client.Timeout)
+	}
+	transport, ok := client.Client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport = %T, want *http.Transport", client.Client.Transport)
+	}
+	if transport.TLSHandshakeTimeout != 2*time.Second {
+		t.Fatalf("TLSHandshakeTimeout = %v, want 2s", transport.TLSHandshakeTimeout)
+	}
+	if transport.ResponseHeaderTimeout != 2*time.Second {
+		t.Fatalf("ResponseHeaderTimeout = %v, want 2s", transport.ResponseHeaderTimeout)
 	}
 }
 

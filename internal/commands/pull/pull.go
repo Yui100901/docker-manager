@@ -24,6 +24,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -151,15 +152,15 @@ func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command 
 				batchOpts.OutputDir = outputDir
 			}
 			configureHTTPLogging(verboseHTTP)
-			if timeout <= 0 {
-				return fmt.Errorf("--timeout 必须大于 0")
-			}
-			runner, err := NewPullRunnerWithTimeout(proxy, targetOS, arch, timeout)
-			if err != nil {
-				return fmt.Errorf("配置代理失败: %w", err)
-			}
 			imageNameList = args
 			if shouldRunPullBatch(cmd, imageNameList, batchOpts) {
+				if timeout <= 0 {
+					return fmt.Errorf("--timeout 必须大于 0")
+				}
+				runner, err := NewPullRunnerWithTimeout(proxy, targetOS, arch, timeout)
+				if err != nil {
+					return fmt.Errorf("配置代理失败: %w", err)
+				}
 				if output != "" {
 					return fmt.Errorf("--output 只能在拉取单个镜像时使用，请改用 --output-dir")
 				}
@@ -188,6 +189,13 @@ func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command 
 			}
 			if len(imageNameList) == 0 {
 				return fmt.Errorf("pull 需要至少一个镜像，可通过位置参数或 --file 指定")
+			}
+			if timeout <= 0 {
+				return fmt.Errorf("--timeout 必须大于 0")
+			}
+			runner, err := NewPullRunnerWithTimeout(proxy, targetOS, arch, timeout)
+			if err != nil {
+				return fmt.Errorf("配置代理失败: %w", err)
 			}
 			opts := PullOptions{
 				Context:        ctx,
@@ -219,7 +227,7 @@ func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command 
 	cmd.Flags().StringVarP(&targetOS, "os", "", "linux", "目标操作系统")
 	cmd.Flags().StringVarP(&arch, "arch", "a", "amd64", "目标架构")
 	cmd.Flags().StringVar(&proxy, "proxy", "", "强制指定 HTTP 代理，例如 http://127.0.0.1:7890；为空时使用环境变量代理")
-	cmd.Flags().DurationVar(&timeout, "timeout", defaultPullTimeout, "单次 HTTP 请求超时时间，例如 30s、2m、5m")
+	cmd.Flags().DurationVar(&timeout, "timeout", defaultPullTimeout, "连接、TLS 握手和响应头超时时间，例如 30s、2m、5m")
 	cmd.Flags().StringVarP(&output, "output", "o", "", "输出 tar 文件路径，仅支持单个镜像")
 	cmd.Flags().StringVar(&outputDir, "output-dir", ".", "输出 tar 文件目录")
 	cmd.Flags().BoolVar(&load, "load", false, "拉取并打包完成后自动导入 Docker")
@@ -600,11 +608,21 @@ func newPullHTTPClient(proxy string, timeout time.Duration) (*http_utils.HTTPCli
 		timeout = defaultPullTimeout
 	}
 
-	transport := &http.Transport{Proxy: proxyFunc}
+	dialer := &net.Dialer{
+		Timeout:   timeout,
+		KeepAlive: 30 * time.Second,
+	}
+	transport := &http.Transport{
+		Proxy:                 proxyFunc,
+		DialContext:           dialer.DialContext,
+		TLSHandshakeTimeout:   timeout,
+		ResponseHeaderTimeout: timeout,
+		ExpectContinueTimeout: 1 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
+	}
 	return &http_utils.HTTPClient{
 		Client: &http.Client{
 			Transport: transport,
-			Timeout:   timeout,
 		},
 	}, nil
 }
