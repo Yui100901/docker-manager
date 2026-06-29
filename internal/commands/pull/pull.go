@@ -32,6 +32,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -49,10 +50,13 @@ const (
 	// 并发下载层的最大并发数
 	maxLayerConcurrency = 4
 	// HTTP retry/backoff config
-	maxHTTPRetries     = 3
-	initialBackoff     = 1 * time.Second
-	defaultPullTimeout = 30 * time.Second
+	maxHTTPRetries           = 3
+	initialBackoff           = 1 * time.Second
+	defaultPullTimeout       = 30 * time.Second
+	downloadProgressInterval = 5 * time.Second
 )
+
+var pullProgressMu sync.Mutex
 
 type targetPlatform struct {
 	targetOS   string
@@ -930,7 +934,7 @@ func (r *PullRunner) saveRegistryFileWithRetry(ctx context.Context, rawURL strin
 }
 
 func (r *PullRunner) saveRegistryFileOnce(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, info *ImageInfo, opts PullOptions, auth *pullRegistryAuth, outputPath string) (*pullRegistryAuth, error) {
-	err := r.httpSaveToFileWithStatus(ctx, rawURL, authHeaders(headers, auth), query, outputPath)
+	err := r.httpSaveToFileWithStatus(ctx, rawURL, authHeaders(headers, auth), query, outputPath, opts.ProgressOutput)
 	if err == nil {
 		return auth, nil
 	}
@@ -942,7 +946,7 @@ func (r *PullRunner) saveRegistryFileOnce(ctx context.Context, rawURL string, he
 	if err != nil {
 		return auth, err
 	}
-	err = r.httpSaveToFileWithStatus(ctx, rawURL, authHeaders(headers, nextAuth), query, outputPath)
+	err = r.httpSaveToFileWithStatus(ctx, rawURL, authHeaders(headers, nextAuth), query, outputPath, opts.ProgressOutput)
 	return nextAuth, err
 }
 
@@ -1327,10 +1331,10 @@ func (r *PullRunner) httpGetBytesWithStatus(ctx context.Context, rawURL string, 
 }
 
 func (r *PullRunner) httpSaveToFile(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, outputPath string) error {
-	return r.httpSaveToFileWithStatus(ctx, rawURL, headers, query, outputPath)
+	return r.httpSaveToFileWithStatus(ctx, rawURL, headers, query, outputPath, io.Discard)
 }
 
-func (r *PullRunner) httpSaveToFileWithStatus(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, outputPath string) error {
+func (r *PullRunner) httpSaveToFileWithStatus(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, outputPath string, progressOutput io.Writer) error {
 	req, err := buildGETRequest(ctx, rawURL, headers, query)
 	if err != nil {
 		return err
@@ -1356,7 +1360,8 @@ func (r *PullRunner) httpSaveToFileWithStatus(ctx context.Context, rawURL string
 	if err != nil {
 		return err
 	}
-	_, copyErr := io.Copy(file, resp.Body)
+	reader := newDownloadProgressReader(resp.Body, progressOutput, downloadProgressLabel(rawURL, outputPath), resp.ContentLength)
+	_, copyErr := io.Copy(file, reader)
 	closeErr := file.Close()
 	if copyErr != nil {
 		_ = os.Remove(partPath)
@@ -1372,6 +1377,130 @@ func (r *PullRunner) httpSaveToFileWithStatus(ctx context.Context, rawURL string
 	}
 	_ = os.Remove(outputPath)
 	return os.Rename(partPath, outputPath)
+}
+
+type downloadProgressReader struct {
+	reader     io.Reader
+	output     io.Writer
+	label      string
+	total      int64
+	downloaded int64
+	started    time.Time
+	lastReport time.Time
+	enabled    bool
+}
+
+func newDownloadProgressReader(reader io.Reader, output io.Writer, label string, total int64) *downloadProgressReader {
+	now := time.Now()
+	return &downloadProgressReader{
+		reader:     reader,
+		output:     output,
+		label:      label,
+		total:      total,
+		started:    now,
+		lastReport: now,
+		enabled:    output != nil && (total <= 0 || total >= 1024*1024),
+	}
+}
+
+func (r *downloadProgressReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	if n > 0 {
+		r.downloaded += int64(n)
+		r.report(false)
+	}
+	if err == io.EOF {
+		r.report(true)
+	}
+	return n, err
+}
+
+func (r *downloadProgressReader) report(final bool) {
+	if !r.enabled {
+		return
+	}
+	now := time.Now()
+	if !final && now.Sub(r.lastReport) < downloadProgressInterval {
+		return
+	}
+	r.lastReport = now
+	elapsed := now.Sub(r.started).Seconds()
+	if elapsed <= 0 {
+		elapsed = 0.001
+	}
+	speed := float64(r.downloaded) / elapsed
+	if final {
+		progressPrintf(r.output, "下载完成 %s %s %s\n", r.label, formatPullBytes(r.downloaded), formatPullRate(speed))
+		return
+	}
+	if r.total > 0 {
+		percent := float64(r.downloaded) * 100 / float64(r.total)
+		progressPrintf(r.output, "下载中 %s %s/%s %.1f%% %s\n", r.label, formatPullBytes(r.downloaded), formatPullBytes(r.total), percent, formatPullRate(speed))
+		return
+	}
+	progressPrintf(r.output, "下载中 %s %s %s\n", r.label, formatPullBytes(r.downloaded), formatPullRate(speed))
+}
+
+func progressPrintf(w io.Writer, format string, args ...any) {
+	if w == nil {
+		return
+	}
+	pullProgressMu.Lock()
+	defer pullProgressMu.Unlock()
+	_, _ = fmt.Fprintf(w, format, args...)
+}
+
+func downloadProgressLabel(rawURL, outputPath string) string {
+	parsed, err := url.Parse(rawURL)
+	if err == nil {
+		path := parsed.Path
+		if idx := strings.LastIndex(path, "/blobs/"); idx >= 0 {
+			digestValue := strings.TrimPrefix(path[idx+len("/blobs/"):], "sha256:")
+			if digestValue != "" {
+				if len(digestValue) > 12 {
+					digestValue = digestValue[:12]
+				}
+				return "sha256:" + digestValue
+			}
+		}
+	}
+	return filepath.Base(outputPath)
+}
+
+func formatPullBytes(size int64) string {
+	if size < 0 {
+		size = 0
+	}
+	const unit = 1024
+	if size < unit {
+		return fmt.Sprintf("%d B", size)
+	}
+	value := float64(size)
+	for _, suffix := range []string{"KiB", "MiB", "GiB", "TiB"} {
+		value /= unit
+		if value < unit {
+			return fmt.Sprintf("%.1f %s", value, suffix)
+		}
+	}
+	return fmt.Sprintf("%.1f PiB", value/unit)
+}
+
+func formatPullRate(bytesPerSecond float64) string {
+	if bytesPerSecond < 0 {
+		bytesPerSecond = 0
+	}
+	const unit = 1024
+	if bytesPerSecond < unit {
+		return fmt.Sprintf("%.0f B/s", bytesPerSecond)
+	}
+	value := bytesPerSecond
+	for _, suffix := range []string{"KiB/s", "MiB/s", "GiB/s"} {
+		value /= unit
+		if value < unit {
+			return fmt.Sprintf("%.1f %s", value, suffix)
+		}
+	}
+	return fmt.Sprintf("%.1f TiB/s", value/unit)
 }
 
 func buildGETRequest(ctx context.Context, rawURL string, headers map[string]string, query map[string]string) (*http.Request, error) {

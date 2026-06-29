@@ -278,6 +278,26 @@ func TestNewPullHTTPClientUsesConfiguredTransportTimeouts(t *testing.T) {
 	}
 }
 
+func TestDownloadProgressReaderReportsLargeDownload(t *testing.T) {
+	var output bytes.Buffer
+	reader := newDownloadProgressReader(strings.NewReader(strings.Repeat("x", 2*1024*1024)), &output, "sha256:abc123", 2*1024*1024)
+
+	if _, err := io.Copy(io.Discard, reader); err != nil {
+		t.Fatalf("Copy() error = %v", err)
+	}
+	got := output.String()
+	if !strings.Contains(got, "下载完成 sha256:abc123") || !strings.Contains(got, "2.0 MiB") {
+		t.Fatalf("progress output = %q, want final large download progress", got)
+	}
+}
+
+func TestDownloadProgressLabelUsesBlobDigest(t *testing.T) {
+	got := downloadProgressLabel("https://registry.example/v2/library/nginx/blobs/sha256:abcdef1234567890?x=1", "layer.tar.gz")
+	if got != "sha256:abcdef123456" {
+		t.Fatalf("downloadProgressLabel() = %q, want digest prefix", got)
+	}
+}
+
 func TestVerifyFileDigest(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "layer.tar.gz")
 	content := []byte("layer-content")
