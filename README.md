@@ -273,24 +273,26 @@ DM_E2E_KEEP_WORKDIR=1 bash scripts/e2e.sh
 
 | 命令 | 功能 |
 | --- | --- |
-| `dm image pull` | 无需 Docker CLI 直接拉取镜像并打包为 tar，可选导入或推送到目标 registry |
-| `dm image pull --file` | 从参数或列表文件批量拉取镜像，可选同步到目标 registry |
-| `dm image load` | 从目录或单个 tar 文件导入 Docker 镜像 |
-| `dm image save` | 导出本地 Docker 镜像，支持筛选、合并和 dry-run |
+| `dm pull` / `dm image pull` | 无需 Docker CLI 直接拉取镜像并打包为 tar，可选导入或推送到目标 registry |
+| `dm pull --file` / `dm image pull --file` | 从参数或列表文件批量拉取镜像，可选同步到目标 registry |
+| `dm load` / `dm image load` | 从目录或单个 tar 文件导入 Docker 镜像 |
+| `dm save` / `dm image save` | 导出本地 Docker 镜像，支持筛选、合并和 dry-run |
 | `dm reverse` | 从运行容器反向生成 `docker run` 或 compose |
 | `dm rerun` | 基于 Docker inspect 停止、删除并重建容器 |
 | `dm backup` | 备份容器 inspect、镜像、compose、network 和 volume 元数据 |
 | `dm restore` | 从备份目录或离线 tar.gz 包恢复容器 |
-| `dm report prune` | 生成可清理资源报告，可选执行清理 |
-| `dm report network` | 查看容器网络关系、端口映射和网络风险 |
-| `dm report health` | 输出 Docker 体检报告 |
-| `dm report logs` | 扫描容器日志关键词 |
-| `dm report diff` | 对比两个容器关键配置差异 |
-| `dm image tree` | 分析镜像层、大小和构建历史 |
-| `dm report volumes` | 查找未使用或疑似未使用 volume |
-| `dm report registry` | 检查 registry 登录配置、凭据和连通性 |
+| `dm prune` / `dm report prune` | 生成可清理资源报告，可选执行清理 |
+| `dm network` / `dm report network` | 查看容器网络关系、端口映射和网络风险 |
+| `dm health` / `dm report health` | 输出 Docker 体检报告 |
+| `dm logs` / `dm report logs` | 扫描容器日志关键词 |
+| `dm diff` / `dm report diff` | 对比两个容器关键配置差异 |
+| `dm tree` / `dm image tree` | 分析镜像层、大小和构建历史 |
+| `dm volumes` / `dm report volumes` | 查找未使用或疑似未使用 volume |
+| `dm registry` / `dm report registry` | 检查 registry 登录配置、凭据和连通性 |
 | `dm doctor` | 检查 Docker、registry、代理、磁盘和测试前置条件 |
 | `dm version` | 输出版本、commit、构建时间和运行平台 |
+
+`image` 和 `report` 命名空间仍作为语义分组保留；其叶子命令同时提供二级入口，适合日常交互和脚本简写。
 
 ## 版本信息
 

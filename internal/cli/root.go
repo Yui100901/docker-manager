@@ -93,6 +93,8 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 	rootCmd.AddCommand(backup.NewRestoreCommand())
 	rootCmd.AddCommand(newImageCommand(cfg))
 	rootCmd.AddCommand(diagnostics.NewReportCommand())
+	rootCmd.AddCommand(newImageShortcutCommands(cfg)...)
+	rootCmd.AddCommand(newReportShortcutCommands()...)
 	rootCmd.AddCommand(diagnostics.NewDoctorCommandWithDefaults(func() diagnostics.DoctorDefaults {
 		return diagnostics.DoctorDefaults{ConfigPath: effectiveConfigPath, OutputDir: cfg.OutputDir}
 	}))
@@ -101,6 +103,34 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 	rootCmd.AddCommand(reverse.NewReverseCommand())
 	rootCmd.AddCommand(reverse.NewRerunCommand())
 	return rootCmd
+}
+
+func newImageShortcutCommands(cfg *appConfig) []*cobra.Command {
+	return []*cobra.Command{
+		pull.NewPullCommandWithDefaults(func() pull.CommandDefaults {
+			return pull.CommandDefaults{
+				Proxy:     cfg.Proxy,
+				TargetOS:  cfg.TargetOS,
+				Arch:      cfg.Arch,
+				OutputDir: cfg.OutputDir,
+			}
+		}),
+		images.NewLoadCommand(),
+		images.NewSaveCommandWithDefaults(func() string { return cfg.OutputDir }),
+		diagnostics.NewImageTreeCommand(),
+	}
+}
+
+func newReportShortcutCommands() []*cobra.Command {
+	return []*cobra.Command{
+		diagnostics.NewHealthCommand(),
+		diagnostics.NewNetworkCommand(),
+		diagnostics.NewLogsScanCommand(),
+		diagnostics.NewInspectDiffCommand(),
+		diagnostics.NewPruneReportCommand(),
+		diagnostics.NewVolumesReportCommand(),
+		diagnostics.NewRegistryReportCommand(),
+	}
 }
 
 func newImageCommand(cfg *appConfig) *cobra.Command {

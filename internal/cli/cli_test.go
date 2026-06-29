@@ -107,13 +107,22 @@ func TestRootCommandLogJSONFlagAlias(t *testing.T) {
 	}
 }
 
-func TestRootCommandDoesNotExposeRegistryNamespace(t *testing.T) {
+func TestRootCommandExposesLeafShortcuts(t *testing.T) {
 	cfg := appConfig{}
 	opts := outputOptions{}
 	cmd := newRootCommand(&cfg, &opts)
 
-	if sub, _, err := cmd.Find([]string{"registry"}); err == nil && sub != nil && sub.Name() == "registry" {
-		t.Fatal("root command should not expose registry namespace")
+	for _, name := range []string{"pull", "load", "save", "tree", "health", "network", "logs", "diff", "prune", "volumes", "registry"} {
+		sub, _, err := cmd.Find([]string{name})
+		if err != nil {
+			t.Fatalf("Find(%s) error = %v", name, err)
+		}
+		if sub == nil || sub.Name() != name {
+			t.Fatalf("Find(%s) = %#v, want root shortcut", name, sub)
+		}
+		if len(sub.Commands()) != 0 {
+			t.Fatalf("%s should be a leaf shortcut, got subcommands %#v", name, sub.Commands())
+		}
 	}
 	report, _, err := cmd.Find([]string{"report", "registry"})
 	if err != nil {
@@ -121,6 +130,13 @@ func TestRootCommandDoesNotExposeRegistryNamespace(t *testing.T) {
 	}
 	if report == nil || report.Name() != "registry" {
 		t.Fatalf("Find(report registry) = %#v, want registry report command", report)
+	}
+	imagePull, _, err := cmd.Find([]string{"image", "pull"})
+	if err != nil {
+		t.Fatalf("Find(image pull) error = %v", err)
+	}
+	if imagePull == nil || imagePull.Name() != "pull" {
+		t.Fatalf("Find(image pull) = %#v, want pull command", imagePull)
 	}
 }
 

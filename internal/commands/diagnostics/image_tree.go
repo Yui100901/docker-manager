@@ -74,11 +74,11 @@ func NewImageCommand() *cobra.Command {
 		Use:   "image",
 		Short: "镜像分析工具",
 	}
-	cmd.AddCommand(newImageTreeCommand())
+	cmd.AddCommand(NewImageTreeCommand())
 	return cmd
 }
 
-func newImageTreeCommand() *cobra.Command {
+func NewImageTreeCommand() *cobra.Command {
 	opts := ImageTreeOptions{Top: 5}
 	cmd := &cobra.Command{
 		Use:   "tree <image>",
