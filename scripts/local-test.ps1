@@ -123,6 +123,9 @@ try {
     Invoke-Case "dm root help" { & $DmBin --help }
     Invoke-Case "dm image help" { & $DmBin image --help }
     Invoke-Case "dm report help" { & $DmBin report --help }
+    Invoke-Case "shortcut pull help" { & $DmBin pull --help }
+    Invoke-Case "shortcut health help" { & $DmBin health --help }
+    Invoke-Case "shortcut registry help" { & $DmBin registry --help }
     foreach ($shell in @("bash", "zsh", "fish", "powershell")) {
         Invoke-Case "completion $shell" { & $DmBin completion $shell | Set-Content -Path (Join-Path $WorkDir "$shell.completion") -Encoding UTF8 }
     }
@@ -145,7 +148,10 @@ try {
         }
     }
 
-    Invoke-Case "old root pull rejected" { & $DmBin pull --help } -ExpectFailure
+    Invoke-Case "old logs-scan rejected" { & $DmBin logs-scan --help } -ExpectFailure
+    Invoke-Case "old inspect-diff rejected" { & $DmBin inspect-diff --help } -ExpectFailure
+    Invoke-Case "old prune-report rejected" { & $DmBin prune-report --help } -ExpectFailure
+    Invoke-Case "old registry-login-check rejected" { & $DmBin registry-login-check --help } -ExpectFailure
     Invoke-Case "old global json rejected" { & $DmBin --json version } -ExpectFailure
 
     Invoke-Case "PowerShell script parse" {
@@ -181,7 +187,7 @@ try {
                 throw "completion file was not created"
             }
             & (Join-Path $RootDir "scripts/uninstall.ps1") -InstallDir $installRoot -ConfigDir $configRoot -Purge
-            if ((Test-Path $completion) -or (Test-Path $configRoot)) {
+            if ((Test-Path $completion) -or (Test-Path $configRoot) -or (Test-Path $installRoot)) {
                 throw "install artifacts were not cleaned"
             }
         } finally {

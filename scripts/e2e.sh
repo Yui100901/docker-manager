@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+ROOT_DIR=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 MODE=${DM_E2E_MODE:-full}
 WORK_DIR=${DM_E2E_WORK_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/dm-e2e-XXXXXX")}
 SOURCE_IMAGE=${DM_E2E_IMAGE:-busybox:latest}
@@ -132,7 +132,8 @@ record_result() {
 run_case() {
   local name="$1"
   shift
-  local log_file="${LOG_DIR}/$(safe_name "${name}").log"
+  local log_file
+  log_file="${LOG_DIR}/$(safe_name "${name}").log"
   local start end code status
   log "测试 ${name}"
   start=$(date +%s)
@@ -157,7 +158,8 @@ run_case() {
 run_expect_fail() {
   local name="$1"
   shift
-  local log_file="${LOG_DIR}/$(safe_name "${name}").log"
+  local log_file
+  log_file="${LOG_DIR}/$(safe_name "${name}").log"
   local start end code status
   log "测试 ${name} (期望失败)"
   start=$(date +%s)
@@ -203,8 +205,7 @@ registry_port() {
 
 wait_for_registry() {
   local attempts=30
-  local i
-  for i in $(seq 1 "${attempts}"); do
+  for _ in $(seq 1 "${attempts}"); do
     if "${DM_BIN}" report registry "${REGISTRY}" --plain-http --format json >/dev/null 2>&1; then
       return 0
     fi
@@ -282,7 +283,13 @@ run_case "version json" "${DM_BIN}" version --format json
 run_case "root help" "${DM_BIN}" --help
 run_case "image help" "${DM_BIN}" image --help
 run_case "report help" "${DM_BIN}" report --help
-run_expect_fail "old root pull rejected" "${DM_BIN}" pull --help
+run_case "shortcut pull help" "${DM_BIN}" pull --help
+run_case "shortcut health help" "${DM_BIN}" health --help
+run_case "shortcut registry help" "${DM_BIN}" registry --help
+run_expect_fail "old logs-scan rejected" "${DM_BIN}" logs-scan --help
+run_expect_fail "old inspect-diff rejected" "${DM_BIN}" inspect-diff --help
+run_expect_fail "old prune-report rejected" "${DM_BIN}" prune-report --help
+run_expect_fail "old registry-login-check rejected" "${DM_BIN}" registry-login-check --help
 run_expect_fail "old global json rejected" "${DM_BIN}" --json version
 run_case "doctor smoke" "${DM_BIN}" doctor --format json --check-e2e=false --output-dir "${WORK_DIR}"
 

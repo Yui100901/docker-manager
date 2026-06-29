@@ -59,6 +59,34 @@ function Invoke-Step {
     }
 }
 
+function Remove-EmptyParents {
+    param(
+        [string]$Path,
+        [string]$StopDir
+    )
+    if (-not $Path -or -not $StopDir) { return }
+    $current = if (Test-Path $Path -PathType Leaf) { Split-Path -Parent $Path } else { $Path }
+    $stopFull = [System.IO.Path]::GetFullPath($StopDir).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    while ($current) {
+        $currentFull = [System.IO.Path]::GetFullPath($current).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+        if (-not $currentFull.StartsWith($stopFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+            break
+        }
+        if (-not (Test-Path $currentFull -PathType Container)) {
+            $current = Split-Path -Parent $currentFull
+            continue
+        }
+        if ((Get-ChildItem -LiteralPath $currentFull -Force | Select-Object -First 1)) {
+            break
+        }
+        Remove-Item -Force -ErrorAction SilentlyContinue $currentFull
+        if ($currentFull -eq $stopFull) {
+            break
+        }
+        $current = Split-Path -Parent $currentFull
+    }
+}
+
 Write-Host "Uninstalling docker-manager"
 
 Invoke-Step {
@@ -71,6 +99,13 @@ Invoke-Step {
     if (Test-Path $LibexecDir) {
         Remove-Item -Force -ErrorAction SilentlyContinue $LibexecDir
     }
+    Remove-EmptyParents -Path $BinDir -StopDir $InstallDir
+    foreach ($file in $CompletionFiles) {
+        if ($file) {
+            Remove-EmptyParents -Path (Split-Path -Parent $file) -StopDir $InstallDir
+        }
+    }
+    Remove-EmptyParents -Path $LibexecDir -StopDir $InstallDir
 } "remove installed files"
 
 if ($CompletionProfile -and (Test-Path $CompletionProfile)) {
@@ -96,6 +131,7 @@ Invoke-Step {
 if ($Purge) {
     Invoke-Step {
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $ConfigDir, $DataDir
+        Remove-EmptyParents -Path $InstallDir -StopDir $InstallDir
     } "remove config and data"
 } else {
     Write-Host "Keeping config and data. Use -Purge to remove:"

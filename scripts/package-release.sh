@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+ROOT_DIR=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 DIST_DIR="${DIST_DIR:-${ROOT_DIR}/dist}"
 VERSION="${VERSION:-dev}"
 COMMIT="${COMMIT:-$(git -C "${ROOT_DIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
@@ -159,12 +159,12 @@ EOF
   checksum=$(sha256_file "${archive}")
   printf '%s  %s\n' "${checksum}" "$(basename "${archive}")" >>"${CHECKSUMS_FILE}"
   printf '    {"platform":"%s","os":"%s","arch":"%s","format":"%s","binary":"%s","archive":"%s","sha256":"%s"}' "${platform}" "${goos}" "${goarch}" "${format}" "${binary}" "$(basename "${archive}")" "${checksum}" >>"${MANIFEST_FILE}"
-  printf '| `%s` | `%s` | `%s` | `%s` |\n' "${platform}" "${format}" "$(basename "${archive}")" "${checksum}" >>"${SUMMARY_FILE}"
+  printf "| \`%s\` | \`%s\` | \`%s\` | \`%s\` |\n" "${platform}" "${format}" "$(basename "${archive}")" "${checksum}" >>"${SUMMARY_FILE}"
 }
 
 need_cmd go
 mkdir -p "${DIST_DIR}"
-DIST_DIR=$(CDPATH= cd -- "${DIST_DIR}" && pwd)
+DIST_DIR=$(CDPATH='' cd -- "${DIST_DIR}" && pwd)
 WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/dm-release-XXXXXX")
 trap 'rm -rf "${WORK_DIR}"' EXIT
 
