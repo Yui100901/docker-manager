@@ -28,17 +28,6 @@ Windows PowerShell:
 .\scripts\dev-build.ps1 -Vet
 ```
 
-发布构建仍可使用根目录脚本，默认生成 `linux/amd64` 和 `windows/amd64`:
-
-```bash
-VERSION=v0.1.0 ./build.sh
-```
-
-```powershell
-$env:VERSION = "v0.1.0"
-.\build.bat
-```
-
 生成发布归档、checksum 和版本清单:
 
 ```bash
@@ -58,10 +47,10 @@ Windows PowerShell:
 Linux 安装。安装脚本会安装真实二进制为 `dm-bin`，并生成 `dm` 包装入口；包装入口默认读取 `DM_CONFIG`，未设置时使用安装脚本生成的配置文件:
 
 ```bash
-sudo bash scripts/install.sh --binary ./bin/linux/dm
-sudo bash scripts/install.sh --install-dir /opt/docker-manager --binary ./bin/linux/dm
+sudo bash scripts/install.sh --binary ./bin/dev/dm
+sudo bash scripts/install.sh --install-dir /opt/docker-manager --binary ./bin/dev/dm
 sudo bash scripts/install.sh --build
-sudo bash scripts/install.sh --binary ./bin/linux/dm --completion bash --completion zsh --completion fish
+sudo bash scripts/install.sh --binary ./bin/dev/dm --completion bash --completion zsh --completion fish
 ```
 
 默认安装位置:
@@ -81,10 +70,10 @@ sudo bash scripts/uninstall.sh --purge
 Windows 安装:
 
 ```powershell
-.\scripts\install.ps1 -Binary .\bin\windows\dm.exe
-.\scripts\install.ps1 -InstallDir C:\Tools\docker-manager -Binary .\bin\windows\dm.exe
+.\scripts\install.ps1 -Binary .\bin\dev\dm.exe
+.\scripts\install.ps1 -InstallDir C:\Tools\docker-manager -Binary .\bin\dev\dm.exe
 .\scripts\install.ps1 -Build
-.\scripts\install.ps1 -Binary .\bin\windows\dm.exe -Completion PowerShell
+.\scripts\install.ps1 -Binary .\bin\dev\dm.exe -Completion PowerShell
 ```
 
 Windows 安装脚本会生成 `dm.cmd` 包装入口，设置用户级 `DM_CONFIG`、`DM_HOME`、`DM_OUTPUT_DIR`，并把安装 bin 目录加入用户 `PATH`。卸载:
@@ -301,10 +290,11 @@ dm version
 dm version --format json
 ```
 
-`build.sh`、`build.bat` 和 `scripts/dev-build.*` 会默认注入当前 git commit 和 UTC 构建时间。可通过环境变量覆盖版本号:
+`scripts/dev-build.*` 和 `scripts/package-release.*` 会默认注入当前 git commit 和 UTC 构建时间。可通过环境变量或参数覆盖版本号:
 
 ```bash
-VERSION=v0.1.0 ./build.sh
+VERSION=v0.1.0 bash scripts/dev-build.sh
+bash scripts/package-release.sh --version v0.1.0
 ```
 
 ## 输出格式

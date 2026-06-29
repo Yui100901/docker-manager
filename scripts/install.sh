@@ -233,8 +233,8 @@ resolve_binary() {
     printf '%s\n' "${ROOT_DIR}/dm"
     return 0
   fi
-  if [ -x "${ROOT_DIR}/bin/linux/dm" ]; then
-    printf '%s\n' "${ROOT_DIR}/bin/linux/dm"
+  if [ -x "${ROOT_DIR}/bin/dev/dm" ]; then
+    printf '%s\n' "${ROOT_DIR}/bin/dev/dm"
     return 0
   fi
   if [ "${BUILD_FROM_SOURCE}" = "1" ]; then

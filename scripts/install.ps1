@@ -61,7 +61,7 @@ function Resolve-DmBinary {
     if ($Binary) { return (Resolve-Path $Binary).Path }
     $candidate = Join-Path $RootDir "dm.exe"
     if (Test-Path $candidate) { return (Resolve-Path $candidate).Path }
-    $candidate = Join-Path $RootDir "bin/windows/dm.exe"
+    $candidate = Join-Path $RootDir "bin/dev/dm.exe"
     if (Test-Path $candidate) { return (Resolve-Path $candidate).Path }
     if ($Build) {
         $built = Join-Path $RootDir "bin/install/dm.exe"
