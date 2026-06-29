@@ -482,6 +482,7 @@ func TestCompletePulledImageMirrorsWhenToSet(t *testing.T) {
 	defer server.Close()
 
 	targetRegistry := strings.TrimPrefix(server.URL, "http://")
+	configPath := writePullDockerConfig(t, targetRegistry, "dev-user", "dev-pass")
 	runner := newTestPullRunner()
 	runner.httpClient = &http_utils.HTTPClient{Client: server.Client()}
 	runner.loadPulledImage = func(ctx context.Context, path string, output io.Writer) error {
@@ -492,12 +493,23 @@ func TestCompletePulledImageMirrorsWhenToSet(t *testing.T) {
 		calls = append(calls, "tag:"+source+"->"+target)
 		return nil
 	}
-	runner.pushPulledImage = func(ctx context.Context, target string, output io.Writer) error {
+	runner.pushPulledImage = func(ctx context.Context, target, registryAuth string, output io.Writer) error {
+		authData, err := base64.URLEncoding.DecodeString(registryAuth)
+		if err != nil {
+			t.Fatalf("registryAuth is not Docker auth base64: %v", err)
+		}
+		var auth map[string]string
+		if err := json.Unmarshal(authData, &auth); err != nil {
+			t.Fatalf("registryAuth JSON error: %v", err)
+		}
+		if auth["serveraddress"] != targetRegistry || auth["username"] != "dev-user" || auth["password"] != "dev-pass" {
+			t.Fatalf("registry auth = %#v, want target registry credentials", auth)
+		}
 		calls = append(calls, "push:"+target)
 		return nil
 	}
 
-	err := runner.completePulledImage("busybox.tar", testBusyboxInfo(), PullOptions{To: targetRegistry, PlainHTTP: true})
+	err := runner.completePulledImage("busybox.tar", testBusyboxInfo(), PullOptions{To: targetRegistry, PlainHTTP: true, DockerConfig: configPath})
 	if err != nil {
 		t.Fatalf("completePulledImage() error = %v", err)
 	}
@@ -526,7 +538,7 @@ func TestCompletePulledImageReturnsPushError(t *testing.T) {
 	runner.httpClient = &http_utils.HTTPClient{Client: server.Client()}
 	runner.loadPulledImage = func(ctx context.Context, path string, output io.Writer) error { return nil }
 	runner.tagPulledImage = func(ctx context.Context, source, target string) error { return nil }
-	runner.pushPulledImage = func(ctx context.Context, target string, output io.Writer) error { return pushErr }
+	runner.pushPulledImage = func(ctx context.Context, target, registryAuth string, output io.Writer) error { return pushErr }
 
 	err := runner.completePulledImage("busybox.tar", testBusyboxInfo(), PullOptions{To: targetRegistry, PlainHTTP: true})
 	if err == nil {
@@ -555,7 +567,7 @@ func TestCompletePulledImagePreflightFailureSkipsDockerActions(t *testing.T) {
 		called = true
 		return nil
 	}
-	runner.pushPulledImage = func(ctx context.Context, target string, output io.Writer) error {
+	runner.pushPulledImage = func(ctx context.Context, target, registryAuth string, output io.Writer) error {
 		called = true
 		return nil
 	}
@@ -633,7 +645,7 @@ func TestCompletePulledImagePreflightUsesBasicCredentialFromDockerConfig(t *test
 		calls = append(calls, "tag")
 		return nil
 	}
-	runner.pushPulledImage = func(ctx context.Context, target string, output io.Writer) error {
+	runner.pushPulledImage = func(ctx context.Context, target, registryAuth string, output io.Writer) error {
 		calls = append(calls, "push")
 		return nil
 	}

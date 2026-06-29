@@ -1,7 +1,9 @@
 package docker
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -132,13 +134,18 @@ func (im *ImageManager) Push(ctx context.Context, ref string) error {
 
 // PushWithOutput pushes an image and writes Docker's progress stream to output.
 func (im *ImageManager) PushWithOutput(ctx context.Context, ref string, output io.Writer) error {
+	return im.PushWithAuthOutput(ctx, ref, "", output)
+}
+
+// PushWithAuthOutput pushes an image with optional registry auth and writes Docker's progress stream to output.
+func (im *ImageManager) PushWithAuthOutput(ctx context.Context, ref, registryAuth string, output io.Writer) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if output == nil {
 		output = io.Discard
 	}
-	resp, err := im.cli.ImagePush(ctx, ref, image.PushOptions{})
+	resp, err := im.cli.ImagePush(ctx, ref, image.PushOptions{RegistryAuth: registryAuth})
 	if err != nil {
 		return err
 	}
@@ -147,7 +154,7 @@ func (im *ImageManager) PushWithOutput(ctx context.Context, ref string, output i
 			_, _ = fmt.Fprintf(os.Stderr, "警告: 关闭 push response 失败: %v\n", cerr)
 		}
 	}()
-	return copyWithContext(ctx, output, resp)
+	return copyDockerPushStream(ctx, output, resp)
 }
 
 func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader) error {
@@ -172,4 +179,44 @@ func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader) error {
 			return readErr
 		}
 	}
+}
+
+type dockerPushMessage struct {
+	Error       string `json:"error"`
+	ErrorDetail struct {
+		Message string `json:"message"`
+	} `json:"errorDetail"`
+}
+
+func copyDockerPushStream(ctx context.Context, dst io.Writer, src io.Reader) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if dst == nil {
+		dst = io.Discard
+	}
+	scanner := bufio.NewScanner(src)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for scanner.Scan() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		line := scanner.Text()
+		if _, err := io.WriteString(dst, line+"\n"); err != nil {
+			return err
+		}
+		var msg dockerPushMessage
+		if err := json.Unmarshal([]byte(line), &msg); err == nil {
+			if msg.ErrorDetail.Message != "" {
+				return fmt.Errorf("docker push failed: %s", msg.ErrorDetail.Message)
+			}
+			if msg.Error != "" {
+				return fmt.Errorf("docker push failed: %s", msg.Error)
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	return ctx.Err()
 }

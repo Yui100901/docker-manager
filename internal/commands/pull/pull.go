@@ -88,7 +88,7 @@ type PullRunner struct {
 	httpClient          *http_utils.HTTPClient
 	loadPulledImage     func(ctx context.Context, path string, output io.Writer) error
 	tagPulledImage      func(ctx context.Context, source, target string) error
-	pushPulledImage     func(ctx context.Context, target string, output io.Writer) error
+	pushPulledImage     func(ctx context.Context, target, registryAuth string, output io.Writer) error
 	runCredentialHelper func(ctx context.Context, helper, server string) (pullRegistryCredential, error)
 }
 
@@ -407,7 +407,11 @@ func (r *PullRunner) completePulledImage(outputFile string, info *ImageInfo, opt
 		return err
 	}
 	log.Printf("Push pulled image: %s", target)
-	if err := r.pushPulledImage(ctx, target, progressOutput); err != nil {
+	registryAuth, err := r.dockerPushRegistryAuth(ctx, target, opts)
+	if err != nil {
+		return fmt.Errorf("解析 push registry 认证失败: %w", err)
+	}
+	if err := r.pushPulledImage(ctx, target, registryAuth, progressOutput); err != nil {
 		return fmt.Errorf("push 镜像失败: %w", err)
 	}
 	log.Printf("镜像推送成功: %s", target)
@@ -440,6 +444,34 @@ func (r *PullRunner) checkPushTargetRegistry(ctx context.Context, target string,
 		}
 		return fmt.Errorf("目标 registry %s 推送前检查失败: %s", registryName, result.message)
 	}
+}
+
+func (r *PullRunner) dockerPushRegistryAuth(ctx context.Context, target string, opts PullOptions) (string, error) {
+	info, err := parseImageInfo(target)
+	if err != nil {
+		return "", err
+	}
+	cred, err := r.loadPullRegistryCredential(ctx, info.Registry, opts.DockerConfig)
+	if err != nil {
+		return "", err
+	}
+	if !cred.Found {
+		return "", nil
+	}
+	payload := map[string]string{
+		"serveraddress": info.Registry,
+	}
+	if cred.IdentityToken != "" {
+		payload["identitytoken"] = cred.IdentityToken
+	} else {
+		payload["username"] = cred.Username
+		payload["password"] = cred.Password
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	return base64.URLEncoding.EncodeToString(data), nil
 }
 
 type registryPingStatus string
@@ -1512,12 +1544,12 @@ func tagImage(ctx context.Context, source, target string) error {
 	return im.Tag(ctx, source, target)
 }
 
-func pushImage(ctx context.Context, target string, output io.Writer) error {
+func pushImage(ctx context.Context, target, registryAuth string, output io.Writer) error {
 	im, err := docker.NewImageManager()
 	if err != nil {
 		return err
 	}
-	return im.PushWithOutput(ctx, target, output)
+	return im.PushWithAuthOutput(ctx, target, registryAuth, output)
 }
 
 func sha256Hash(input string) string {
