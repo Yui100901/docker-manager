@@ -369,15 +369,15 @@ run_expect_fail "rerun without confirm rejected" "${DM_BIN}" rerun "${RERUN_CONT
 run_case "rerun confirm scoped test container" "${DM_BIN}" rerun "${RERUN_CONTAINER_NAME}" --confirm
 docker inspect "${RERUN_CONTAINER_NAME}" >/dev/null
 
-run_case "backup dry-run" "${DM_BIN}" backup container "${CONTAINER_NAME}" --dry-run
-run_case "backup single bundle" "${DM_BIN}" backup container "${CONTAINER_NAME}" --bundle --output-dir "${BACKUP_DIR}" --bundle-output "${BACKUP_ARCHIVE}"
+run_case "backup dry-run" "${DM_BIN}" backup "${CONTAINER_NAME}" --dry-run
+run_case "backup single bundle" "${DM_BIN}" backup "${CONTAINER_NAME}" --bundle --output-dir "${BACKUP_DIR}" --bundle-output "${BACKUP_ARCHIVE}"
 test -f "${BACKUP_ARCHIVE}"
 test -f "${BACKUP_DIR}/manifest.json"
 test -f "${BACKUP_DIR}/checksums.txt"
 test -f "${BACKUP_DIR}/README.md"
 test -f "${BACKUP_DIR}/restore.sh"
-run_case "backup batch separate" "${DM_BIN}" backup container "label:${LABEL}" --output-dir "${BATCH_BACKUP_DIR}" --no-image
-run_case "backup batch merge bundle" "${DM_BIN}" backup container "${CONTAINER_NAME}" "${SECOND_CONTAINER_NAME}" --merge --bundle --output-dir "${MERGED_BACKUP_DIR}" --bundle-output "${MERGED_BACKUP_ARCHIVE}" --no-image
+run_case "backup batch separate" "${DM_BIN}" backup "label:${LABEL}" --output-dir "${BATCH_BACKUP_DIR}" --no-image
+run_case "backup batch merge bundle" "${DM_BIN}" backup "${CONTAINER_NAME}" "${SECOND_CONTAINER_NAME}" --merge --bundle --output-dir "${MERGED_BACKUP_DIR}" --bundle-output "${MERGED_BACKUP_ARCHIVE}" --no-image
 test -f "${MERGED_BACKUP_ARCHIVE}"
 
 run_case "restore dry-run archive" "${DM_BIN}" restore "${BACKUP_ARCHIVE}" --name "${RESTORED_NAME}" --no-start --dry-run
@@ -409,8 +409,8 @@ if docker inspect "${STOPPED_CONTAINER_NAME}" >/dev/null 2>&1; then
   exit 1
 fi
 
-run_expect_fail "backup old output flag rejected" "${DM_BIN}" backup container "${CONTAINER_NAME}" --output "${WORK_DIR}/old.tar.gz"
-run_expect_fail "backup old include-image flag rejected" "${DM_BIN}" backup container "${CONTAINER_NAME}" --include-image=false
+run_expect_fail "backup old output flag rejected" "${DM_BIN}" backup "${CONTAINER_NAME}" --output "${WORK_DIR}/old.tar.gz"
+run_expect_fail "backup old include-image flag rejected" "${DM_BIN}" backup "${CONTAINER_NAME}" --include-image=false
 run_expect_fail "reverse old filter-default-envs flag rejected" "${DM_BIN}" reverse "${CONTAINER_NAME}" --filter-default-envs=false
 run_expect_fail "reverse old merge-ports flag rejected" "${DM_BIN}" reverse "${CONTAINER_NAME}" --merge-ports=false
 

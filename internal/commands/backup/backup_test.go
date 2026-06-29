@@ -235,7 +235,7 @@ func TestBackupContainerWritesOfflineBundleArtifacts(t *testing.T) {
 	}
 }
 
-func TestBackupContainerCommandBundleOutputFlagWritesArchive(t *testing.T) {
+func TestBackupCommandBundleOutputFlagWritesArchive(t *testing.T) {
 	fake := &fakeBackupDockerService{
 		containers: []container.Summary{
 			{ID: "demo-id", Names: []string{"/demo"}, Image: "busybox:latest"},
@@ -250,7 +250,7 @@ func TestBackupContainerCommandBundleOutputFlagWritesArchive(t *testing.T) {
 
 	root := t.TempDir()
 	archive := filepath.Join(root, "demo.tar.gz")
-	cmd := newBackupContainerCommand()
+	cmd := NewBackupCommand()
 	cmd.SetOut(io.Discard)
 	cmd.SetArgs([]string{"demo", "--bundle", "--output-dir", filepath.Join(root, "backup"), "--bundle-output", archive})
 	if err := cmd.Execute(); err != nil {
@@ -261,13 +261,22 @@ func TestBackupContainerCommandBundleOutputFlagWritesArchive(t *testing.T) {
 	}
 }
 
-func TestBackupContainerCommandOnlyExposesBundleOutputFlag(t *testing.T) {
-	cmd := newBackupContainerCommand()
+func TestBackupCommandOnlyExposesBundleOutputFlag(t *testing.T) {
+	cmd := NewBackupCommand()
 	if flag := cmd.Flags().Lookup("output"); flag != nil {
 		t.Fatal("output compatibility flag should be removed")
 	}
 	if flag := cmd.Flags().Lookup("bundle-output"); flag == nil {
 		t.Fatal("bundle-output flag missing")
+	}
+}
+
+func TestBackupCommandDoesNotExposeContainerSubcommand(t *testing.T) {
+	cmd := NewBackupCommand()
+	for _, sub := range cmd.Commands() {
+		if sub.Name() == "container" {
+			t.Fatal("backup command should not expose a container subcommand")
+		}
 	}
 }
 
@@ -367,7 +376,7 @@ func TestBackupContainersSeparateByDefault(t *testing.T) {
 	}
 }
 
-func TestBackupContainerCommandNoImageDisablesImageExport(t *testing.T) {
+func TestBackupCommandNoImageDisablesImageExport(t *testing.T) {
 	fake := &fakeBackupDockerService{
 		containers: []container.Summary{
 			{ID: "demo-id", Names: []string{"/demo"}, Image: "busybox:latest"},
@@ -380,7 +389,7 @@ func TestBackupContainerCommandNoImageDisablesImageExport(t *testing.T) {
 	restoreFactory := replaceBackupServiceFactory(fake)
 	defer restoreFactory()
 
-	cmd := newBackupContainerCommand()
+	cmd := NewBackupCommand()
 	cmd.SetOut(io.Discard)
 	cmd.SetArgs([]string{"demo", "--no-image", "--output-dir", t.TempDir()})
 	if err := cmd.Execute(); err != nil {

@@ -138,19 +138,10 @@ type restoreDryRunPlan struct {
 }
 
 func NewBackupCommand() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "backup",
-		Short: "备份 Docker 资源",
-	}
-	cmd.AddCommand(newBackupContainerCommand())
-	return cmd
-}
-
-func newBackupContainerCommand() *cobra.Command {
 	opts := BackupOptions{IncludeImage: true}
 	var noImage bool
 	cmd := &cobra.Command{
-		Use:   "container <name-pattern...>",
+		Use:   "backup <container-filter...>",
 		Short: "批量备份容器 inspect、镜像、compose、volume 和 network 元数据",
 		Long:  "批量备份容器 inspect、镜像、compose、volume 和 network 元数据。\n\n使用 --output-dir 指定备份输出目录。",
 		Args:  cobra.MinimumNArgs(1),
@@ -189,7 +180,7 @@ func NewRestoreCommand() *cobra.Command {
 	opts := RestoreOptions{}
 	cmd := &cobra.Command{
 		Use:   "restore <backup-dir-or-archive...>",
-		Short: "从 backup container 生成的目录、批量目录或 tar.gz 离线包恢复镜像、网络、volume 和容器",
+		Short: "从 backup 生成的目录、批量目录或 tar.gz 离线包恢复镜像、网络、volume 和容器",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.Output = cmd.OutOrStdout()
@@ -442,7 +433,7 @@ func backupContainer(ctx context.Context, name string, opts BackupOptions) (stri
 			Containers:     []BackupContainerManifest{containerManifest},
 		}
 		printBackupDryRunPlan(opts.Output, outputDir, manifest, opts)
-		log.Printf("Dry run backup container: name=%s output=%s includeImage=%v networks=%d volumes=%d bundle=%v", name, outputDir, opts.IncludeImage, len(networks), len(volumes), opts.Bundle)
+		log.Printf("Dry run backup: name=%s output=%s includeImage=%v networks=%d volumes=%d bundle=%v", name, outputDir, opts.IncludeImage, len(networks), len(volumes), opts.Bundle)
 		return outputDir, nil
 	}
 
