@@ -205,7 +205,7 @@ wait_for_registry() {
   local attempts=30
   local i
   for i in $(seq 1 "${attempts}"); do
-    if "${DM_BIN}" registry check "${REGISTRY}" --plain-http --format json >/dev/null 2>&1; then
+    if "${DM_BIN}" report registry "${REGISTRY}" --plain-http --format json >/dev/null 2>&1; then
       return 0
     fi
     sleep 1
@@ -324,10 +324,10 @@ log "seed 本地临时 registry"
 docker tag "${SOURCE_IMAGE}" "${SOURCE_REGISTRY_IMAGE}"
 docker push "${SOURCE_REGISTRY_IMAGE}" >/dev/null
 
-run_case "registry check text" "${DM_BIN}" registry check "${REGISTRY}" --plain-http
-run_case "registry check json" "${DM_BIN}" registry check "${REGISTRY}" --plain-http --format json
-run_case "registry check markdown" "${DM_BIN}" registry check "${REGISTRY}" --plain-http --format markdown
-run_case "registry check html" "${DM_BIN}" registry check "${REGISTRY}" --plain-http --format html
+run_case "report registry text" "${DM_BIN}" report registry "${REGISTRY}" --plain-http
+run_case "report registry json" "${DM_BIN}" report registry "${REGISTRY}" --plain-http --format json
+run_case "report registry markdown" "${DM_BIN}" report registry "${REGISTRY}" --plain-http --format markdown
+run_case "report registry html" "${DM_BIN}" report registry "${REGISTRY}" --plain-http --format html
 
 run_case "image pull output" "${DM_BIN}" image pull "${SOURCE_REGISTRY_IMAGE}" --plain-http --output "${WORK_DIR}/pull-local.tar"
 test -f "${WORK_DIR}/pull-local.tar"

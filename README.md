@@ -156,7 +156,7 @@ dm completion fish
 dm completion powershell
 ```
 
-资源参数会尽量从本机 Docker 补齐，例如容器、镜像和 volume。已支持的典型位置包括 `backup container`、`reverse`、`report diff`、`report logs`、`report health`、`report network`、`image tree`、`report volumes`，以及 `image save --filter` 等筛选参数。
+资源参数会尽量从本机 Docker 补齐，例如容器、镜像和 volume。已支持的典型位置包括 `backup`、`reverse`、`report diff`、`report logs`、`report health`、`report network`、`image tree`、`report volumes`，以及 `image save --filter` 等筛选参数。
 
 安装脚本可选安装补全脚本。Linux/macOS 使用 `scripts/install.sh --completion bash|zsh|fish|powershell|all`，可重复指定或用逗号分隔；卸载时会根据 `install.env` 清理生成的补全文件。Windows 使用 `scripts/install.ps1 -Completion PowerShell`，会生成 PowerShell 补全脚本并写入可卸载的 profile 片段。
 
@@ -170,7 +170,7 @@ dm completion powershell | Out-String | Invoke-Expression
 
 处理本地 Docker 资源的命令支持统一筛选规则。裸值会匹配资源的常用候选字段，也可以使用 `key:value` 或 `key=value` 指定字段；多个筛选条件之间是或关系，匹配任意一个即选中。筛选值支持 `*` 和 `?` 通配符，也支持大小写不敏感的精确匹配和前缀匹配。建议在 shell 中给带通配符的条件加引号，避免被 shell 提前展开。
 
-容器筛选适用于 `reverse`、`rerun`、`backup container`、`report health`、`report network`、`report logs` 等容器目标或报告命令:
+容器筛选适用于 `reverse`、`rerun`、`backup`、`report health`、`report network`、`report logs` 等容器目标或报告命令:
 
 | 字段 | 匹配内容 |
 | --- | --- |
@@ -187,7 +187,7 @@ dm reverse --running --filter 'image:nginx*'
 dm report health --filter 'state=running' --filter 'label:env=prod'
 dm report network --filter 'status:Up*'
 dm report logs --filter 'image:team/api' --keyword timeout
-dm backup container 'name:api-*' --dry-run
+dm backup 'name:api-*' --dry-run
 dm rerun --filter 'label:dm.managed=true' --dry-run
 ```
 
@@ -235,7 +235,7 @@ dm report volumes --filter 'option:type=nfs'
 
 ## 端到端集成测试
 
-仓库提供 `scripts/e2e.sh`，用于在有 Docker 的测试机上启动临时 registry，并覆盖 `registry check --plain-http`、`image pull --plain-http --output`、`image pull --plain-http --load`、`image pull --to`、`backup container --bundle` 和 `restore <archive>`。
+仓库提供 `scripts/e2e.sh`，用于在有 Docker 的测试机上启动临时 registry，并覆盖 `report registry --plain-http`、`image pull --plain-http --output`、`image pull --plain-http --load`、`image pull --to`、`backup --bundle` 和 `restore <archive>`。
 
 生产前或远程服务器验收可参考 [docs/REMOTE_TESTING.md](docs/REMOTE_TESTING.md)，其中整理了临时目录、日志留档、代理、测试资源命名、手工验证命令、通过标准和清理步骤。
 
@@ -279,7 +279,7 @@ DM_E2E_KEEP_WORKDIR=1 bash scripts/e2e.sh
 | `dm image save` | 导出本地 Docker 镜像，支持筛选、合并和 dry-run |
 | `dm reverse` | 从运行容器反向生成 `docker run` 或 compose |
 | `dm rerun` | 基于 Docker inspect 停止、删除并重建容器 |
-| `dm backup container` | 备份容器 inspect、镜像、compose、network 和 volume 元数据 |
+| `dm backup` | 备份容器 inspect、镜像、compose、network 和 volume 元数据 |
 | `dm restore` | 从备份目录或离线 tar.gz 包恢复容器 |
 | `dm report prune` | 生成可清理资源报告，可选执行清理 |
 | `dm report network` | 查看容器网络关系、端口映射和网络风险 |
@@ -288,7 +288,7 @@ DM_E2E_KEEP_WORKDIR=1 bash scripts/e2e.sh
 | `dm report diff` | 对比两个容器关键配置差异 |
 | `dm image tree` | 分析镜像层、大小和构建历史 |
 | `dm report volumes` | 查找未使用或疑似未使用 volume |
-| `dm registry check` | 检查 registry 登录配置、凭据和连通性 |
+| `dm report registry` | 检查 registry 登录配置、凭据和连通性 |
 | `dm doctor` | 检查 Docker、registry、代理、磁盘和测试前置条件 |
 | `dm version` | 输出版本、commit、构建时间和运行平台 |
 
@@ -472,26 +472,26 @@ dm rerun --filter 'name:app-*' --confirm
 
 ## 离线备份和恢复
 
-备份容器。`backup container` 现在按批量模型工作；单个容器是批量的一种特例。多个目标默认拆成多个独立备份包:
+备份容器。`backup` 按批量模型工作；单个容器是批量的一种特例。多个目标默认拆成多个独立备份包:
 
 ```bash
-dm backup container app
-dm backup container app --output-dir ./docker-backups/app
-dm backup container app --no-image
-dm backup container "api-*" worker --output-dir ./docker-backups/prod
-dm backup container "image:team/api" "label:env=prod" --output-dir ./docker-backups/prod
-dm backup container app --dry-run
+dm backup app
+dm backup app --output-dir ./docker-backups/app
+dm backup app --no-image
+dm backup "api-*" worker --output-dir ./docker-backups/prod
+dm backup "image:team/api" "label:env=prod" --output-dir ./docker-backups/prod
+dm backup app --dry-run
 ```
 
-`backup container --dry-run` 不写入文件、不导出镜像，但会读取容器 inspect，确认 compose 可生成，检查 network/volume 元数据可读取，并输出将生成的 manifest、inspect、compose、镜像归档、离线包和 checksum 计划。
+`backup --dry-run` 不写入文件、不导出镜像，但会读取容器 inspect，确认 compose 可生成，检查 network/volume 元数据可读取，并输出将生成的 manifest、inspect、compose、镜像归档、离线包和 checksum 计划。
 
 生成离线迁移包。多个目标默认仍然拆成多个独立包；需要整体恢复时使用 `--merge` 合并为一个批量包:
 
 ```bash
-dm backup container app --bundle
-dm backup container app --bundle --output-dir ./backups/app --bundle-output ./app-offline.tar.gz
-dm backup container "api-*" worker --bundle --output-dir ./backups/prod
-dm backup container "api-*" worker --merge --bundle --output-dir ./backups/prod-merged --bundle-output ./prod-offline.tar.gz
+dm backup app --bundle
+dm backup app --bundle --output-dir ./backups/app --bundle-output ./app-offline.tar.gz
+dm backup "api-*" worker --bundle --output-dir ./backups/prod
+dm backup "api-*" worker --merge --bundle --output-dir ./backups/prod-merged --bundle-output ./prod-offline.tar.gz
 ```
 
 备份内容包括。单容器包和合并批量包都使用同一种 `manifest.json` 结构，通过 `containers` 数组描述一个或多个容器:
@@ -554,7 +554,7 @@ dm report logs app --format json
 dm report diff app-old app-new --format json
 dm image tree nginx:latest --format json
 dm report volumes --format json
-dm registry check registry.local:5000 --format json
+dm report registry registry.local:5000 --format json
 dm doctor --format json
 ```
 
@@ -633,9 +633,9 @@ dm report volumes --filter 'label:env=dev'
 Registry 登录检查:
 
 ```bash
-dm registry check registry.local:5000
-dm registry check registry.local:5000 --plain-http
-dm registry check registry.local:5000 --docker-config /root/.docker/config.json
+dm report registry registry.local:5000
+dm report registry registry.local:5000 --plain-http
+dm report registry registry.local:5000 --docker-config /root/.docker/config.json
 ```
 
 该命令会检查 Docker config、`auths`、credential helper、registry `/v2/` 连通性和 Docker RegistryLogin 认证结果。
@@ -645,14 +645,14 @@ dm registry check registry.local:5000 --docker-config /root/.docker/config.json
 拉取镜像并迁移到内网 registry:
 
 ```bash
-dm registry check registry.local:5000 --plain-http
+dm report registry registry.local:5000 --plain-http
 dm image pull nginx:latest --to registry.local:5000 --plain-http
 ```
 
 把容器打包后迁移到另一台机器:
 
 ```bash
-dm backup container app --bundle --bundle-output app-offline.tar.gz
+dm backup app --bundle --bundle-output app-offline.tar.gz
 dm restore app-offline.tar.gz --replace
 ```
 

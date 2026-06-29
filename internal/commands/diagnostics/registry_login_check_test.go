@@ -129,6 +129,16 @@ func TestRunRegistryLoginCheckWithInlineCredential(t *testing.T) {
 	}
 }
 
+func TestRegistryReportCommandShape(t *testing.T) {
+	cmd := NewRegistryReportCommand()
+	if cmd.Name() != "registry" {
+		t.Fatalf("Name() = %q, want registry", cmd.Name())
+	}
+	if flag := cmd.Flags().Lookup("plain-http"); flag == nil {
+		t.Fatal("missing --plain-http flag")
+	}
+}
+
 func TestPrintRegistryLoginCheckReportIncludesSections(t *testing.T) {
 	var out bytes.Buffer
 	printRegistryLoginCheckReport(&out, RegistryLoginCheckReport{

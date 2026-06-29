@@ -107,6 +107,23 @@ func TestRootCommandLogJSONFlagAlias(t *testing.T) {
 	}
 }
 
+func TestRootCommandDoesNotExposeRegistryNamespace(t *testing.T) {
+	cfg := appConfig{}
+	opts := outputOptions{}
+	cmd := newRootCommand(&cfg, &opts)
+
+	if sub, _, err := cmd.Find([]string{"registry"}); err == nil && sub != nil && sub.Name() == "registry" {
+		t.Fatal("root command should not expose registry namespace")
+	}
+	report, _, err := cmd.Find([]string{"report", "registry"})
+	if err != nil {
+		t.Fatalf("Find(report registry) error = %v", err)
+	}
+	if report == nil || report.Name() != "registry" {
+		t.Fatalf("Find(report registry) = %#v, want registry report command", report)
+	}
+}
+
 func TestPreseedJSONErrorMode(t *testing.T) {
 	tests := []struct {
 		name string
