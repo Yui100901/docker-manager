@@ -48,8 +48,9 @@ const (
 	// 并发下载层的最大并发数
 	maxLayerConcurrency = 4
 	// HTTP retry/backoff config
-	maxHTTPRetries = 3
-	initialBackoff = 1 * time.Second
+	maxHTTPRetries     = 3
+	initialBackoff     = 1 * time.Second
+	defaultPullTimeout = 30 * time.Second
 )
 
 type targetPlatform struct {
@@ -93,7 +94,11 @@ type PullRunner struct {
 }
 
 func NewPullRunner(proxy, targetOS, arch string) (*PullRunner, error) {
-	client, err := newPullHTTPClient(proxy)
+	return NewPullRunnerWithTimeout(proxy, targetOS, arch, defaultPullTimeout)
+}
+
+func NewPullRunnerWithTimeout(proxy, targetOS, arch string, timeout time.Duration) (*PullRunner, error) {
+	client, err := newPullHTTPClient(proxy, timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -123,6 +128,7 @@ func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command 
 	var dockerConfig string
 	var plainHTTP bool
 	var verboseHTTP bool
+	timeout := defaultPullTimeout
 	batchOpts := PullBatchOptions{
 		OutputDir:   ".",
 		Concurrency: 1,
@@ -145,7 +151,10 @@ func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command 
 				batchOpts.OutputDir = outputDir
 			}
 			configureHTTPLogging(verboseHTTP)
-			runner, err := NewPullRunner(proxy, targetOS, arch)
+			if timeout <= 0 {
+				return fmt.Errorf("--timeout 必须大于 0")
+			}
+			runner, err := NewPullRunnerWithTimeout(proxy, targetOS, arch, timeout)
 			if err != nil {
 				return fmt.Errorf("配置代理失败: %w", err)
 			}
@@ -210,6 +219,7 @@ func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command 
 	cmd.Flags().StringVarP(&targetOS, "os", "", "linux", "目标操作系统")
 	cmd.Flags().StringVarP(&arch, "arch", "a", "amd64", "目标架构")
 	cmd.Flags().StringVar(&proxy, "proxy", "", "强制指定 HTTP 代理，例如 http://127.0.0.1:7890；为空时使用环境变量代理")
+	cmd.Flags().DurationVar(&timeout, "timeout", defaultPullTimeout, "单次 HTTP 请求超时时间，例如 30s、2m、5m")
 	cmd.Flags().StringVarP(&output, "output", "o", "", "输出 tar 文件路径，仅支持单个镜像")
 	cmd.Flags().StringVar(&outputDir, "output-dir", ".", "输出 tar 文件目录")
 	cmd.Flags().BoolVar(&load, "load", false, "拉取并打包完成后自动导入 Docker")
@@ -305,7 +315,6 @@ func (r *PullRunner) getImage(imageName string, opts PullOptions) error {
 	}()
 
 	manifest, auth, err := r.fetchManifest(ctx, imageInfo, opts)
-	log.Println(manifest)
 	if err != nil {
 		return fmt.Errorf("获取清单失败: %w", err)
 	}
@@ -582,17 +591,20 @@ func validateImageRef(ref string) (string, error) {
 	return ref, nil
 }
 
-func newPullHTTPClient(proxy string) (*http_utils.HTTPClient, error) {
+func newPullHTTPClient(proxy string, timeout time.Duration) (*http_utils.HTTPClient, error) {
 	proxyFunc, err := proxyFuncFromSetting(proxy)
 	if err != nil {
 		return nil, err
+	}
+	if timeout <= 0 {
+		timeout = defaultPullTimeout
 	}
 
 	transport := &http.Transport{Proxy: proxyFunc}
 	return &http_utils.HTTPClient{
 		Client: &http.Client{
 			Transport: transport,
-			Timeout:   600 * time.Second,
+			Timeout:   timeout,
 		},
 	}, nil
 }

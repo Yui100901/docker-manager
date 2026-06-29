@@ -258,6 +258,16 @@ func TestProxyFuncFromSettingRespectsNoProxy(t *testing.T) {
 	}
 }
 
+func TestNewPullHTTPClientUsesConfiguredTimeout(t *testing.T) {
+	client, err := newPullHTTPClient("", 2*time.Second)
+	if err != nil {
+		t.Fatalf("newPullHTTPClient() error = %v", err)
+	}
+	if client.Client.Timeout != 2*time.Second {
+		t.Fatalf("timeout = %v, want 2s", client.Client.Timeout)
+	}
+}
+
 func TestVerifyFileDigest(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "layer.tar.gz")
 	content := []byte("layer-content")
@@ -884,7 +894,7 @@ func strconvQuote(value string) string {
 }
 
 func newTestPullRunner() *PullRunner {
-	client, err := newPullHTTPClient("")
+	client, err := newPullHTTPClient("", defaultPullTimeout)
 	if err != nil {
 		panic(err)
 	}
