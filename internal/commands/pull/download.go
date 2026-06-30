@@ -1,6 +1,7 @@
 package pull
 
 import (
+	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
@@ -14,7 +15,6 @@ import (
 
 	"docker-manager/internal/textfmt"
 
-	"github.com/Yui100901/MyGo/file_utils"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"golang.org/x/sync/errgroup"
 )
@@ -63,26 +63,112 @@ func (r *PullRunner) downloadLayer(ctx context.Context, info *ImageInfo, layer o
 		return fmt.Errorf("创建层目录失败: %w", err)
 	}
 
-	gzPath := filepath.Join(layerDir, "layer.tar.gz")
+	blobPath := filepath.Join(layerDir, "layer.blob")
+	tarPath := filepath.Join(layerDir, "layer.tar")
 
-	if _, err := r.saveRegistryFileWithRetry(ctx, layerURL, nil, nil, info, opts, auth, gzPath); err != nil {
+	if _, err := r.saveRegistryFileWithRetry(ctx, layerURL, nil, nil, info, opts, auth, blobPath); err != nil {
 		return fmt.Errorf("下载层失败: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := verifyFileDigest(gzPath, layer.Digest); err != nil {
+	if err := verifyFileDigest(blobPath, layer.Digest); err != nil {
 		return fmt.Errorf("校验层 digest 失败: %w", err)
 	}
 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := file_utils.DecompressGzip(gzPath, filepath.Join(layerDir, "layer.tar")); err != nil {
-		return fmt.Errorf("解压失败: %w", err)
+	if err := materializeLayerTar(blobPath, tarPath, layer.MediaType); err != nil {
+		return err
 	}
 
-	return os.Remove(gzPath)
+	return nil
+}
+
+func materializeLayerTar(blobPath, tarPath, mediaType string) error {
+	if isZstdLayerMediaType(mediaType) {
+		return fmt.Errorf("暂不支持 zstd 压缩镜像层: %s", mediaType)
+	}
+	isGzip, err := fileHasGzipHeader(blobPath)
+	if err != nil {
+		return fmt.Errorf("读取层文件失败: %w", err)
+	}
+	if isGzip || isGzipLayerMediaType(mediaType) {
+		if err := decompressGzipFile(blobPath, tarPath); err != nil {
+			return fmt.Errorf("解压失败: %w", err)
+		}
+		return os.Remove(blobPath)
+	}
+	_ = os.Remove(tarPath)
+	if err := os.Rename(blobPath, tarPath); err != nil {
+		return fmt.Errorf("保存未压缩层失败: %w", err)
+	}
+	return nil
+}
+
+func fileHasGzipHeader(path string) (bool, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		if cerr := file.Close(); cerr != nil {
+			log.Printf("警告: 关闭文件 %s 失败: %v", path, cerr)
+		}
+	}()
+	var header [2]byte
+	n, err := io.ReadFull(file, header[:])
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return false, err
+	}
+	return n == 2 && header[0] == 0x1f && header[1] == 0x8b, nil
+}
+
+func decompressGzipFile(srcPath, dstPath string) error {
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if cerr := src.Close(); cerr != nil {
+			log.Printf("警告: 关闭文件 %s 失败: %v", srcPath, cerr)
+		}
+	}()
+	gzr, err := gzip.NewReader(src)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if cerr := gzr.Close(); cerr != nil {
+			log.Printf("警告: 关闭 gzip reader %s 失败: %v", srcPath, cerr)
+		}
+	}()
+
+	_ = os.Remove(dstPath)
+	dst, err := os.Create(dstPath)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(dst, gzr)
+	closeErr := dst.Close()
+	if copyErr != nil {
+		_ = os.Remove(dstPath)
+		return copyErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(dstPath)
+		return closeErr
+	}
+	return nil
+}
+
+func isGzipLayerMediaType(mediaType string) bool {
+	return strings.HasSuffix(mediaType, "+gzip") || strings.Contains(mediaType, ".tar.gzip")
+}
+
+func isZstdLayerMediaType(mediaType string) bool {
+	return strings.HasSuffix(mediaType, "+zstd")
 }
 
 type httpStatusError struct {

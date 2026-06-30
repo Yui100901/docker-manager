@@ -2,6 +2,7 @@ package pull
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -310,6 +311,65 @@ func TestVerifyFileDigest(t *testing.T) {
 	}
 	if err := verifyFileDigest(path, digest.FromBytes([]byte("other-content"))); err == nil {
 		t.Fatal("verifyFileDigest() error = nil, want mismatch error")
+	}
+}
+
+func TestMaterializeLayerTarKeepsUncompressedLayer(t *testing.T) {
+	dir := t.TempDir()
+	blobPath := filepath.Join(dir, "layer.blob")
+	tarPath := filepath.Join(dir, "layer.tar")
+	content := []byte("plain tar content")
+	if err := os.WriteFile(blobPath, content, 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	if err := materializeLayerTar(blobPath, tarPath, "application/vnd.oci.image.layer.v1.tar"); err != nil {
+		t.Fatalf("materializeLayerTar() error = %v", err)
+	}
+	got, err := os.ReadFile(tarPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if string(got) != string(content) {
+		t.Fatalf("layer.tar = %q, want %q", got, content)
+	}
+	if _, err := os.Stat(blobPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("blob file still exists or unexpected stat error: %v", err)
+	}
+}
+
+func TestMaterializeLayerTarDecompressesGzipLayer(t *testing.T) {
+	dir := t.TempDir()
+	blobPath := filepath.Join(dir, "layer.blob")
+	tarPath := filepath.Join(dir, "layer.tar")
+	content := []byte("compressed tar content")
+	file, err := os.Create(blobPath)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	gw := gzip.NewWriter(file)
+	if _, err := gw.Write(content); err != nil {
+		t.Fatalf("gzip Write() error = %v", err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatalf("gzip Close() error = %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("file Close() error = %v", err)
+	}
+
+	if err := materializeLayerTar(blobPath, tarPath, "application/vnd.oci.image.layer.v1.tar+gzip"); err != nil {
+		t.Fatalf("materializeLayerTar() error = %v", err)
+	}
+	got, err := os.ReadFile(tarPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if string(got) != string(content) {
+		t.Fatalf("layer.tar = %q, want %q", got, content)
+	}
+	if _, err := os.Stat(blobPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("blob file still exists or unexpected stat error: %v", err)
 	}
 }
 
