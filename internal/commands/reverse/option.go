@@ -1,10 +1,5 @@
 package reverse
 
-//
-// @Author yfy2001
-// @Date 2026/1/13 14 26
-//
-
 type ReverseType string
 
 const (

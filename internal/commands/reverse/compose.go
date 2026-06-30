@@ -1,10 +1,5 @@
 package reverse
 
-//
-// @Author yfy2001
-// @Date 2026/1/12 16 38
-//
-
 type ComposeFile struct {
 	Services map[string]ComposeService `yaml:"services"`
 	Volumes  map[string]interface{}    `yaml:"volumes,omitempty"`

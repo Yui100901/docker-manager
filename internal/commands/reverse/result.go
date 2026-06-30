@@ -3,6 +3,7 @@ package reverse
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -15,11 +16,6 @@ import (
 )
 
 const inspectBackupRoot = "docker-inspect-backups"
-
-//
-// @Author yfy2001
-// @Date 2026/1/13 15 21
-//
 
 var containerManager *docker.ContainerManager
 var newContainerManager = docker.NewContainerManager
@@ -63,17 +59,20 @@ func NewReverseResult(results []ParsedResult, options ReverseOptions) *ReverseRe
 	return rr
 }
 
-func (rr *ReverseResult) Print() {
+func (rr *ReverseResult) Print(w io.Writer) {
+	if w == nil {
+		w = io.Discard
+	}
 	if rr.options.ReverseType == ReverseCmd || rr.options.ReverseType == ReverseAll {
 		if rr.options.PrettyFormat {
-			fmt.Println(rr.DockerRunCommandStringPretty())
+			fmt.Fprintln(w, rr.DockerRunCommandStringPretty())
 		} else {
-			fmt.Println(rr.DockerRunCommandStringRaw())
+			fmt.Fprintln(w, rr.DockerRunCommandStringRaw())
 		}
 	}
 
 	if rr.options.ReverseType == ReverseCompose || rr.options.ReverseType == ReverseAll {
-		fmt.Println(rr.DockerComposeFileString())
+		fmt.Fprintln(w, rr.DockerComposeFileString())
 	}
 }
 

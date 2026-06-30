@@ -12,11 +12,6 @@ import (
 	"github.com/docker/docker/client"
 )
 
-//
-// @Author yfy2001
-// @Date 2025/12/5 21 20
-//
-
 type ImageManager struct {
 	cli *client.Client
 }

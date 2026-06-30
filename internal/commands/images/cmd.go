@@ -19,11 +19,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-//
-// @Author yfy2001
-// @Date 2025/7/18 09 50
-//
-
 type imageService interface {
 	List(ctx context.Context, all bool) ([]image.Summary, error)
 	Save(ctx context.Context, images []string, outputFile string) error

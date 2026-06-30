@@ -12,11 +12,6 @@ import (
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
-//
-// @Author yfy2001
-// @Date 2025/12/5 21 20
-//
-
 // ContainerManager 封装容器相关操作
 type ContainerManager struct {
 	cli *client.Client

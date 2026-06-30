@@ -1,21 +1,15 @@
 package diagnostics
 
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"docker-manager/internal/docker"
+	"docker-manager/internal/registryauth"
 	rpt "docker-manager/internal/report"
 
 	"github.com/docker/docker/api/types/registry"
@@ -36,7 +30,7 @@ var newRegistryLoginDockerService = func() (registryLoginDockerService, error) {
 }
 
 var registryCheckHTTPClient httpDoer = http.DefaultClient
-var runDockerCredentialHelper = defaultRunDockerCredentialHelper
+var runDockerCredentialHelper registryauth.HelperRunner = defaultRunDockerCredentialHelper
 
 type dockerRegistryLoginService struct {
 	cli *client.Client
@@ -77,35 +71,9 @@ type CheckResult struct {
 	HTTPStatus int    `json:"http_status,omitempty"`
 }
 
-type dockerConfigFile struct {
-	Auths       map[string]dockerAuthEntry `json:"auths"`
-	CredsStore  string                     `json:"credsStore"`
-	CredHelpers map[string]string          `json:"credHelpers"`
-}
-
-type dockerAuthEntry struct {
-	Auth          string `json:"auth"`
-	Username      string `json:"username"`
-	Password      string `json:"password"`
-	IdentityToken string `json:"identitytoken"`
-}
-
-type registryCredential struct {
-	Found         bool
-	Source        string
-	Helper        string
-	Username      string
-	Password      string
-	IdentityToken string
-	ServerAddress string
-	Message       string
-}
-
-type dockerCredentialHelperResponse struct {
-	ServerURL string `json:"ServerURL"`
-	Username  string `json:"Username"`
-	Secret    string `json:"Secret"`
-}
+type dockerConfigFile = registryauth.Config
+type dockerAuthEntry = registryauth.AuthEntry
+type registryCredential = registryauth.Credential
 
 func NewRegistryReportCommand() *cobra.Command {
 	opts := RegistryLoginCheckOptions{Timeout: 5 * time.Second}
@@ -180,135 +148,31 @@ func normalizeRegistryName(input string) (string, error) {
 }
 
 func defaultDockerConfigPath() string {
-	if dir := strings.TrimSpace(os.Getenv("DOCKER_CONFIG")); dir != "" {
-		return filepath.Join(dir, "config.json")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return filepath.Join(".docker", "config.json")
-	}
-	return filepath.Join(home, ".docker", "config.json")
+	return registryauth.DefaultConfigPath()
 }
 
 func readDockerConfig(path string) (dockerConfigFile, bool, error) {
-	var cfg dockerConfigFile
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return cfg, false, nil
-		}
-		return cfg, false, err
-	}
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return cfg, true, err
-	}
-	return cfg, true, nil
+	return registryauth.ReadConfig(path)
 }
 
 func resolveRegistryCredential(ctx context.Context, cfg dockerConfigFile, registryName string) registryCredential {
-	keys := registryConfigKeys(registryName)
-	if helper, server := findCredentialHelper(cfg, keys); helper != "" {
-		cred, err := runDockerCredentialHelper(ctx, helper, server)
-		if err != nil {
-			return registryCredential{
-				Source:        "credential-helper",
-				Helper:        helper,
-				ServerAddress: server,
-				Message:       err.Error(),
-			}
-		}
-		cred.Found = true
-		cred.Source = "credential-helper"
-		cred.Helper = helper
-		if cred.ServerAddress == "" {
-			cred.ServerAddress = server
-		}
-		return cred
-	}
-	for _, key := range keys {
-		entry, ok := cfg.Auths[key]
-		if !ok {
-			continue
-		}
-		cred := credentialFromAuthEntry(entry)
-		cred.Found = cred.Username != "" || cred.Password != "" || cred.IdentityToken != ""
-		cred.Source = "auths"
-		cred.ServerAddress = key
-		if !cred.Found {
-			cred.Message = "auths entry exists but contains no usable credential"
-		}
-		return cred
-	}
-	return registryCredential{Message: "no matching auths, credHelpers or credsStore entry"}
+	return registryauth.ResolveCredential(ctx, cfg, registryName, runDockerCredentialHelper)
 }
 
 func findCredentialHelper(cfg dockerConfigFile, keys []string) (string, string) {
-	for _, key := range keys {
-		if helper := strings.TrimSpace(cfg.CredHelpers[key]); helper != "" {
-			return helper, key
-		}
-	}
-	if helper := strings.TrimSpace(cfg.CredsStore); helper != "" {
-		return helper, keys[0]
-	}
-	return "", ""
+	return registryauth.FindCredentialHelper(cfg, keys)
 }
 
 func registryConfigKeys(registryName string) []string {
-	keys := []string{
-		registryName,
-		"https://" + registryName,
-		"http://" + registryName,
-		"https://" + registryName + "/v1/",
-	}
-	if registryName == "docker.io" || registryName == "registry-1.docker.io" || registryName == "index.docker.io" {
-		keys = append(keys, "https://index.docker.io/v1/", "index.docker.io", "docker.io", "registry-1.docker.io")
-	}
-	return uniqueStrings(keys)
+	return registryauth.ConfigKeys(registryName)
 }
 
 func credentialFromAuthEntry(entry dockerAuthEntry) registryCredential {
-	cred := registryCredential{
-		Username:      entry.Username,
-		Password:      entry.Password,
-		IdentityToken: entry.IdentityToken,
-	}
-	if cred.Username == "" && cred.Password == "" && entry.Auth != "" {
-		decoded, err := base64.StdEncoding.DecodeString(entry.Auth)
-		if err == nil {
-			username, password, ok := strings.Cut(string(decoded), ":")
-			if ok {
-				cred.Username = username
-				cred.Password = password
-			}
-		}
-	}
-	return cred
+	return registryauth.CredentialFromAuthEntry(entry)
 }
 
 func defaultRunDockerCredentialHelper(ctx context.Context, helper, server string) (registryCredential, error) {
-	cmd := exec.CommandContext(ctx, "docker-credential-"+helper, "get")
-	cmd.Stdin = strings.NewReader(server)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = err.Error()
-		}
-		return registryCredential{}, fmt.Errorf("docker-credential-%s get failed: %s", helper, msg)
-	}
-	var resp dockerCredentialHelperResponse
-	if err := json.Unmarshal(stdout.Bytes(), &resp); err != nil {
-		return registryCredential{}, err
-	}
-	return registryCredential{
-		Username:      resp.Username,
-		Password:      resp.Secret,
-		ServerAddress: resp.ServerURL,
-	}, nil
+	return registryauth.DefaultRunCredentialHelper(ctx, helper, server)
 }
 
 func pingRegistryV2(ctx context.Context, registryName string, plainHTTP bool, cred registryCredential) CheckResult {
@@ -462,16 +326,7 @@ func checkStatusText(status string) string {
 }
 
 func uniqueStrings(values []string) []string {
-	seen := map[string]bool{}
-	var result []string
-	for _, value := range values {
-		if value == "" || seen[value] {
-			continue
-		}
-		seen[value] = true
-		result = append(result, value)
-	}
-	return result
+	return registryauth.UniqueStrings(values)
 }
 
 func (s *dockerRegistryLoginService) RegistryLogin(ctx context.Context, auth registry.AuthConfig) (registry.AuthenticateOKBody, error) {

@@ -215,6 +215,24 @@ wait_for_registry() {
   return 1
 }
 
+verify_docker_runtime() {
+  local probe="dm_e2e_probe_${SUFFIX}"
+  docker rm -f "${probe}" >/dev/null 2>&1 || true
+  if ! timeout 20 docker create --name "${probe}" "${SOURCE_IMAGE}" sh -c "echo dm-e2e-probe" >/dev/null; then
+    echo "Docker 无法在 20s 内创建测试容器，full/destructive 测试无法继续。" >&2
+    echo "请先确认 Docker/containerd 运行状态，或换用干净测试机。" >&2
+    docker rm -f "${probe}" >/dev/null 2>&1 || true
+    exit 1
+  fi
+  if ! timeout 20 docker start -a "${probe}" >/dev/null; then
+    echo "Docker 无法在 20s 内启动测试容器，full/destructive 测试无法继续。" >&2
+    echo "请先确认 Docker/containerd 运行状态，或换用干净测试机。" >&2
+    docker rm -f "${probe}" >/dev/null 2>&1 || true
+    exit 1
+  fi
+  docker rm -f "${probe}" >/dev/null 2>&1 || true
+}
+
 build_dm() {
   (
     cd "${ROOT_DIR}"
@@ -315,6 +333,7 @@ need_cmd docker
 log "准备测试镜像"
 ensure_image "${REGISTRY_IMAGE}"
 ensure_image "${SOURCE_IMAGE}"
+verify_docker_runtime
 
 log "启动临时 registry ${REGISTRY_NAME}"
 docker rm -f "${REGISTRY_NAME}" >/dev/null 2>&1 || true

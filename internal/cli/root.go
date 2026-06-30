@@ -15,11 +15,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-//
-// @Author yfy2001
-// @Date 2025/7/18 09 43
-//
-
 func Run() int {
 	cfg := appConfig{}
 	opts := outputOptions{}

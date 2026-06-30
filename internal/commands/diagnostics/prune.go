@@ -8,103 +8,13 @@ import (
 	"strings"
 	"time"
 
-	"docker-manager/internal/docker"
 	rpt "docker-manager/internal/report"
 
 	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/build"
-	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/api/types/volume"
-	"github.com/docker/docker/client"
 	"github.com/spf13/cobra"
 )
-
-type pruneDockerService interface {
-	DiskUsage(ctx context.Context) (types.DiskUsage, error)
-	PruneContainers(ctx context.Context, pruneFilters filters.Args) (container.PruneReport, error)
-	PruneImages(ctx context.Context, pruneFilters filters.Args) (image.PruneReport, error)
-	PruneVolumes(ctx context.Context, pruneFilters filters.Args) (volume.PruneReport, error)
-	PruneBuildCache(ctx context.Context, pruneFilters filters.Args) (*build.CachePruneReport, error)
-}
-
-var newPruneDockerService = func() (pruneDockerService, error) {
-	cli, err := docker.NewClient()
-	if err != nil {
-		return nil, err
-	}
-	return &dockerPruneService{cli: cli}, nil
-}
-
-type dockerPruneService struct {
-	cli *client.Client
-}
-
-type PruneReportOptions struct {
-	Apply         bool
-	Confirm       bool
-	Only          []string
-	Filters       []string
-	Until         string
-	ProtectLabels []string
-	rpt.FormatOptions
-}
-
-type PruneReport struct {
-	GeneratedAt       string               `json:"generated_at"`
-	StoppedContainers []PruneContainerRef  `json:"stopped_containers,omitempty"`
-	DanglingImages    []PruneImageRef      `json:"dangling_images,omitempty"`
-	UnusedVolumes     []PruneVolumeRef     `json:"unused_volumes,omitempty"`
-	BuildCaches       []PruneBuildCacheRef `json:"build_caches,omitempty"`
-	EstimatedBytes    uint64               `json:"estimated_bytes"`
-	Applied           bool                 `json:"applied"`
-	Scope             PruneScope           `json:"scope"`
-	ApplyResult       *PruneApplyResult    `json:"apply_result,omitempty"`
-}
-
-type PruneScope struct {
-	Only          []string `json:"only,omitempty"`
-	Filters       []string `json:"filters,omitempty"`
-	Until         string   `json:"until,omitempty"`
-	ProtectLabels []string `json:"protect_labels,omitempty"`
-}
-
-type PruneContainerRef struct {
-	ID     string `json:"id"`
-	Name   string `json:"name,omitempty"`
-	Image  string `json:"image,omitempty"`
-	Status string `json:"status,omitempty"`
-	Size   int64  `json:"size,omitempty"`
-}
-
-type PruneImageRef struct {
-	ID       string   `json:"id"`
-	RepoTags []string `json:"repo_tags,omitempty"`
-	Size     int64    `json:"size,omitempty"`
-}
-
-type PruneVolumeRef struct {
-	Name     string `json:"name"`
-	Driver   string `json:"driver,omitempty"`
-	Size     int64  `json:"size,omitempty"`
-	RefCount int64  `json:"ref_count"`
-}
-
-type PruneBuildCacheRef struct {
-	ID          string `json:"id"`
-	Type        string `json:"type,omitempty"`
-	Description string `json:"description,omitempty"`
-	Size        int64  `json:"size,omitempty"`
-}
-
-type PruneApplyResult struct {
-	ContainersDeleted  []string `json:"containers_deleted,omitempty"`
-	ImagesDeleted      []string `json:"images_deleted,omitempty"`
-	VolumesDeleted     []string `json:"volumes_deleted,omitempty"`
-	BuildCachesDeleted []string `json:"build_caches_deleted,omitempty"`
-	SpaceReclaimed     uint64   `json:"space_reclaimed"`
-}
 
 const (
 	pruneKindContainer  = "container"
@@ -112,18 +22,6 @@ const (
 	pruneKindVolume     = "volume"
 	pruneKindBuildCache = "build-cache"
 )
-
-type pruneFilter struct {
-	Key   string
-	Value string
-}
-
-type pruneDockerFilters struct {
-	Containers  filters.Args
-	Images      filters.Args
-	Volumes     filters.Args
-	BuildCaches filters.Args
-}
 
 func NewPruneReportCommand() *cobra.Command {
 	opts := PruneReportOptions{}
@@ -592,71 +490,6 @@ func applyPruneReport(ctx context.Context, svc pruneDockerService, scope PruneSc
 	return result, nil
 }
 
-func printPruneReport(w io.Writer, report PruneReport) {
-	fmt.Fprintf(w, "Docker 清理报告 (%s)\n", report.GeneratedAt)
-	printPruneScope(w, report.Scope)
-	fmt.Fprintf(w, "预计可回收空间: %s\n\n", humanBytes(report.EstimatedBytes))
-
-	printPruneSection(w, "已停止容器", len(report.StoppedContainers), func() {
-		for _, c := range report.StoppedContainers {
-			fmt.Fprintf(w, "  - %s %s image=%s size=%s status=%s\n", c.ID, c.Name, c.Image, humanBytes(uint64FromInt64(c.Size)), c.Status)
-		}
-	})
-	printPruneSection(w, "悬空镜像", len(report.DanglingImages), func() {
-		for _, img := range report.DanglingImages {
-			fmt.Fprintf(w, "  - %s size=%s tags=%s\n", img.ID, humanBytes(uint64FromInt64(img.Size)), strings.Join(img.RepoTags, ","))
-		}
-	})
-	printPruneSection(w, "未使用 volume", len(report.UnusedVolumes), func() {
-		for _, vol := range report.UnusedVolumes {
-			fmt.Fprintf(w, "  - %s driver=%s size=%s\n", vol.Name, vol.Driver, humanBytes(uint64FromInt64(vol.Size)))
-		}
-	})
-	printPruneSection(w, "构建缓存", len(report.BuildCaches), func() {
-		for _, cache := range report.BuildCaches {
-			fmt.Fprintf(w, "  - %s type=%s size=%s %s\n", cache.ID, cache.Type, humanBytes(uint64FromInt64(cache.Size)), cache.Description)
-		}
-	})
-
-	if report.Applied && report.ApplyResult != nil {
-		fmt.Fprintln(w)
-		fmt.Fprintln(w, "执行结果:")
-		fmt.Fprintf(w, "  已删除容器: %d\n", len(report.ApplyResult.ContainersDeleted))
-		fmt.Fprintf(w, "  已删除/取消标记镜像: %d\n", len(report.ApplyResult.ImagesDeleted))
-		fmt.Fprintf(w, "  已删除 volume: %d\n", len(report.ApplyResult.VolumesDeleted))
-		fmt.Fprintf(w, "  已删除构建缓存: %d\n", len(report.ApplyResult.BuildCachesDeleted))
-		fmt.Fprintf(w, "  已回收空间: %s\n", humanBytes(report.ApplyResult.SpaceReclaimed))
-	}
-}
-
-func printPruneScope(w io.Writer, scope PruneScope) {
-	var parts []string
-	if len(scope.Only) > 0 {
-		parts = append(parts, "only="+strings.Join(scope.Only, ","))
-	}
-	if len(scope.Filters) > 0 {
-		parts = append(parts, "filter="+strings.Join(scope.Filters, ","))
-	}
-	if scope.Until != "" {
-		parts = append(parts, "until="+scope.Until)
-	}
-	if len(scope.ProtectLabels) > 0 {
-		parts = append(parts, "protect-label="+strings.Join(scope.ProtectLabels, ","))
-	}
-	if len(parts) == 0 {
-		fmt.Fprintln(w, "范围: 全部可清理资源")
-		return
-	}
-	fmt.Fprintf(w, "范围: %s\n", strings.Join(parts, " "))
-}
-
-func printPruneSection(w io.Writer, title string, count int, printItems func()) {
-	fmt.Fprintf(w, "%s: %d\n", title, count)
-	if count > 0 {
-		printItems()
-	}
-}
-
 func sortPruneReport(report *PruneReport) {
 	sort.Slice(report.StoppedContainers, func(i, j int) bool {
 		return report.StoppedContainers[i].Name < report.StoppedContainers[j].Name
@@ -734,24 +567,4 @@ func uint64FromInt64(size int64) uint64 {
 		return 0
 	}
 	return uint64(size)
-}
-
-func (s *dockerPruneService) DiskUsage(ctx context.Context) (types.DiskUsage, error) {
-	return s.cli.DiskUsage(ctx, types.DiskUsageOptions{})
-}
-
-func (s *dockerPruneService) PruneContainers(ctx context.Context, pruneFilters filters.Args) (container.PruneReport, error) {
-	return s.cli.ContainersPrune(ctx, pruneFilters)
-}
-
-func (s *dockerPruneService) PruneImages(ctx context.Context, pruneFilters filters.Args) (image.PruneReport, error) {
-	return s.cli.ImagesPrune(ctx, pruneFilters)
-}
-
-func (s *dockerPruneService) PruneVolumes(ctx context.Context, pruneFilters filters.Args) (volume.PruneReport, error) {
-	return s.cli.VolumesPrune(ctx, pruneFilters)
-}
-
-func (s *dockerPruneService) PruneBuildCache(ctx context.Context, pruneFilters filters.Args) (*build.CachePruneReport, error) {
-	return s.cli.BuildCachePrune(ctx, build.CachePruneOptions{All: true, Filters: pruneFilters})
 }

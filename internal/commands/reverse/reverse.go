@@ -68,7 +68,7 @@ func NewReverseCommand() *cobra.Command {
 			}
 
 			if comment := reverseTargetSelectionComment(len(targets), running, targetFilters); comment != "" {
-				fmt.Println(comment)
+				fmt.Fprintln(cmd.OutOrStdout(), comment)
 			}
 
 			reverseResult, err := reverseWithOptions(targets, opts)
@@ -77,7 +77,7 @@ func NewReverseCommand() *cobra.Command {
 			}
 
 			// 打印输出
-			reverseResult.Print()
+			reverseResult.Print(cmd.OutOrStdout())
 
 			// 保存输出
 			if save {

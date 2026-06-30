@@ -1,49 +1,21 @@
 package pull
 
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
+
+	"docker-manager/internal/registryauth"
 )
 
 type pullRegistryAuth struct {
 	Authorization string
 }
 
-type pullRegistryCredential struct {
-	Found         bool
-	Username      string
-	Password      string
-	IdentityToken string
-	Source        string
-	Message       string
-}
-
-type pullDockerConfigFile struct {
-	Auths       map[string]pullDockerAuthEntry `json:"auths"`
-	CredsStore  string                         `json:"credsStore"`
-	CredHelpers map[string]string              `json:"credHelpers"`
-}
-
-type pullDockerAuthEntry struct {
-	Auth          string `json:"auth"`
-	Username      string `json:"username"`
-	Password      string `json:"password"`
-	IdentityToken string `json:"identitytoken"`
-}
-
-type pullCredentialHelperResponse struct {
-	ServerURL string `json:"ServerURL"`
-	Username  string `json:"Username"`
-	Secret    string `json:"Secret"`
-}
+type pullRegistryCredential = registryauth.Credential
+type pullDockerConfigFile = registryauth.Config
+type pullDockerAuthEntry = registryauth.AuthEntry
 
 type authChallenge struct {
 	Scheme string
@@ -84,14 +56,14 @@ func (r *PullRunner) resolveRegistryAuth(ctx context.Context, header string, inf
 		if cred.Username == "" && cred.Password == "" {
 			return nil, fmt.Errorf("registry %s 需要 Basic 认证，但未找到 Docker 凭据", info.Registry)
 		}
-		return &pullRegistryAuth{Authorization: basicAuthHeader(cred.Username, cred.Password)}, nil
+		return &pullRegistryAuth{Authorization: registryauth.BasicAuthHeader(cred.Username, cred.Password)}, nil
 	default:
 		if credErr == nil {
 			if cred.IdentityToken != "" {
 				return &pullRegistryAuth{Authorization: "Bearer " + cred.IdentityToken}, nil
 			}
 			if cred.Username != "" || cred.Password != "" {
-				return &pullRegistryAuth{Authorization: basicAuthHeader(cred.Username, cred.Password)}, nil
+				return &pullRegistryAuth{Authorization: registryauth.BasicAuthHeader(cred.Username, cred.Password)}, nil
 			}
 		}
 		if strings.TrimSpace(header) == "" {
@@ -179,7 +151,7 @@ func (r *PullRunner) fetchBearerToken(ctx context.Context, challenge authChallen
 	if cred.IdentityToken != "" {
 		headers["Authorization"] = "Bearer " + cred.IdentityToken
 	} else if cred.Username != "" || cred.Password != "" {
-		headers["Authorization"] = basicAuthHeader(cred.Username, cred.Password)
+		headers["Authorization"] = registryauth.BasicAuthHeader(cred.Username, cred.Password)
 	}
 	respBytes, err := r.fetchWithRetry(ctx, realm, headers, query)
 	if err != nil {
@@ -209,139 +181,42 @@ func (r *PullRunner) loadPullRegistryCredential(ctx context.Context, registryNam
 	if err != nil {
 		return pullRegistryCredential{}, err
 	}
-	keys := pullRegistryConfigKeys(registryName)
-	if helper, server := findPullCredentialHelper(cfg, keys); helper != "" {
-		cred, err := r.runCredentialHelper(ctx, helper, server)
-		if err != nil {
-			return pullRegistryCredential{Source: "credential-helper", Message: err.Error()}, err
-		}
-		cred.Found = true
-		cred.Source = "credential-helper"
-		return cred, nil
-	}
-	for _, key := range keys {
-		entry, ok := cfg.Auths[key]
-		if !ok {
-			continue
-		}
-		cred := pullCredentialFromAuthEntry(entry)
-		cred.Found = cred.Username != "" || cred.Password != "" || cred.IdentityToken != ""
-		cred.Source = "auths"
-		return cred, nil
-	}
-	return pullRegistryCredential{}, nil
-}
-
-func defaultPullDockerConfigPath() string {
-	if dir := strings.TrimSpace(os.Getenv("DOCKER_CONFIG")); dir != "" {
-		return filepath.Join(dir, "config.json")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return filepath.Join(".docker", "config.json")
-	}
-	return filepath.Join(home, ".docker", "config.json")
-}
-
-func readPullDockerConfig(path string) (pullDockerConfigFile, error) {
-	var cfg pullDockerConfigFile
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return cfg, nil
-		}
-		return cfg, err
-	}
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return cfg, err
-	}
-	return cfg, nil
-}
-
-func findPullCredentialHelper(cfg pullDockerConfigFile, keys []string) (string, string) {
-	for _, key := range keys {
-		if helper := strings.TrimSpace(cfg.CredHelpers[key]); helper != "" {
-			return helper, key
-		}
-	}
-	if helper := strings.TrimSpace(cfg.CredsStore); helper != "" {
-		return helper, keys[0]
-	}
-	return "", ""
-}
-
-func pullRegistryConfigKeys(registryName string) []string {
-	keys := []string{
-		registryName,
-		"https://" + registryName,
-		"http://" + registryName,
-		"https://" + registryName + "/v1/",
-	}
-	if registryName == "docker.io" || registryName == "registry-1.docker.io" || registryName == "index.docker.io" {
-		keys = append(keys, "https://index.docker.io/v1/", "index.docker.io", "docker.io", "registry-1.docker.io")
-	}
-	return uniquePullStrings(keys)
-}
-
-func pullCredentialFromAuthEntry(entry pullDockerAuthEntry) pullRegistryCredential {
-	cred := pullRegistryCredential{
-		Username:      entry.Username,
-		Password:      entry.Password,
-		IdentityToken: entry.IdentityToken,
-	}
-	if cred.Username == "" && cred.Password == "" && entry.Auth != "" {
-		decoded, err := base64.StdEncoding.DecodeString(entry.Auth)
-		if err == nil {
-			username, password, ok := strings.Cut(string(decoded), ":")
-			if ok {
-				cred.Username = username
-				cred.Password = password
-			}
-		}
-	}
-	return cred
-}
-
-func defaultRunPullCredentialHelper(ctx context.Context, helper, server string) (pullRegistryCredential, error) {
-	cmd := exec.CommandContext(ctx, "docker-credential-"+helper, "get")
-	cmd.Stdin = strings.NewReader(server)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = err.Error()
-		}
-		return pullRegistryCredential{}, fmt.Errorf("docker-credential-%s get failed: %s", helper, msg)
-	}
-	var resp pullCredentialHelperResponse
-	if err := json.Unmarshal(stdout.Bytes(), &resp); err != nil {
-		return pullRegistryCredential{}, err
-	}
-	cred := pullRegistryCredential{Username: resp.Username, Password: resp.Secret}
-	if resp.Username == "<token>" {
-		cred.Username = ""
-		cred.Password = ""
-		cred.IdentityToken = resp.Secret
+	cred := registryauth.ResolveCredential(ctx, cfg, registryName, r.runCredentialHelper)
+	if !cred.Found && cred.Source == "" {
+		return pullRegistryCredential{}, nil
 	}
 	return cred, nil
 }
 
+func defaultPullDockerConfigPath() string {
+	return registryauth.DefaultConfigPath()
+}
+
+func readPullDockerConfig(path string) (pullDockerConfigFile, error) {
+	cfg, _, err := registryauth.ReadConfig(path)
+	return cfg, err
+}
+
+func findPullCredentialHelper(cfg pullDockerConfigFile, keys []string) (string, string) {
+	return registryauth.FindCredentialHelper(cfg, keys)
+}
+
+func pullRegistryConfigKeys(registryName string) []string {
+	return registryauth.ConfigKeys(registryName)
+}
+
+func pullCredentialFromAuthEntry(entry pullDockerAuthEntry) pullRegistryCredential {
+	return registryauth.CredentialFromAuthEntry(entry)
+}
+
+func defaultRunPullCredentialHelper(ctx context.Context, helper, server string) (pullRegistryCredential, error) {
+	return registryauth.DefaultRunCredentialHelper(ctx, helper, server)
+}
+
 func basicAuthHeader(username, password string) string {
-	return "Basic " + base64.StdEncoding.EncodeToString([]byte(username+":"+password))
+	return registryauth.BasicAuthHeader(username, password)
 }
 
 func uniquePullStrings(values []string) []string {
-	seen := map[string]bool{}
-	var result []string
-	for _, value := range values {
-		if value == "" || seen[value] {
-			continue
-		}
-		seen[value] = true
-		result = append(result, value)
-	}
-	return result
+	return registryauth.UniqueStrings(values)
 }

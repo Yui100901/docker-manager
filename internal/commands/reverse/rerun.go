@@ -2,6 +2,7 @@ package reverse
 
 import (
 	"fmt"
+	"io"
 	"time"
 
 	"docker-manager/internal/completion"
@@ -34,6 +35,7 @@ func NewRerunCommand() *cobra.Command {
 			}
 			return rerunContainers(targets, rerunOptions{
 				DryRun: dryRun,
+				Output: cmd.OutOrStdout(),
 			})
 		},
 		ValidArgsFunction: completion.LocalContainers,
@@ -48,9 +50,14 @@ func NewRerunCommand() *cobra.Command {
 
 type rerunOptions struct {
 	DryRun bool
+	Output io.Writer
 }
 
 func rerunContainers(names []string, opts rerunOptions) error {
+	output := opts.Output
+	if output == nil {
+		output = io.Discard
+	}
 	if err := ensureContainerManager(); err != nil {
 		return err
 	}
@@ -58,8 +65,8 @@ func rerunContainers(names []string, opts rerunOptions) error {
 	backupDir := inspectBackupDir(time.Now())
 	for _, name := range names {
 		if opts.DryRun {
-			fmt.Printf("Dry run: backup inspect for %s to %s\n", name, inspectBackupPath(backupDir, name))
-			fmt.Printf("Dry run: stop, remove and recreate container %s via Docker API\n", name)
+			fmt.Fprintf(output, "Dry run: backup inspect for %s to %s\n", name, inspectBackupPath(backupDir, name))
+			fmt.Fprintf(output, "Dry run: stop, remove and recreate container %s via Docker API\n", name)
 			continue
 		}
 		backupPath, err := backupContainerInspect(name, backupDir)
@@ -69,7 +76,7 @@ func rerunContainers(names []string, opts rerunOptions) error {
 			}
 			continue
 		}
-		fmt.Println("Backup inspect", name, "to", backupPath)
+		fmt.Fprintf(output, "Backup inspect %s to %s\n", name, backupPath)
 
 		containerID, err := containerManager.RecreateContainer(name, name)
 		if err != nil {
@@ -78,7 +85,7 @@ func rerunContainers(names []string, opts rerunOptions) error {
 			}
 			continue
 		}
-		fmt.Println("Recreate container", name, "id", containerID)
+		fmt.Fprintf(output, "Recreate container %s id %s\n", name, containerID)
 	}
 	return firstErr
 }
