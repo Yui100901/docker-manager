@@ -448,6 +448,8 @@ func runPruneReport(ctx context.Context, opts PruneReportOptions) (PruneReport, 
 	if err != nil {
 		return PruneReport{}, err
 	}
+	// Keep destructive cleanup behind an explicit confirmation even when the
+	// report scope is narrow; dry-run/report output remains the default path.
 	if opts.Apply && !opts.Confirm {
 		return PruneReport{}, fmt.Errorf("report prune --apply 会删除 Docker 资源；如确认执行，请添加 --confirm")
 	}
