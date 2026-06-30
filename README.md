@@ -28,6 +28,20 @@ Windows PowerShell:
 .\scripts\dev-build.ps1 -Vet
 ```
 
+本地静态检查:
+
+```bash
+bash scripts/check.sh
+bash scripts/check.sh --race
+```
+
+Windows PowerShell:
+
+```powershell
+.\scripts\check.ps1
+.\scripts\check.ps1 -Race
+```
+
 生成发布归档、checksum 和版本清单:
 
 ```bash
@@ -110,6 +124,29 @@ internal/resourcefilter/        # 容器、镜像、volume 本地资源筛选器
 internal/version/               # version 命令和构建版本信息
 scripts/                        # 端到端测试等辅助脚本
 ```
+
+## 架构边界
+
+`docker-manager` 的代码按“命令入口、业务编排、Docker/API 适配、输出渲染、共享工具”分层:
+
+- `internal/cli` 负责根命令、全局配置、日志和统一错误输出，不直接承载具体 Docker 业务。
+- `internal/commands/*` 按命令语义组织业务编排。命令包可以解析参数、组织 dry-run/confirm 流程、调用 Docker 适配层和报告渲染层，但应避免把通用筛选、格式化或 Docker client 初始化散落在命令实现里。
+- `internal/docker` 是 Docker API 访问封装。涉及 daemon、image、container、push/load/save 等可复用操作时，优先放在这里或通过命令包内的窄接口隔离，方便测试替换。
+- `internal/report` 只负责 `text/json/markdown/html` 输出格式，不负责采集 Docker 数据。
+- `internal/resourcefilter` 统一处理容器、镜像和 volume 的本地资源筛选。新增本地资源命令时优先复用这里的候选字段、通配符和 keyed filter 行为。
+- `internal/completion` 负责 shell completion 和本地 Docker 资源候选，不应依赖具体命令的执行副作用。
+- `internal/textfmt` 放通用命令行文本格式化，例如字节大小和下载速率。
+- `scripts` 放开发构建、发布打包、安装卸载、静态检查和端到端测试脚本。发布脚本不应依赖开发机上的临时目录或未提交文件。
+
+## 维护约定
+
+- 文件拆分: 单个命令文件只保留一个明确职责。CLI 构建、runner/业务编排、Docker service、归档/checksum、报告渲染、类型定义和测试辅助应尽量分开。
+- 注释: 导出类型、复杂安全边界、认证流程、批量/恢复/清理这类容易误改的流程需要说明意图；简单 getter、字段赋值和样板代码不需要灌水式注释。
+- 错误信息: 面向用户的命令错误和日志使用中文；底层协议、Docker API 或外部命令名称保持原文。错误要包含目标资源和下一步提示，脚本场景依靠非零退出码判断失败。
+- 输出: 报告类命令走 `internal/report`；进度输出只写到命令指定的 progress writer；大小、速率等格式化走 `internal/textfmt`。
+- 筛选: 处理本地容器、镜像或 volume 的命令默认处理全部资源，并提供 `--filter` 精确收窄；容器类命令保留 `--running` 作为常用筛选。
+- dry-run 和 confirm: 只读报告默认不修改 Docker；会删除、替换、push 或恢复资源的行为必须有清晰的 dry-run 或 confirm 边界。已有确认边界不要在新增选项时绕过。
+- 测试: 行为改动至少跑 `go test ./...` 和 `go vet ./...`；结构性重构、并发下载、批量执行或破坏性命令改动建议跑 `scripts/check.* -Race` 和相关 e2e。
 
 ## 全局参数
 

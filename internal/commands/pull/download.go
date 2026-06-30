@@ -3,9 +3,6 @@ package pull
 import (
 	"context"
 	"fmt"
-	"github.com/Yui100901/MyGo/file_utils"
-	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
-	"golang.org/x/sync/errgroup"
 	"io"
 	"log"
 	"net/http"
@@ -14,9 +11,14 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"docker-manager/internal/textfmt"
+
+	"github.com/Yui100901/MyGo/file_utils"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"golang.org/x/sync/errgroup"
 )
 
-// 改进版：使用 errgroup 管理并发下载，加入并发上限
 func (r *PullRunner) downloadLayers(ctx context.Context, info *ImageInfo, manifest *ocispec.Manifest, auth *pullRegistryAuth, opts PullOptions, tempDir string) error {
 	g, ctx := errgroup.WithContext(ctx)
 	sem := make(chan struct{}, maxLayerConcurrency)
@@ -45,7 +47,6 @@ func (r *PullRunner) downloadConfig(ctx context.Context, info *ImageInfo, manife
 	configURL := registryAPIURL(opts, info, "blobs", string(manifest.Config.Digest))
 	digest := strings.TrimPrefix(string(manifest.Config.Digest), "sha256:")
 	if digest == string(manifest.Config.Digest) {
-
 		digest = strings.TrimPrefix(digest, "sha:")
 	}
 	configPath := filepath.Join(tempDir, digest+".json")
@@ -237,15 +238,15 @@ func (r *downloadProgressReader) report(final bool) {
 	}
 	speed := float64(r.downloaded) / elapsed
 	if final {
-		progressPrintf(r.output, "下载完成 %s %s %s\n", r.label, formatPullBytes(r.downloaded), formatPullRate(speed))
+		progressPrintf(r.output, "下载完成 %s %s %s\n", r.label, textfmt.SignedBytes(r.downloaded), textfmt.Rate(speed))
 		return
 	}
 	if r.total > 0 {
 		percent := float64(r.downloaded) * 100 / float64(r.total)
-		progressPrintf(r.output, "下载中 %s %s/%s %.1f%% %s\n", r.label, formatPullBytes(r.downloaded), formatPullBytes(r.total), percent, formatPullRate(speed))
+		progressPrintf(r.output, "下载中 %s %s/%s %.1f%% %s\n", r.label, textfmt.SignedBytes(r.downloaded), textfmt.SignedBytes(r.total), percent, textfmt.Rate(speed))
 		return
 	}
-	progressPrintf(r.output, "下载中 %s %s %s\n", r.label, formatPullBytes(r.downloaded), formatPullRate(speed))
+	progressPrintf(r.output, "下载中 %s %s %s\n", r.label, textfmt.SignedBytes(r.downloaded), textfmt.Rate(speed))
 }
 
 func progressPrintf(w io.Writer, format string, args ...any) {
@@ -272,42 +273,6 @@ func downloadProgressLabel(rawURL, outputPath string) string {
 		}
 	}
 	return filepath.Base(outputPath)
-}
-
-func formatPullBytes(size int64) string {
-	if size < 0 {
-		size = 0
-	}
-	const unit = 1024
-	if size < unit {
-		return fmt.Sprintf("%d B", size)
-	}
-	value := float64(size)
-	for _, suffix := range []string{"KiB", "MiB", "GiB", "TiB"} {
-		value /= unit
-		if value < unit {
-			return fmt.Sprintf("%.1f %s", value, suffix)
-		}
-	}
-	return fmt.Sprintf("%.1f PiB", value/unit)
-}
-
-func formatPullRate(bytesPerSecond float64) string {
-	if bytesPerSecond < 0 {
-		bytesPerSecond = 0
-	}
-	const unit = 1024
-	if bytesPerSecond < unit {
-		return fmt.Sprintf("%.0f B/s", bytesPerSecond)
-	}
-	value := bytesPerSecond
-	for _, suffix := range []string{"KiB/s", "MiB/s", "GiB/s"} {
-		value /= unit
-		if value < unit {
-			return fmt.Sprintf("%.1f %s", value, suffix)
-		}
-	}
-	return fmt.Sprintf("%.1f TiB/s", value/unit)
 }
 
 func sleepWithContext(ctx context.Context, duration time.Duration) error {

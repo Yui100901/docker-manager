@@ -736,21 +736,6 @@ func uint64FromInt64(size int64) uint64 {
 	return uint64(size)
 }
 
-func humanBytes(size uint64) string {
-	const unit = 1024
-	if size < unit {
-		return fmt.Sprintf("%d B", size)
-	}
-	value := float64(size)
-	for _, suffix := range []string{"KiB", "MiB", "GiB", "TiB"} {
-		value /= unit
-		if value < unit {
-			return fmt.Sprintf("%.1f %s", value, suffix)
-		}
-	}
-	return fmt.Sprintf("%.1f PiB", value/unit)
-}
-
 func (s *dockerPruneService) DiskUsage(ctx context.Context) (types.DiskUsage, error) {
 	return s.cli.DiskUsage(ctx, types.DiskUsageOptions{})
 }
