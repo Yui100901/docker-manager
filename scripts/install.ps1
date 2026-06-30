@@ -36,12 +36,13 @@ if (-not $ConfigDir) {
 }
 if (-not $DataDir) { $DataDir = Join-Path $InstallDir "data" }
 
-$LibexecDir = Join-Path $InstallDir "lib"
 $ConfigFile = Join-Path $ConfigDir "dm.yaml"
 $OutputDir = Join-Path $DataDir "images"
 $YamlOutputDir = $OutputDir.Replace("'", "''")
-$InstalledBin = Join-Path $LibexecDir "dm-bin.exe"
-$Wrapper = Join-Path $BinDir "dm.cmd"
+$InstalledBin = Join-Path $BinDir "dm.exe"
+$OldWrapper = Join-Path $BinDir "dm.cmd"
+$OldLibexecDir = Join-Path $InstallDir "lib"
+$OldInstalledBin = Join-Path $OldLibexecDir "dm-bin.exe"
 $Manifest = Join-Path $ConfigDir "install.json"
 $CompletionBaseDir = if ($CompletionDir) { $CompletionDir } else { Join-Path $InstallDir "completions" }
 $CompletionFiles = @()
@@ -145,33 +146,20 @@ $CompletionProfileEnd
 $SourceBin = Resolve-DmBinary
 
 Write-Host "Installing docker-manager"
-Write-Host "  wrapper: $Wrapper"
 Write-Host "  binary:  $InstalledBin"
 Write-Host "  config:  $ConfigFile"
 Write-Host "  data:    $DataDir"
 
 Invoke-Step {
-    New-Item -ItemType Directory -Force -Path $BinDir, $LibexecDir, $ConfigDir, $OutputDir | Out-Null
+    New-Item -ItemType Directory -Force -Path $BinDir, $ConfigDir, $OutputDir | Out-Null
     Copy-Item -Force $SourceBin $InstalledBin
+    Remove-Item -Force -ErrorAction SilentlyContinue $OldWrapper, $OldInstalledBin
+    if (Test-Path $OldLibexecDir) {
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $OldLibexecDir
+    }
 } "create directories and copy binary"
 
 Install-Completions
-
-$WrapperContent = @"
-@echo off
-setlocal EnableExtensions
-if "%DM_CONFIG%"=="" set "DM_CONFIG=$ConfigFile"
-set "HAS_CONFIG="
-for %%A in (%*) do (
-  if "%%~A"=="--config" set "HAS_CONFIG=1"
-  echo %%~A | findstr /b /c:"--config=" >nul && set "HAS_CONFIG=1"
-)
-endlocal & if "%HAS_CONFIG%"=="1" ("$InstalledBin" %*) else ("$InstalledBin" --config "%DM_CONFIG%" %*)
-"@
-
-Invoke-Step {
-    Set-Content -Path $Wrapper -Value $WrapperContent -Encoding ASCII
-} "write $Wrapper"
 
 if ($OverwriteConfig -or -not (Test-Path $ConfigFile)) {
     $configText = @"
@@ -194,7 +182,7 @@ log_json: false
 $manifestData = [ordered]@{
     install_dir = $InstallDir
     bin_dir = $BinDir
-    libexec_dir = $LibexecDir
+    installed_bin = $InstalledBin
     config_dir = $ConfigDir
     config_file = $ConfigFile
     data_dir = $DataDir

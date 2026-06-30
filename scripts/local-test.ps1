@@ -181,7 +181,10 @@ try {
         Push-Location $RootDir
         try {
             & (Join-Path $RootDir "scripts/install.ps1") -Binary $DmBin -InstallDir $installRoot -ConfigDir $configRoot -NoPathUpdate -NoCompletionProfile
-            & (Join-Path $installRoot "bin/dm.cmd") version
+            & (Join-Path $installRoot "bin/dm.exe") version
+            if (Test-Path (Join-Path $installRoot "bin/dm.cmd")) {
+                throw "legacy dm.cmd wrapper should not be installed"
+            }
             $completion = Join-Path $installRoot "completions/dm-completion.ps1"
             if (-not (Test-Path $completion)) {
                 throw "completion file was not created"

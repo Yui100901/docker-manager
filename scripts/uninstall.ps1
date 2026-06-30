@@ -28,7 +28,10 @@ if (-not $ConfigDir) {
 
 $Manifest = Join-Path $ConfigDir "install.json"
 $DataDir = Join-Path $InstallDir "data"
-$LibexecDir = Join-Path $InstallDir "lib"
+$InstalledBin = Join-Path $BinDir "dm.exe"
+$OldWrapper = Join-Path $BinDir "dm.cmd"
+$OldLibexecDir = Join-Path $InstallDir "lib"
+$OldInstalledBin = Join-Path $OldLibexecDir "dm-bin.exe"
 $CompletionFiles = @()
 $CompletionProfile = $null
 $CompletionProfileStart = "# >>> docker-manager completion >>>"
@@ -39,16 +42,21 @@ if (Test-Path $Manifest) {
     if (-not $PSBoundParameters.ContainsKey("BinDir")) { $BinDir = $manifestData.bin_dir }
     if (-not $PSBoundParameters.ContainsKey("ConfigDir")) { $ConfigDir = $manifestData.config_dir }
     $DataDir = $manifestData.data_dir
-    $LibexecDir = $manifestData.libexec_dir
+    $InstalledBin = Join-Path $BinDir "dm.exe"
+    $OldWrapper = Join-Path $BinDir "dm.cmd"
+    $OldLibexecDir = Join-Path $InstallDir "lib"
+    $OldInstalledBin = Join-Path $OldLibexecDir "dm-bin.exe"
+    if ($manifestData.installed_bin) { $InstalledBin = $manifestData.installed_bin }
+    if ($manifestData.libexec_dir) {
+        $OldLibexecDir = $manifestData.libexec_dir
+        $OldInstalledBin = Join-Path $OldLibexecDir "dm-bin.exe"
+    }
     if ($manifestData.scope -eq "Machine") { $Scope = "Machine" }
     if ($manifestData.completion_files) { $CompletionFiles = @($manifestData.completion_files) }
     if ($manifestData.completion_profile) { $CompletionProfile = $manifestData.completion_profile }
     if ($manifestData.completion_profile_start) { $CompletionProfileStart = $manifestData.completion_profile_start }
     if ($manifestData.completion_profile_end) { $CompletionProfileEnd = $manifestData.completion_profile_end }
 }
-
-$Wrapper = Join-Path $BinDir "dm.cmd"
-$InstalledBin = Join-Path $LibexecDir "dm-bin.exe"
 
 function Invoke-Step {
     param([scriptblock]$Action, [string]$Text)
@@ -90,14 +98,14 @@ function Remove-EmptyParents {
 Write-Host "Uninstalling docker-manager"
 
 Invoke-Step {
-    Remove-Item -Force -ErrorAction SilentlyContinue $Wrapper, $InstalledBin
+    Remove-Item -Force -ErrorAction SilentlyContinue $InstalledBin, $OldWrapper, $OldInstalledBin
     foreach ($file in $CompletionFiles) {
         if ($file) {
             Remove-Item -Force -ErrorAction SilentlyContinue $file
         }
     }
-    if (Test-Path $LibexecDir) {
-        Remove-Item -Force -ErrorAction SilentlyContinue $LibexecDir
+    if (Test-Path $OldLibexecDir) {
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $OldLibexecDir
     }
     Remove-EmptyParents -Path $BinDir -StopDir $InstallDir
     foreach ($file in $CompletionFiles) {
@@ -105,7 +113,7 @@ Invoke-Step {
             Remove-EmptyParents -Path (Split-Path -Parent $file) -StopDir $InstallDir
         }
     }
-    Remove-EmptyParents -Path $LibexecDir -StopDir $InstallDir
+    Remove-EmptyParents -Path $OldLibexecDir -StopDir $InstallDir
 } "remove installed files"
 
 if ($CompletionProfile -and (Test-Path $CompletionProfile)) {

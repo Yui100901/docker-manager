@@ -104,7 +104,7 @@ Windows 安装:
 .\scripts\install.ps1 -Binary .\bin\dev\dm.exe -NoCompletion
 ```
 
-Windows 安装脚本会生成 `dm.cmd` 包装入口，设置用户级 `DM_CONFIG`、`DM_HOME`、`DM_OUTPUT_DIR`，并把安装 bin 目录加入用户 `PATH`。卸载:
+Windows 安装脚本会把真实二进制直接安装为 `<InstallDir>\bin\dm.exe`，设置用户级 `DM_CONFIG`、`DM_HOME`、`DM_OUTPUT_DIR`，并把安装 bin 目录加入用户 `PATH`。卸载脚本会删除 `dm.exe`、PowerShell 补全和环境变量，也会兼容清理旧版本留下的 `dm.cmd` 包装入口。
 
 ```powershell
 .\scripts\uninstall.ps1
