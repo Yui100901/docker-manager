@@ -3,6 +3,7 @@ package pull
 import (
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -196,6 +197,9 @@ func (r *PullRunner) saveRegistryFileWithRetry(ctx context.Context, rawURL strin
 		}
 		currentAuth = nextAuth
 		_ = removePartialDownload(outputPath)
+		if errors.Is(err, context.Canceled) {
+			return currentAuth, err
+		}
 		lastErr = err
 		log.Printf("保存 %s 到 %s 失败（尝试 %d/%d）: %v，稍后重试...", rawURL, outputPath, i+1, maxHTTPRetries, err)
 		if err := sleepWithContext(ctx, backoff); err != nil {

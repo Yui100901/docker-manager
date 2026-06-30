@@ -3,6 +3,7 @@ package pull
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/Yui100901/MyGo/struct_utils"
 	"github.com/distribution/reference"
@@ -199,6 +200,9 @@ func (r *PullRunner) fetchRegistryBytesWithRetry(ctx context.Context, rawURL str
 			return body, nextAuth, nil
 		}
 		currentAuth = nextAuth
+		if errors.Is(err, context.Canceled) {
+			return nil, currentAuth, err
+		}
 		lastErr = err
 		log.Printf("请求 %s 失败（尝试 %d/%d）: %v，稍后重试...", rawURL, i+1, maxHTTPRetries, err)
 		if err := sleepWithContext(ctx, backoff); err != nil {
@@ -258,6 +262,9 @@ func (r *PullRunner) fetchWithRetry(ctx context.Context, url string, headers map
 		if err == nil {
 			return resp, nil
 		}
+		if errors.Is(err, context.Canceled) {
+			return nil, err
+		}
 		lastErr = err
 		log.Printf("请求 %s 失败（尝试 %d/%d）: %v，稍后重试...", url, i+1, maxHTTPRetries, err)
 		if err := sleepWithContext(ctx, backoff); err != nil {
@@ -280,6 +287,9 @@ func (r *PullRunner) saveWithRetry(ctx context.Context, url string, headers map[
 			return nil
 		} else {
 			_ = removePartialDownload(outputPath)
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
 			lastErr = err
 			log.Printf("保存 %s 到 %s 失败（尝试 %d/%d）: %v，稍后重试...", url, outputPath, i+1, maxHTTPRetries, err)
 			if err := sleepWithContext(ctx, backoff); err != nil {

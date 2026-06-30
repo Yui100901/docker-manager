@@ -22,6 +22,9 @@ func Run() int {
 	preseedJSONErrorMode(&opts, os.Args[1:])
 	if err := rootCmd.Execute(); err != nil {
 		writeCommandError(rootCmd.ErrOrStderr(), err, opts)
+		if isCommandCanceled(err) {
+			return 130
+		}
 		return 1
 	}
 	return 0

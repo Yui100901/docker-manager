@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -808,6 +809,51 @@ func TestFetchWithRetryReturnsCanceledContext(t *testing.T) {
 	_, err := fetchWithRetry(ctx, "http://127.0.0.1/not-called", nil, nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("fetchWithRetry() error = %v, want context.Canceled", err)
+	}
+}
+
+func TestFetchWithRetryDoesNotRetryAfterRequestCancel(t *testing.T) {
+	started := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	runner, err := NewPullRunner("", "linux", "amd64")
+	if err != nil {
+		t.Fatalf("NewPullRunner() error = %v", err)
+	}
+	runner.httpClient = &http_utils.HTTPClient{Client: server.Client()}
+
+	var logBuf bytes.Buffer
+	log.SetOutput(&logBuf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := runner.fetchWithRetry(ctx, server.URL, nil, nil)
+		done <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("test server was not called")
+	}
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("fetchWithRetry() error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fetchWithRetry() did not return after cancellation")
+	}
+	if logBuf.Len() != 0 {
+		t.Fatalf("fetchWithRetry() wrote retry log after cancellation: %q", logBuf.String())
 	}
 }
 

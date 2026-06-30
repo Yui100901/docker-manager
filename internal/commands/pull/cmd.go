@@ -1,6 +1,7 @@
 package pull
 
 import (
+	"context"
 	rpt "docker-manager/internal/report"
 	"errors"
 	"fmt"
@@ -71,6 +72,9 @@ func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command 
 				batchOpts.PlainHTTP = plainHTTP
 				batchOpts.ProgressOutput = cmd.OutOrStdout()
 				report, err := runPullBatch(ctx, runner, batchOpts)
+				if errors.Is(err, context.Canceled) {
+					return err
+				}
 				if report.GeneratedAt != "" {
 					printErr := rpt.Print(cmd.OutOrStdout(), batchOpts.Format, report, func(w io.Writer) {
 						printPullBatchReport(w, report)
@@ -113,6 +117,9 @@ func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command 
 			for i, imageName := range imageNameList {
 				log.Printf("Pull image [%d/%d]: %s", i+1, total, imageName)
 				if err := runner.getImage(imageName, opts); err != nil {
+					if errors.Is(err, context.Canceled) {
+						return err
+					}
 					log.Printf("%s 拉取失败: %v", imageName, err)
 					pullErrs = append(pullErrs, fmt.Errorf("%s: %w", imageName, err))
 					continue

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -116,6 +117,7 @@ func writeCommandError(out io.Writer, err error, opts outputOptions) {
 	if err == nil {
 		return
 	}
+	err = displayCommandError(err)
 	if opts.JSON {
 		data, marshalErr := json.Marshal(map[string]string{
 			"level": "error",
@@ -127,4 +129,15 @@ func writeCommandError(out io.Writer, err error, opts outputOptions) {
 		}
 	}
 	_, _ = fmt.Fprintf(out, "Error: %v\n", err)
+}
+
+func isCommandCanceled(err error) bool {
+	return errors.Is(err, context.Canceled)
+}
+
+func displayCommandError(err error) error {
+	if isCommandCanceled(err) {
+		return errors.New("操作已取消")
+	}
+	return err
 }

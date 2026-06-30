@@ -178,11 +178,11 @@ func runPullBatchWithDeps(ctx context.Context, opts PullBatchOptions, pull pullB
 	wg.Wait()
 
 	updatePullBatchReportCounts(&report)
-	if report.Failed > 0 {
-		return report, fmt.Errorf("pull 批量完成但存在失败项: total=%d success=%d skipped=%d failed=%d", report.Total, report.Succeeded, report.Skipped, report.Failed)
-	}
 	if err := ctx.Err(); err != nil {
 		return report, err
+	}
+	if report.Failed > 0 {
+		return report, fmt.Errorf("pull 批量完成但存在失败项: total=%d success=%d skipped=%d failed=%d", report.Total, report.Succeeded, report.Skipped, report.Failed)
 	}
 	return report, nil
 }
@@ -260,6 +260,11 @@ func runPullBatchItem(ctx context.Context, imageName string, opts PullBatchOptio
 			return result
 		}
 		if err := pull(imageName, pullOpts); err != nil {
+			if errors.Is(err, context.Canceled) {
+				result.Message = err.Error()
+				result.FinishedAt = time.Now().Format(time.RFC3339)
+				return result
+			}
 			lastErr = err
 			continue
 		}

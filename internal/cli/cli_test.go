@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -83,6 +84,28 @@ func TestWriteCommandErrorJSON(t *testing.T) {
 	}
 	if got["level"] != "error" || got["error"] != "boom" {
 		t.Fatalf("error json = %#v, want level=error error=boom", got)
+	}
+}
+
+func TestWriteCommandErrorCanceledText(t *testing.T) {
+	var buf bytes.Buffer
+	writeCommandError(&buf, context.Canceled, outputOptions{})
+
+	if got := buf.String(); !strings.Contains(got, "操作已取消") || strings.Contains(got, "context canceled") {
+		t.Fatalf("cancel text error = %q, want friendly cancellation message", got)
+	}
+}
+
+func TestWriteCommandErrorCanceledJSON(t *testing.T) {
+	var buf bytes.Buffer
+	writeCommandError(&buf, context.Canceled, outputOptions{JSON: true})
+
+	var got map[string]string
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v, output=%q", err, buf.String())
+	}
+	if got["level"] != "error" || got["error"] != "操作已取消" {
+		t.Fatalf("cancel error json = %#v, want friendly cancellation message", got)
 	}
 }
 
