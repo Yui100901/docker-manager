@@ -87,6 +87,78 @@ sha256_file() {
   fi
 }
 
+copy_release_scripts() {
+  local goos="$1"
+  local package_dir="$2"
+  mkdir -p "${package_dir}/scripts"
+  if [ "${goos}" = "windows" ]; then
+    cp "${ROOT_DIR}/scripts/install.ps1" "${ROOT_DIR}/scripts/uninstall.ps1" "${package_dir}/scripts/"
+    return
+  fi
+  cp "${ROOT_DIR}/scripts/install.sh" "${ROOT_DIR}/scripts/uninstall.sh" "${package_dir}/scripts/"
+}
+
+write_install_guide() {
+  local goos="$1"
+  local package_dir="$2"
+  local binary="$3"
+  local platform="$4"
+
+  if [ "${goos}" = "windows" ]; then
+    cat >"${package_dir}/INSTALL.md" <<EOF
+# docker-manager ${VERSION} ${platform}
+
+## Files
+
+- \`${binary}\`: dm executable for ${platform}
+- \`dm.yaml.example\`: sample configuration
+- \`scripts/install.ps1\`: PowerShell install script
+- \`scripts/uninstall.ps1\`: PowerShell uninstall script
+
+## Install
+
+\`\`\`powershell
+.\scripts\install.ps1 -Binary .\${binary}
+.\scripts\install.ps1 -Binary .\${binary} -NoCompletion
+\`\`\`
+
+Verify after installation:
+
+\`\`\`powershell
+dm version
+dm doctor --check-e2e=false
+\`\`\`
+EOF
+    return
+  fi
+
+  cat >"${package_dir}/INSTALL.md" <<EOF
+# docker-manager ${VERSION} ${platform}
+
+## Files
+
+- \`${binary}\`: dm executable for ${platform}
+- \`dm.yaml.example\`: sample configuration
+- \`scripts/install.sh\`: shell install script
+- \`scripts/uninstall.sh\`: shell uninstall script
+
+## Install
+
+\`\`\`bash
+bash scripts/install.sh --binary ./${binary}
+bash scripts/install.sh --binary ./${binary} --completion bash --completion zsh --completion fish
+bash scripts/install.sh --binary ./${binary} --no-completion
+\`\`\`
+
+Verify after installation:
+
+\`\`\`bash
+dm version
+dm doctor --check-e2e=false
+\`\`\`
+EOF
+}
+
 archive_platform() {
   local platform="$1"
   local goos="${platform%/*}"
@@ -114,41 +186,8 @@ archive_platform() {
   cp "${ROOT_DIR}/README.md" "${package_dir}/"
   cp "${ROOT_DIR}/LICENSE" "${package_dir}/"
   cp "${ROOT_DIR}/.dm.yaml.example" "${package_dir}/dm.yaml.example"
-  mkdir -p "${package_dir}/scripts"
-  cp "${ROOT_DIR}/scripts/install.sh" "${ROOT_DIR}/scripts/uninstall.sh" "${package_dir}/scripts/"
-  cp "${ROOT_DIR}/scripts/install.ps1" "${ROOT_DIR}/scripts/uninstall.ps1" "${package_dir}/scripts/"
-  cat >"${package_dir}/INSTALL.md" <<EOF
-# docker-manager ${VERSION} ${platform}
-
-## Files
-
-- \`${binary}\`: dm executable for ${platform}
-- \`dm.yaml.example\`: sample configuration
-- \`scripts/install.*\`: release install scripts
-- \`scripts/uninstall.*\`: uninstall scripts
-
-## Linux/macOS install
-
-\`\`\`bash
-bash scripts/install.sh --binary ./${binary}
-bash scripts/install.sh --binary ./${binary} --completion bash --completion zsh --completion fish
-bash scripts/install.sh --binary ./${binary} --no-completion
-\`\`\`
-
-## Windows install
-
-\`\`\`powershell
-.\scripts\install.ps1 -Binary .\${binary}
-.\scripts\install.ps1 -Binary .\${binary} -NoCompletion
-\`\`\`
-
-Verify after installation:
-
-\`\`\`bash
-dm version
-dm doctor --check-e2e=false
-\`\`\`
-EOF
+  copy_release_scripts "${goos}" "${package_dir}"
+  write_install_guide "${goos}" "${package_dir}" "${binary}" "${platform}"
 
   if [ "${goos}" = "windows" ]; then
     need_cmd zip

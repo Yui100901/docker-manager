@@ -33,8 +33,38 @@ function Write-InstallGuide {
     param(
         [string]$Path,
         [string]$Binary,
-        [string]$TargetPlatform
+        [string]$TargetPlatform,
+        [string]$TargetOS
     )
+    if ($TargetOS -eq "windows") {
+        $content = @"
+# docker-manager $Version $TargetPlatform
+
+## Files
+
+- ``$Binary``: dm executable for $TargetPlatform
+- ``dm.yaml.example``: sample configuration
+- ``scripts/install.ps1``: PowerShell install script
+- ``scripts/uninstall.ps1``: PowerShell uninstall script
+
+## Install
+
+````powershell
+.\scripts\install.ps1 -Binary .\$Binary
+.\scripts\install.ps1 -Binary .\$Binary -NoCompletion
+````
+
+Verify after installation:
+
+````powershell
+dm version
+dm doctor --check-e2e=false
+````
+"@
+        Set-Content -Path $Path -Value $content -Encoding UTF8
+        return
+    }
+
     $content = @"
 # docker-manager $Version $TargetPlatform
 
@@ -42,22 +72,15 @@ function Write-InstallGuide {
 
 - ``$Binary``: dm executable for $TargetPlatform
 - ``dm.yaml.example``: sample configuration
-- ``scripts/install.*``: release install scripts
-- ``scripts/uninstall.*``: uninstall scripts
+- ``scripts/install.sh``: shell install script
+- ``scripts/uninstall.sh``: shell uninstall script
 
-## Linux/macOS install
+## Install
 
 ````bash
 bash scripts/install.sh --binary ./$Binary
 bash scripts/install.sh --binary ./$Binary --completion bash --completion zsh --completion fish
 bash scripts/install.sh --binary ./$Binary --no-completion
-````
-
-## Windows install
-
-````powershell
-.\scripts\install.ps1 -Binary .\$Binary
-.\scripts\install.ps1 -Binary .\$Binary -NoCompletion
 ````
 
 Verify after installation:
@@ -68,6 +91,21 @@ dm doctor --check-e2e=false
 ````
 "@
     Set-Content -Path $Path -Value $content -Encoding UTF8
+}
+
+function Copy-ReleaseScripts {
+    param(
+        [string]$TargetOS,
+        [string]$ScriptDir
+    )
+    New-Item -ItemType Directory -Force -Path $ScriptDir | Out-Null
+    if ($TargetOS -eq "windows") {
+        Copy-Item -Force (Join-Path $RootDir "scripts/install.ps1") $ScriptDir
+        Copy-Item -Force (Join-Path $RootDir "scripts/uninstall.ps1") $ScriptDir
+        return
+    }
+    Copy-Item -Force (Join-Path $RootDir "scripts/install.sh") $ScriptDir
+    Copy-Item -Force (Join-Path $RootDir "scripts/uninstall.sh") $ScriptDir
 }
 
 Assert-Command go
@@ -139,12 +177,8 @@ try {
         Copy-Item -Force (Join-Path $RootDir "LICENSE") $packageDir
         Copy-Item -Force (Join-Path $RootDir ".dm.yaml.example") (Join-Path $packageDir "dm.yaml.example")
         $scriptDir = Join-Path $packageDir "scripts"
-        New-Item -ItemType Directory -Force -Path $scriptDir | Out-Null
-        Copy-Item -Force (Join-Path $RootDir "scripts/install.sh") $scriptDir
-        Copy-Item -Force (Join-Path $RootDir "scripts/uninstall.sh") $scriptDir
-        Copy-Item -Force (Join-Path $RootDir "scripts/install.ps1") $scriptDir
-        Copy-Item -Force (Join-Path $RootDir "scripts/uninstall.ps1") $scriptDir
-        Write-InstallGuide -Path (Join-Path $packageDir "INSTALL.md") -Binary $binary -TargetPlatform $item
+        Copy-ReleaseScripts -TargetOS $goos -ScriptDir $scriptDir
+        Write-InstallGuide -Path (Join-Path $packageDir "INSTALL.md") -Binary $binary -TargetPlatform $item -TargetOS $goos
 
         if ($goos -eq "windows") {
             $archive = Join-Path $DistDir "$name.zip"
