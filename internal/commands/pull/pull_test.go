@@ -674,6 +674,18 @@ func TestResolvePushTarget(t *testing.T) {
 			target: "registry.local/mirror/busybox:v2",
 			want:   "registry.local/mirror/busybox:v2",
 		},
+		{
+			name:   "http scheme is stripped from registry target",
+			info:   testBusyboxInfo(),
+			target: "http://registry.local:5000/mirror",
+			want:   "registry.local:5000/mirror/busybox:latest",
+		},
+		{
+			name:   "https scheme is stripped from tagged target",
+			info:   testBusyboxInfo(),
+			target: "https://registry.local/mirror/busybox:v3",
+			want:   "registry.local/mirror/busybox:v3",
+		},
 	}
 
 	for _, tt := range tests {
@@ -747,6 +759,33 @@ func TestCompletePulledImageMirrorsWhenToSet(t *testing.T) {
 	}
 	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("calls = %#v, want %#v", calls, want)
+	}
+}
+
+func TestCompletePulledImageUsesHTTPToSchemeForTargetPreflight(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/" {
+			t.Fatalf("path = %q, want /v2/", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	targetRegistry := strings.TrimPrefix(server.URL, "http://")
+	runner := newTestPullRunner()
+	runner.httpClient = &http_utils.HTTPClient{Client: server.Client()}
+	runner.loadPulledImage = func(ctx context.Context, path string, output io.Writer) error { return nil }
+	runner.tagPulledImage = func(ctx context.Context, source, target string) error {
+		if strings.HasPrefix(target, "http://") {
+			t.Fatalf("target passed to Docker tag contains scheme: %q", target)
+		}
+		return nil
+	}
+	runner.pushPulledImage = func(ctx context.Context, target, registryAuth string, output io.Writer) error { return nil }
+
+	err := runner.completePulledImage("busybox.tar", testBusyboxInfo(), PullOptions{To: "http://" + targetRegistry})
+	if err != nil {
+		t.Fatalf("completePulledImage() error = %v", err)
 	}
 }
 

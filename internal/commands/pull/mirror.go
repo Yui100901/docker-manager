@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/url"
 	"strings"
 
 	"docker-manager/internal/docker"
@@ -88,7 +89,9 @@ func (r *PullRunner) checkPushTargetRegistry(ctx context.Context, target string,
 	}
 	registryName := info.Registry
 	cred, credErr := r.loadPullRegistryCredential(ctx, registryName, opts.DockerConfig)
-	result := r.pingRegistryV2(ctx, registryName, opts, cred, info)
+	targetOpts := opts
+	targetOpts.PlainHTTP = pushTargetUsesPlainHTTP(opts)
+	result := r.pingRegistryV2(ctx, registryName, targetOpts, cred, info)
 	switch result.status {
 	case registryPingOK:
 		log.Printf("Push target registry check passed: registry=%s credential=%v", registryName, cred.Found)
@@ -143,6 +146,11 @@ func resolvePushTarget(info *ImageInfo, target string) (string, error) {
 	if target == "" {
 		return "", fmt.Errorf("--to 不能为空")
 	}
+	var err error
+	target, err = stripPushTargetScheme(target)
+	if err != nil {
+		return "", err
+	}
 	if strings.Contains(target, "@") {
 		return "", fmt.Errorf("--to 不支持 digest 目标: %s", target)
 	}
@@ -158,6 +166,53 @@ func resolvePushTarget(info *ImageInfo, target string) (string, error) {
 		ref = fmt.Sprintf("%s/%s:%s", registry, imagePath(info), info.Tag)
 	}
 	return validateImageRef(ref)
+}
+
+func stripPushTargetScheme(target string) (string, error) {
+	if !strings.Contains(target, "://") {
+		return target, nil
+	}
+	parsed, err := url.Parse(target)
+	if err != nil {
+		return "", fmt.Errorf("invalid --to target %q: %w", target, err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", fmt.Errorf("--to only supports http:// or https:// targets: %s", target)
+	}
+	if parsed.Host == "" {
+		return "", fmt.Errorf("--to target is missing registry host: %s", target)
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" || parsed.User != nil {
+		return "", fmt.Errorf("--to target does not support user info, query, or fragment: %s", target)
+	}
+	path := strings.Trim(parsed.EscapedPath(), "/")
+	if path == "" {
+		return parsed.Host, nil
+	}
+	return parsed.Host + "/" + path, nil
+}
+
+func pushTargetUsesPlainHTTP(opts PullOptions) bool {
+	switch pushTargetScheme(opts.To) {
+	case "http":
+		return true
+	case "https":
+		return false
+	default:
+		return opts.PlainHTTP
+	}
+}
+
+func pushTargetScheme(target string) string {
+	target = strings.TrimSpace(target)
+	if !strings.Contains(target, "://") {
+		return ""
+	}
+	parsed, err := url.Parse(target)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(parsed.Scheme)
 }
 
 func isTaggedImageRef(ref string) bool {

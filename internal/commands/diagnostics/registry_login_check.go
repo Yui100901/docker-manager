@@ -41,9 +41,11 @@ type httpDoer interface {
 }
 
 type RegistryLoginCheckOptions struct {
-	DockerConfig string
-	PlainHTTP    bool
-	Timeout      time.Duration
+	DockerConfig  string
+	PlainHTTP     bool
+	Timeout       time.Duration
+	FailOnError   bool
+	FailOnWarning bool
 	rpt.FormatOptions
 }
 
@@ -76,7 +78,7 @@ type dockerAuthEntry = registryauth.AuthEntry
 type registryCredential = registryauth.Credential
 
 func NewRegistryReportCommand() *cobra.Command {
-	opts := RegistryLoginCheckOptions{Timeout: 5 * time.Second}
+	opts := RegistryLoginCheckOptions{Timeout: 5 * time.Second, FailOnError: true}
 	cmd := &cobra.Command{
 		Use:   "registry <registry>",
 		Short: "检查 Docker registry 登录配置、凭据和连通性",
@@ -86,14 +88,19 @@ func NewRegistryReportCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("检查 registry 登录失败: %w", err)
 			}
-			return rpt.Print(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
+			if err := rpt.Print(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
 				printRegistryLoginCheckReport(w, report)
-			})
+			}); err != nil {
+				return err
+			}
+			return registryLoginCheckExitError(report, opts)
 		},
 	}
 	cmd.Flags().StringVar(&opts.DockerConfig, "docker-config", "", "Docker config.json 路径，默认使用 DOCKER_CONFIG/config.json 或 ~/.docker/config.json")
 	cmd.Flags().BoolVar(&opts.PlainHTTP, "plain-http", false, "使用 http:// 访问 registry /v2/，用于未启用 TLS 的内网 registry")
 	cmd.Flags().DurationVar(&opts.Timeout, "timeout", opts.Timeout, "registry 连通性检查超时时间")
+	cmd.Flags().BoolVar(&opts.FailOnError, "fail-on-error", opts.FailOnError, "registry 检查出现 failed 状态时返回非零退出码")
+	cmd.Flags().BoolVar(&opts.FailOnWarning, "fail-on-warning", false, "registry 检查出现 warning 状态时也返回非零退出码")
 	rpt.AddFormatFlag(cmd, &opts.Format)
 	return cmd
 }
@@ -131,6 +138,20 @@ func runRegistryLoginCheck(ctx context.Context, registryName string, opts Regist
 	}
 	report.Recommendations = registryLoginRecommendations(report)
 	return report, nil
+}
+
+func registryLoginCheckExitError(report RegistryLoginCheckReport, opts RegistryLoginCheckOptions) error {
+	if opts.FailOnError && registryReportHasStatus(report, "failed") {
+		return fmt.Errorf("registry check failed: %s", report.Registry)
+	}
+	if opts.FailOnWarning && registryReportHasStatus(report, "warning") {
+		return fmt.Errorf("registry check has warnings: %s", report.Registry)
+	}
+	return nil
+}
+
+func registryReportHasStatus(report RegistryLoginCheckReport, status string) bool {
+	return report.RegistryPing.Status == status || report.DockerLogin.Status == status
 }
 
 func normalizeRegistryName(input string) (string, error) {
@@ -264,7 +285,17 @@ func registryLoginRecommendations(report RegistryLoginCheckReport) []string {
 	if report.DockerLogin.Status == "failed" {
 		tips = append(tips, "Docker 登录验证失败，建议重新 docker login "+report.Registry)
 	}
+	if isArtifactoryRouterCandidate(report.Registry) && report.RegistryPing.Status != "failed" {
+		tips = append(tips, "Artifactory/JCR Router 8082: /v2/ 可访问不代表 Docker push blob 链路可用；若 Docker push 报 tls: unrecognized name 或 HTTP 端口跳 HTTPS，优先验证 Tomcat 8081、TLS 证书、反向代理和 external URL 配置")
+	}
 	return uniqueStrings(tips)
+}
+
+func isArtifactoryRouterCandidate(registryName string) bool {
+	lower := strings.ToLower(strings.TrimSpace(registryName))
+	return strings.HasSuffix(lower, ":8082") ||
+		(strings.Contains(lower, "router") &&
+			(strings.Contains(lower, "artifactory") || strings.Contains(lower, "jfrog")))
 }
 
 func printRegistryLoginCheckReport(w io.Writer, report RegistryLoginCheckReport) {

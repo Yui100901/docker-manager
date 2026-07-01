@@ -56,7 +56,7 @@ Windows PowerShell:
 .\scripts\package-release.ps1 -Version v0.1.0 -Platform linux/amd64,windows/amd64
 ```
 
-产物默认写入 `dist/`，包括按平台命名的 `tar.gz`/`zip`、`checksums.txt`、`release-manifest.json` 和 `release-summary.md`。每个归档内包含 `INSTALL.md`，记录对应平台的安装和验证命令。发布前可先查看 [CHANGELOG.md](CHANGELOG.md) 了解变更摘要，再按 [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) 逐项检查。
+产物默认写入 `dist/`，包括按平台命名的 `tar.gz`/`zip`、`checksums.txt`、`release-manifest.json` 和 `release-summary.md`。`checksums.txt` 会保留仍存在于发布目录中的历史归档校验行，重新生成同名归档时自动替换该行，便于回滚核验。每个归档内包含 `INSTALL.md`，记录对应平台的安装和验证命令；Linux/macOS 包只包含 `install.sh`/`uninstall.sh`，Windows 包只包含 `install.ps1`/`uninstall.ps1`。发布前可先查看 [CHANGELOG.md](CHANGELOG.md) 了解变更摘要，再按 [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) 逐项检查。
 
 ### 发布验收摘要
 

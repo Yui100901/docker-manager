@@ -137,6 +137,80 @@ func TestRegistryReportCommandShape(t *testing.T) {
 	if flag := cmd.Flags().Lookup("plain-http"); flag == nil {
 		t.Fatal("missing --plain-http flag")
 	}
+	if flag := cmd.Flags().Lookup("fail-on-error"); flag == nil {
+		t.Fatal("missing --fail-on-error flag")
+	}
+	if flag := cmd.Flags().Lookup("fail-on-warning"); flag == nil {
+		t.Fatal("missing --fail-on-warning flag")
+	}
+}
+
+func TestRegistryLoginCheckExitErrorDefaultsToFailedOnly(t *testing.T) {
+	report := RegistryLoginCheckReport{
+		Registry:     "registry.local:5000",
+		RegistryPing: CheckResult{Status: "warning"},
+		DockerLogin:  CheckResult{Status: "skipped"},
+	}
+	if err := registryLoginCheckExitError(report, RegistryLoginCheckOptions{FailOnError: true}); err != nil {
+		t.Fatalf("registryLoginCheckExitError() warning default error = %v, want nil", err)
+	}
+	report.DockerLogin = CheckResult{Status: "failed", Message: "bad credentials"}
+	if err := registryLoginCheckExitError(report, RegistryLoginCheckOptions{FailOnError: true}); err == nil {
+		t.Fatal("registryLoginCheckExitError() error = nil, want failed status error")
+	}
+}
+
+func TestRegistryLoginCheckExitErrorCanFailOnWarning(t *testing.T) {
+	report := RegistryLoginCheckReport{
+		Registry:     "registry.local:5000",
+		RegistryPing: CheckResult{Status: "warning"},
+		DockerLogin:  CheckResult{Status: "skipped"},
+	}
+	if err := registryLoginCheckExitError(report, RegistryLoginCheckOptions{FailOnError: true, FailOnWarning: true}); err == nil {
+		t.Fatal("registryLoginCheckExitError() error = nil, want warning status error")
+	}
+}
+
+func TestRegistryLoginRecommendationsIncludeArtifactoryRouterHint(t *testing.T) {
+	report := RegistryLoginCheckReport{
+		Registry:     "artifactory.local:8082",
+		ConfigFound:  true,
+		Credential:   CredentialReport{Found: true},
+		RegistryPing: CheckResult{Status: "ok", HTTPStatus: http.StatusOK},
+		DockerLogin:  CheckResult{Status: "ok"},
+	}
+	tips := registryLoginRecommendations(report)
+	if !containsSubstring(tips, "Artifactory/JCR Router 8082") {
+		t.Fatalf("recommendations = %#v, want Artifactory Router hint", tips)
+	}
+}
+
+func TestRegistryLoginRecommendationsSkipArtifactoryRouterHintForGenericRegistry(t *testing.T) {
+	report := RegistryLoginCheckReport{
+		Registry:     "registry.local:5000",
+		ConfigFound:  true,
+		Credential:   CredentialReport{Found: true},
+		RegistryPing: CheckResult{Status: "ok", HTTPStatus: http.StatusOK},
+		DockerLogin:  CheckResult{Status: "ok"},
+	}
+	tips := registryLoginRecommendations(report)
+	if containsSubstring(tips, "Artifactory/JCR Router 8082") {
+		t.Fatalf("recommendations = %#v, do not want Artifactory Router hint", tips)
+	}
+}
+
+func TestRegistryLoginRecommendationsSkipArtifactoryRouterHintForTomcatPort(t *testing.T) {
+	report := RegistryLoginCheckReport{
+		Registry:     "artifactory.local:8081",
+		ConfigFound:  true,
+		Credential:   CredentialReport{Found: true},
+		RegistryPing: CheckResult{Status: "ok", HTTPStatus: http.StatusOK},
+		DockerLogin:  CheckResult{Status: "ok"},
+	}
+	tips := registryLoginRecommendations(report)
+	if containsSubstring(tips, "Artifactory/JCR Router 8082") {
+		t.Fatalf("recommendations = %#v, do not want Artifactory Router hint for 8081", tips)
+	}
 }
 
 func TestPrintRegistryLoginCheckReportIncludesSections(t *testing.T) {
@@ -164,6 +238,15 @@ func writeDockerConfig(t *testing.T, content string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func containsSubstring(values []string, want string) bool {
+	for _, value := range values {
+		if strings.Contains(value, want) {
+			return true
+		}
+	}
+	return false
 }
 
 func replaceRegistryLoginServiceFactory(fake *fakeRegistryLoginDockerService) func() {

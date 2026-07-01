@@ -293,7 +293,9 @@ func (r *PullRunner) targetManifestExists(ctx context.Context, imageName, target
 			ocispec.MediaTypeImageIndex,
 		}, ", "),
 	}
-	_, _, err = r.fetchRegistryBytesOnce(ctx, registryAPIURL(opts, info, "manifests", getReference(info)), headers, nil, info, opts, nil)
+	targetOpts := opts
+	targetOpts.PlainHTTP = pushTargetUsesPlainHTTP(opts)
+	_, _, err = r.fetchRegistryBytesOnce(ctx, registryAPIURL(targetOpts, info, "manifests", getReference(info)), headers, nil, info, targetOpts, nil)
 	if err == nil {
 		return true, nil
 	}
