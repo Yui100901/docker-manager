@@ -2,6 +2,7 @@ package diagnostics
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -135,12 +136,18 @@ func runLogsScan(ctx context.Context, opts LogsScanOptions) (LogsScanReport, err
 	if err != nil {
 		return LogsScanReport{}, err
 	}
-	report := buildLogsScanReport(ctx, svc, targets, opts)
+	report, err := buildLogsScanReport(ctx, svc, targets, opts)
+	if err != nil {
+		return report, err
+	}
 	report.Target = buildContainerTargetSelection("扫描", len(targets), opts.RunningOnly, opts.Filters)
 	return report, nil
 }
 
 func logsScanTargets(ctx context.Context, svc logsScanDockerService, opts LogsScanOptions) ([]container.Summary, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	listAll := !opts.RunningOnly
 	containers, err := svc.ListContainers(ctx, listAll)
 	if err != nil {
@@ -149,26 +156,38 @@ func logsScanTargets(ctx context.Context, svc logsScanDockerService, opts LogsSc
 	if opts.RunningOnly {
 		var running []container.Summary
 		for _, c := range containers {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			if c.State == "running" {
 				running = append(running, c)
 			}
 		}
 		containers = running
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	containers = filterContainerSummaries(containers, opts.Filters)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	sort.Slice(containers, func(i, j int) bool {
 		return firstContainerName(containers[i].Names) < firstContainerName(containers[j].Names)
 	})
 	return containers, nil
 }
 
-func buildLogsScanReport(ctx context.Context, svc logsScanDockerService, targets []container.Summary, opts LogsScanOptions) LogsScanReport {
+func buildLogsScanReport(ctx context.Context, svc logsScanDockerService, targets []container.Summary, opts LogsScanOptions) (LogsScanReport, error) {
 	keywords := normalizeKeywords(opts.Keywords)
 	report := LogsScanReport{
 		GeneratedAt: time.Now().Format(time.RFC3339),
 		Keywords:    keywords,
 	}
 	for _, target := range targets {
+		if err := ctx.Err(); err != nil {
+			return report, err
+		}
 		item := LogsScanContainer{
 			ID:    shortID(target.ID),
 			Name:  firstContainerName(target.Names),
@@ -186,21 +205,39 @@ func buildLogsScanReport(ctx context.Context, svc logsScanDockerService, targets
 
 		inspect, err := svc.InspectContainer(ctx, ref)
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return report, ctxErr
+			}
+			if errors.Is(err, context.Canceled) {
+				return report, err
+			}
 			item.Error = fmt.Sprintf("inspect 失败: %v", err)
 			report.Summary.Errors++
 			report.Containers = append(report.Containers, item)
 			continue
 		}
+		if err := ctx.Err(); err != nil {
+			return report, err
+		}
 		applyLogsScanInspect(&item, inspect)
 
 		text, err := readContainerLogText(ctx, svc, ref, inspect, opts)
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return report, ctxErr
+			}
+			if errors.Is(err, context.Canceled) {
+				return report, err
+			}
 			item.Error = fmt.Sprintf("读取日志失败: %v", err)
 			report.Summary.Errors++
 			report.Containers = append(report.Containers, item)
 			continue
 		}
-		item.Matches = findLogScanMatches(text, keywords, opts.Context)
+		item.Matches, err = findLogScanMatchesWithContext(ctx, text, keywords, opts.Context)
+		if err != nil {
+			return report, err
+		}
 		if opts.RedactSecrets {
 			redactLogScanMatches(item.Matches)
 		}
@@ -210,8 +247,11 @@ func buildLogsScanReport(ctx context.Context, svc logsScanDockerService, targets
 		}
 		report.Containers = append(report.Containers, item)
 	}
+	if err := ctx.Err(); err != nil {
+		return report, err
+	}
 	sortLogsScanReport(&report)
-	return report
+	return report, nil
 }
 
 func applyLogsScanInspect(item *LogsScanContainer, inspect container.InspectResponse) {
@@ -249,7 +289,7 @@ func readContainerLogText(ctx context.Context, svc logsScanDockerService, id str
 		return "", err
 	}
 	defer reader.Close()
-	return readDockerLogs(reader, inspect.Config != nil && inspect.Config.Tty)
+	return readDockerLogsWithContext(ctx, reader, inspect.Config != nil && inspect.Config.Tty)
 }
 
 func normalizeLogsSince(value string) string {
@@ -264,9 +304,17 @@ func normalizeLogsSince(value string) string {
 }
 
 func findLogScanMatches(text string, keywords []string, contextLines int) []LogScanMatch {
+	matches, _ := findLogScanMatchesWithContext(context.Background(), text, keywords, contextLines)
+	return matches
+}
+
+func findLogScanMatchesWithContext(ctx context.Context, text string, keywords []string, contextLines int) ([]LogScanMatch, error) {
 	lines := splitLogLines(text)
 	var matches []LogScanMatch
 	for i, line := range lines {
+		if err := ctx.Err(); err != nil {
+			return matches, err
+		}
 		lower := strings.ToLower(line)
 		var found []string
 		for _, keyword := range keywords {
@@ -286,7 +334,7 @@ func findLogScanMatches(text string, keywords []string, contextLines int) []LogS
 		}
 		matches = append(matches, match)
 	}
-	return matches
+	return matches, nil
 }
 
 func redactLogScanMatches(matches []LogScanMatch) {

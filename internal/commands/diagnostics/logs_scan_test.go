@@ -3,6 +3,7 @@ package diagnostics
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -71,11 +72,14 @@ func TestBuildLogsScanReportScansExplicitContainers(t *testing.T) {
 		},
 	}
 
-	report := buildLogsScanReport(context.Background(), fake, []container.Summary{{ID: "api", Names: []string{"/api"}}}, LogsScanOptions{
+	report, err := buildLogsScanReport(context.Background(), fake, []container.Summary{{ID: "api", Names: []string{"/api"}}}, LogsScanOptions{
 		Tail:     100,
 		Context:  0,
 		Keywords: []string{"error"},
 	})
+	if err != nil {
+		t.Fatalf("buildLogsScanReport() error = %v", err)
+	}
 
 	if report.Summary.ScannedContainers != 1 || report.Summary.TotalMatches != 1 || report.Summary.ContainersMatched != 1 {
 		t.Fatalf("Summary = %#v, want one match", report.Summary)
@@ -92,12 +96,15 @@ func TestBuildLogsScanReportRedactsSecretsWhenRequested(t *testing.T) {
 		},
 	}
 
-	report := buildLogsScanReport(context.Background(), fake, []container.Summary{{ID: "api", Names: []string{"/api"}}}, LogsScanOptions{
+	report, err := buildLogsScanReport(context.Background(), fake, []container.Summary{{ID: "api", Names: []string{"/api"}}}, LogsScanOptions{
 		Tail:          100,
 		Context:       1,
 		Keywords:      []string{"error"},
 		RedactSecrets: true,
 	})
+	if err != nil {
+		t.Fatalf("buildLogsScanReport() error = %v", err)
+	}
 
 	if len(report.Containers) != 1 || len(report.Containers[0].Matches) != 1 {
 		t.Fatalf("Containers = %#v, want one match", report.Containers)
@@ -111,6 +118,29 @@ func TestBuildLogsScanReportRedactsSecretsWhenRequested(t *testing.T) {
 	}
 	if !strings.Contains(joined, "<redacted>") {
 		t.Fatalf("redacted log output = %q, want <redacted>", joined)
+	}
+}
+
+func TestBuildLogsScanReportReturnsCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	report, err := buildLogsScanReport(ctx, &fakeLogsScanDockerService{}, []container.Summary{{ID: "api", Names: []string{"/api"}}}, LogsScanOptions{
+		Tail:     100,
+		Keywords: []string{"error"},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("buildLogsScanReport() error = %v, want context.Canceled", err)
+	}
+	if report.Summary.ScannedContainers != 0 {
+		t.Fatalf("ScannedContainers = %d, want 0", report.Summary.ScannedContainers)
+	}
+}
+
+func TestFindLogScanMatchesReturnsCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := findLogScanMatchesWithContext(ctx, "error\n", []string{"error"}, 0); !errors.Is(err, context.Canceled) {
+		t.Fatalf("findLogScanMatchesWithContext() error = %v, want context.Canceled", err)
 	}
 }
 

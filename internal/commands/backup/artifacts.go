@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"context"
 	"docker-manager/internal/commands/reverse"
 	"encoding/json"
 	"fmt"
@@ -36,13 +37,23 @@ func writeJSONFile(path string, value interface{}) error {
 }
 
 func writeBackupBundleArtifacts(outputDir string, manifest BackupManifest) error {
+	return writeBackupBundleArtifactsWithContext(context.Background(), outputDir, manifest)
+}
+
+func writeBackupBundleArtifactsWithContext(ctx context.Context, outputDir string, manifest BackupManifest) error {
+	if err := checkBackupContext(ctx); err != nil {
+		return err
+	}
 	if err := writeBackupReadme(filepath.Join(outputDir, backupReadmeName), manifest); err != nil {
 		return fmt.Errorf("write readme: %w", err)
+	}
+	if err := checkBackupContext(ctx); err != nil {
+		return err
 	}
 	if err := writeRestoreScript(filepath.Join(outputDir, backupRestoreName)); err != nil {
 		return fmt.Errorf("write restore script: %w", err)
 	}
-	if err := writeChecksums(outputDir); err != nil {
+	if err := writeChecksumsWithContext(ctx, outputDir); err != nil {
 		return fmt.Errorf("write checksums: %w", err)
 	}
 	return nil

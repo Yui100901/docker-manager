@@ -159,6 +159,15 @@ func TestBackupContainerWritesBundle(t *testing.T) {
 	}
 }
 
+func TestBackupContainerReturnsCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := backupContainer(ctx, "demo", BackupOptions{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("backupContainer() error = %v, want context.Canceled", err)
+	}
+}
+
 func TestBackupContainerWritesOfflineBundleArtifacts(t *testing.T) {
 	fake := &fakeBackupDockerService{
 		inspect: container.InspectResponse{
@@ -493,6 +502,33 @@ func TestRestoreBackupRejectsExistingContainerWithoutReplace(t *testing.T) {
 	}
 	if hasCallPrefix(fake.calls, "create-container:") {
 		t.Fatalf("calls = %#v, create-container should not run", fake.calls)
+	}
+}
+
+func TestRestoreBackupDirReturnsCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := restoreBackupDir(ctx, t.TempDir(), RestoreOptions{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("restoreBackupDir() error = %v, want context.Canceled", err)
+	}
+}
+
+func TestBackupArchiveReturnsCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := createBackupArchiveWithContext(ctx, t.TempDir(), filepath.Join(t.TempDir(), "backup.tar.gz"))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("createBackupArchiveWithContext() error = %v, want context.Canceled", err)
+	}
+}
+
+func TestBackupChecksumsReturnCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := writeChecksumsWithContext(ctx, t.TempDir())
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("writeChecksumsWithContext() error = %v, want context.Canceled", err)
 	}
 }
 

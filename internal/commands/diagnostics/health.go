@@ -334,7 +334,11 @@ func scanHealthLogs(ctx context.Context, svc healthDockerService, id string, ins
 }
 
 func readDockerLogs(reader io.Reader, tty bool) (string, error) {
-	data, err := io.ReadAll(reader)
+	return readDockerLogsWithContext(context.Background(), reader, tty)
+}
+
+func readDockerLogsWithContext(ctx context.Context, reader io.Reader, tty bool) (string, error) {
+	data, err := readAllWithContext(ctx, reader)
 	if err != nil {
 		return "", err
 	}
@@ -346,6 +350,31 @@ func readDockerLogs(reader io.Reader, tty bool) (string, error) {
 		return string(data), nil
 	}
 	return stdout.String() + stderr.String(), nil
+}
+
+func readAllWithContext(ctx context.Context, reader io.Reader) ([]byte, error) {
+	var buf bytes.Buffer
+	chunk := make([]byte, 32*1024)
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		n, err := reader.Read(chunk)
+		if n > 0 {
+			if _, writeErr := buf.Write(chunk[:n]); writeErr != nil {
+				return nil, writeErr
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return nil, ctxErr
+				}
+				return buf.Bytes(), nil
+			}
+			return nil, err
+		}
+	}
 }
 
 func findLogMatches(text string, keywords []string) []LogMatch {

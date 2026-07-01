@@ -15,13 +15,14 @@ import (
 )
 
 func restoreBackup(ctx context.Context, backupDir string, opts RestoreOptions) error {
-	if ctx == nil {
-		ctx = context.Background()
+	ctx = backupContext(ctx)
+	if err := checkBackupContext(ctx); err != nil {
+		return err
 	}
 	if opts.Output == nil {
 		opts.Output = io.Discard
 	}
-	resolvedDir, cleanup, err := resolveRestoreBackupDir(backupDir)
+	resolvedDir, cleanup, err := resolveRestoreBackupDirWithContext(ctx, backupDir)
 	if err != nil {
 		return err
 	}
@@ -31,7 +32,7 @@ func restoreBackup(ctx context.Context, backupDir string, opts RestoreOptions) e
 	backupDir = resolvedDir
 
 	if !opts.SkipChecksum {
-		verified, err := verifyBackupChecksums(backupDir)
+		verified, err := verifyBackupChecksumsWithContext(ctx, backupDir)
 		if err != nil {
 			return fmt.Errorf("verify checksums: %w", err)
 		}
@@ -42,10 +43,16 @@ func restoreBackup(ctx context.Context, backupDir string, opts RestoreOptions) e
 		log.Printf("Skip checksum verification: %s", backupDir)
 	}
 
+	if err := checkBackupContext(ctx); err != nil {
+		return err
+	}
 	return restoreBackupDir(ctx, backupDir, opts)
 }
 
 func restoreBackupDir(ctx context.Context, backupDir string, opts RestoreOptions) error {
+	if err := checkBackupContext(ctx); err != nil {
+		return err
+	}
 	if opts.Output == nil {
 		opts.Output = io.Discard
 	}
@@ -69,6 +76,9 @@ func restoreBackupDir(ctx context.Context, backupDir string, opts RestoreOptions
 		fmt.Fprintf(opts.Output, "  checksum: %s\n", checksumPlanText(opts.SkipChecksum, filepath.Join(backupDir, backupChecksumName)))
 	}
 	for _, entry := range manifest.Containers {
+		if err := checkBackupContext(ctx); err != nil {
+			return err
+		}
 		if err := restoreBackupContainerEntry(ctx, svc, backupDir, entry, opts); err != nil {
 			return err
 		}
@@ -78,6 +88,9 @@ func restoreBackupDir(ctx context.Context, backupDir string, opts RestoreOptions
 }
 
 func restoreBackupContainerEntry(ctx context.Context, svc backupDockerService, backupDir string, entry BackupContainerManifest, opts RestoreOptions) error {
+	if err := checkBackupContext(ctx); err != nil {
+		return err
+	}
 	entryDir := backupDir
 	if entry.Path != "" {
 		var err error
@@ -88,6 +101,9 @@ func restoreBackupContainerEntry(ctx context.Context, svc backupDockerService, b
 	}
 	inspect, err := readContainerInspect(entryDir, entry)
 	if err != nil {
+		return err
+	}
+	if err := checkBackupContext(ctx); err != nil {
 		return err
 	}
 	targetName := opts.Name
@@ -103,6 +119,9 @@ func restoreBackupContainerEntry(ctx context.Context, svc backupDockerService, b
 
 	exists, err := svc.ContainerExists(ctx, targetName)
 	if err != nil {
+		return err
+	}
+	if err := checkBackupContext(ctx); err != nil {
 		return err
 	}
 	if exists && !opts.Replace {
@@ -122,6 +141,9 @@ func restoreBackupContainerEntry(ctx context.Context, svc backupDockerService, b
 	}
 
 	if entry.ImageArchive != "" {
+		if err := checkBackupContext(ctx); err != nil {
+			return err
+		}
 		imagePath, err := backupFilePath(entryDir, entry.ImageArchive)
 		if err != nil {
 			return err
@@ -132,6 +154,9 @@ func restoreBackupContainerEntry(ctx context.Context, svc backupDockerService, b
 	}
 
 	for _, ref := range entry.Networks {
+		if err := checkBackupContext(ctx); err != nil {
+			return err
+		}
 		netMeta, err := readNetworkInspect(entryDir, ref)
 		if err != nil {
 			return err
@@ -142,6 +167,9 @@ func restoreBackupContainerEntry(ctx context.Context, svc backupDockerService, b
 	}
 
 	for _, ref := range entry.Volumes {
+		if err := checkBackupContext(ctx); err != nil {
+			return err
+		}
 		volMeta, err := readVolumeInspect(entryDir, ref)
 		if err != nil {
 			return err
@@ -154,6 +182,9 @@ func restoreBackupContainerEntry(ctx context.Context, svc backupDockerService, b
 	// Destructive replacement is intentionally delayed until all restorable
 	// artifacts have been read and Docker-side prerequisites have succeeded.
 	if exists {
+		if err := checkBackupContext(ctx); err != nil {
+			return err
+		}
 		if err := svc.RemoveContainer(ctx, targetName); err != nil {
 			return fmt.Errorf("remove existing container %s: %w", targetName, err)
 		}
@@ -162,6 +193,9 @@ func restoreBackupContainerEntry(ctx context.Context, svc backupDockerService, b
 	id, err := svc.CreateContainer(ctx, inspect, targetName)
 	if err != nil {
 		return fmt.Errorf("create container %s: %w", targetName, err)
+	}
+	if err := checkBackupContext(ctx); err != nil {
+		return err
 	}
 	if !opts.NoStart {
 		if err := svc.StartContainer(ctx, id); err != nil {

@@ -3,6 +3,7 @@ package backup
 import (
 	"archive/tar"
 	"compress/gzip"
+	"context"
 	"docker-manager/internal/resourcefilter"
 	"encoding/json"
 	"fmt"
@@ -17,6 +18,13 @@ import (
 )
 
 func createBackupArchive(sourceDir, archivePath string) error {
+	return createBackupArchiveWithContext(context.Background(), sourceDir, archivePath)
+}
+
+func createBackupArchiveWithContext(ctx context.Context, sourceDir, archivePath string) error {
+	if err := checkBackupContext(ctx); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(archivePath), 0755); err != nil {
 		return err
 	}
@@ -33,6 +41,9 @@ func createBackupArchive(sourceDir, archivePath string) error {
 	defer tw.Close()
 
 	return filepath.WalkDir(sourceDir, func(path string, entry os.DirEntry, walkErr error) error {
+		if err := checkBackupContext(ctx); err != nil {
+			return err
+		}
 		if walkErr != nil {
 			return walkErr
 		}
@@ -70,12 +81,18 @@ func createBackupArchive(sourceDir, archivePath string) error {
 			return err
 		}
 		defer in.Close()
-		_, err = io.Copy(tw, in)
-		return err
+		return backupCopyWithContext(ctx, tw, in)
 	})
 }
 
 func resolveRestoreBackupDir(path string) (string, func(), error) {
+	return resolveRestoreBackupDirWithContext(context.Background(), path)
+}
+
+func resolveRestoreBackupDirWithContext(ctx context.Context, path string) (string, func(), error) {
+	if err := checkBackupContext(ctx); err != nil {
+		return "", nil, err
+	}
 	if !isBackupArchive(path) {
 		return path, nil, nil
 	}
@@ -84,7 +101,7 @@ func resolveRestoreBackupDir(path string) (string, func(), error) {
 		return "", nil, err
 	}
 	cleanup := func() { _ = os.RemoveAll(tempDir) }
-	if err := extractBackupArchive(path, tempDir); err != nil {
+	if err := extractBackupArchiveWithContext(ctx, path, tempDir); err != nil {
 		cleanup()
 		return "", nil, err
 	}
@@ -102,6 +119,13 @@ func isBackupArchive(path string) bool {
 }
 
 func extractBackupArchive(archivePath, destDir string) error {
+	return extractBackupArchiveWithContext(context.Background(), archivePath, destDir)
+}
+
+func extractBackupArchiveWithContext(ctx context.Context, archivePath, destDir string) error {
+	if err := checkBackupContext(ctx); err != nil {
+		return err
+	}
 	file, err := os.Open(archivePath)
 	if err != nil {
 		return err
@@ -114,6 +138,9 @@ func extractBackupArchive(archivePath, destDir string) error {
 	defer gz.Close()
 	tr := tar.NewReader(gz)
 	for {
+		if err := checkBackupContext(ctx); err != nil {
+			return err
+		}
 		header, err := tr.Next()
 		if err == io.EOF {
 			return nil
@@ -138,7 +165,7 @@ func extractBackupArchive(archivePath, destDir string) error {
 			if err != nil {
 				return err
 			}
-			if _, err := io.Copy(out, tr); err != nil {
+			if err := backupCopyWithContext(ctx, out, tr); err != nil {
 				_ = out.Close()
 				return err
 			}

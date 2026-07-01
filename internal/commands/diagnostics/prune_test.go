@@ -3,6 +3,7 @@ package diagnostics
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +27,9 @@ type fakePruneDockerService struct {
 
 func (f *fakePruneDockerService) DiskUsage(ctx context.Context) (types.DiskUsage, error) {
 	f.calls = append(f.calls, "disk-usage")
+	if err := ctx.Err(); err != nil {
+		return types.DiskUsage{}, err
+	}
 	return f.usage, nil
 }
 
@@ -93,6 +97,26 @@ func TestRunPruneReportApplyRequiresConfirm(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "--confirm") {
 		t.Fatalf("runPruneReport() error = %q, want --confirm hint", err.Error())
+	}
+}
+
+func TestRunPruneReportReturnsCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := runPruneReport(ctx, PruneReportOptions{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("runPruneReport() error = %v, want context.Canceled", err)
+	}
+}
+
+func TestBuildPruneReportReturnsCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := buildPruneReportWithContext(ctx, types.DiskUsage{
+		Containers: []*container.Summary{{ID: "old", State: "exited"}},
+	}, PruneScope{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("buildPruneReportWithContext() error = %v, want context.Canceled", err)
 	}
 }
 

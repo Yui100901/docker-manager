@@ -342,6 +342,9 @@ func uniquePruneStrings(values []string) []string {
 }
 
 func runPruneReport(ctx context.Context, opts PruneReportOptions) (PruneReport, error) {
+	if err := ctx.Err(); err != nil {
+		return PruneReport{}, err
+	}
 	scope, err := buildPruneScope(opts)
 	if err != nil {
 		return PruneReport{}, err
@@ -359,8 +362,14 @@ func runPruneReport(ctx context.Context, opts PruneReportOptions) (PruneReport, 
 	if err != nil {
 		return PruneReport{}, err
 	}
+	if err := ctx.Err(); err != nil {
+		return PruneReport{}, err
+	}
 
-	report := buildPruneReport(usage, scope)
+	report, err := buildPruneReportWithContext(ctx, usage, scope)
+	if err != nil {
+		return report, err
+	}
 	if opts.Apply {
 		applyResult, err := applyPruneReport(ctx, svc, scope)
 		if err != nil {
@@ -373,11 +382,19 @@ func runPruneReport(ctx context.Context, opts PruneReportOptions) (PruneReport, 
 }
 
 func buildPruneReport(usage types.DiskUsage, scope PruneScope) PruneReport {
+	report, _ := buildPruneReportWithContext(context.Background(), usage, scope)
+	return report
+}
+
+func buildPruneReportWithContext(ctx context.Context, usage types.DiskUsage, scope PruneScope) (PruneReport, error) {
 	report := PruneReport{
 		GeneratedAt: time.Now().Format(time.RFC3339),
 		Scope:       scope,
 	}
 	for _, c := range usage.Containers {
+		if err := ctx.Err(); err != nil {
+			return report, err
+		}
 		if c == nil || c.State == "running" {
 			continue
 		}
@@ -394,6 +411,9 @@ func buildPruneReport(usage types.DiskUsage, scope PruneScope) PruneReport {
 		addPositiveSize(&report.EstimatedBytes, c.SizeRw)
 	}
 	for _, img := range usage.Images {
+		if err := ctx.Err(); err != nil {
+			return report, err
+		}
 		if img == nil || !isDanglingImage(img) {
 			continue
 		}
@@ -408,6 +428,9 @@ func buildPruneReport(usage types.DiskUsage, scope PruneScope) PruneReport {
 		addPositiveSize(&report.EstimatedBytes, img.Size)
 	}
 	for _, vol := range usage.Volumes {
+		if err := ctx.Err(); err != nil {
+			return report, err
+		}
 		if vol == nil || vol.UsageData == nil || vol.UsageData.RefCount != 0 {
 			continue
 		}
@@ -423,6 +446,9 @@ func buildPruneReport(usage types.DiskUsage, scope PruneScope) PruneReport {
 		addPositiveSize(&report.EstimatedBytes, vol.UsageData.Size)
 	}
 	for _, cache := range usage.BuildCache {
+		if err := ctx.Err(); err != nil {
+			return report, err
+		}
 		if cache == nil || cache.InUse {
 			continue
 		}
@@ -437,14 +463,20 @@ func buildPruneReport(usage types.DiskUsage, scope PruneScope) PruneReport {
 		})
 		addPositiveSize(&report.EstimatedBytes, cache.Size)
 	}
+	if err := ctx.Err(); err != nil {
+		return report, err
+	}
 	sortPruneReport(&report)
-	return report
+	return report, nil
 }
 
 func applyPruneReport(ctx context.Context, svc pruneDockerService, scope PruneScope) (PruneApplyResult, error) {
 	var result PruneApplyResult
 	pruneFilters := scope.dockerFilters()
 
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
 	if scope.includes(pruneKindContainer) {
 		containers, err := svc.PruneContainers(ctx, pruneFilters.Containers)
 		if err != nil {
@@ -454,6 +486,9 @@ func applyPruneReport(ctx context.Context, svc pruneDockerService, scope PruneSc
 		result.SpaceReclaimed += containers.SpaceReclaimed
 	}
 
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
 	if scope.includes(pruneKindImage) {
 		images, err := svc.PruneImages(ctx, pruneFilters.Images)
 		if err != nil {
@@ -463,6 +498,9 @@ func applyPruneReport(ctx context.Context, svc pruneDockerService, scope PruneSc
 		result.SpaceReclaimed += images.SpaceReclaimed
 	}
 
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
 	if scope.includes(pruneKindVolume) {
 		volumes, err := svc.PruneVolumes(ctx, pruneFilters.Volumes)
 		if err != nil {
@@ -472,6 +510,9 @@ func applyPruneReport(ctx context.Context, svc pruneDockerService, scope PruneSc
 		result.SpaceReclaimed += volumes.SpaceReclaimed
 	}
 
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
 	if scope.includesBuildCache() {
 		caches, err := svc.PruneBuildCache(ctx, pruneFilters.BuildCaches)
 		if err != nil {
@@ -483,6 +524,9 @@ func applyPruneReport(ctx context.Context, svc pruneDockerService, scope PruneSc
 		}
 	}
 
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
 	sort.Strings(result.ContainersDeleted)
 	sort.Strings(result.ImagesDeleted)
 	sort.Strings(result.VolumesDeleted)

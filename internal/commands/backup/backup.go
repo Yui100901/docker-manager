@@ -17,6 +17,9 @@ import (
 )
 
 func backupContainers(ctx context.Context, patterns []string, opts BackupOptions) (BackupContainersResult, error) {
+	if err := checkBackupContext(ctx); err != nil {
+		return BackupContainersResult{}, err
+	}
 	if len(patterns) == 0 {
 		return BackupContainersResult{}, fmt.Errorf("必须提供至少一个容器名称或通配符")
 	}
@@ -51,6 +54,9 @@ func backupContainersSeparate(ctx context.Context, targets []string, opts Backup
 	}
 	var result BackupContainersResult
 	for _, target := range targets {
+		if err := checkBackupContext(ctx); err != nil {
+			return result, err
+		}
 		childOpts := opts
 		childOpts.OutputDir = filepath.Join(root, safeBackupName(target))
 		childOpts.BundleOutput = ""
@@ -64,6 +70,9 @@ func backupContainersSeparate(ctx context.Context, targets []string, opts Backup
 }
 
 func backupContainersMerged(ctx context.Context, targets []string, opts BackupOptions) (BackupContainersResult, error) {
+	if err := checkBackupContext(ctx); err != nil {
+		return BackupContainersResult{}, err
+	}
 	root := opts.OutputDir
 	if root == "" {
 		root = defaultBackupBatchDir(time.Now())
@@ -75,6 +84,9 @@ func backupContainersMerged(ctx context.Context, targets []string, opts BackupOp
 		SourcePlatform: currentSourcePlatform(),
 	}
 	for _, target := range targets {
+		if err := checkBackupContext(ctx); err != nil {
+			return BackupContainersResult{}, err
+		}
 		childRel := filepath.ToSlash(filepath.Join("containers", safeBackupName(target)))
 		childOpts := opts
 		childOpts.OutputDir = filepath.Join(root, filepath.FromSlash(childRel))
@@ -103,18 +115,21 @@ func backupContainersMerged(ctx context.Context, targets []string, opts BackupOp
 		manifest.Containers = append(manifest.Containers, entry)
 	}
 	if !opts.DryRun {
+		if err := checkBackupContext(ctx); err != nil {
+			return BackupContainersResult{}, err
+		}
 		if err := writeJSONFile(filepath.Join(root, backupManifestName), manifest); err != nil {
 			return BackupContainersResult{}, fmt.Errorf("write manifest: %w", err)
 		}
 		if opts.Bundle {
-			if err := writeBackupBundleArtifacts(root, manifest); err != nil {
+			if err := writeBackupBundleArtifactsWithContext(ctx, root, manifest); err != nil {
 				return BackupContainersResult{}, err
 			}
 			archivePath := opts.BundleOutput
 			if archivePath == "" {
 				archivePath = root + ".tar.gz"
 			}
-			if err := createBackupArchive(root, archivePath); err != nil {
+			if err := createBackupArchiveWithContext(ctx, root, archivePath); err != nil {
 				return BackupContainersResult{}, err
 			}
 			log.Printf("Backup batch bundle: %s", archivePath)
@@ -125,6 +140,9 @@ func backupContainersMerged(ctx context.Context, targets []string, opts BackupOp
 }
 
 func resolveBackupContainerTargets(ctx context.Context, patterns []string) ([]string, error) {
+	if err := checkBackupContext(ctx); err != nil {
+		return nil, err
+	}
 	svc, err := newBackupDockerService()
 	if err != nil {
 		return nil, err
@@ -136,6 +154,9 @@ func resolveBackupContainerTargets(ctx context.Context, patterns []string) ([]st
 	seen := map[string]bool{}
 	var targets []string
 	for _, pattern := range patterns {
+		if err := checkBackupContext(ctx); err != nil {
+			return nil, err
+		}
 		matches := matchBackupContainerTargets(containers, pattern)
 		if len(matches) == 0 {
 			return nil, fmt.Errorf("容器 %q 未匹配任何容器", pattern)
@@ -182,6 +203,9 @@ func backupContainerTargetName(c container.Summary) string {
 }
 
 func backupContainer(ctx context.Context, name string, opts BackupOptions) (string, error) {
+	if err := checkBackupContext(ctx); err != nil {
+		return "", err
+	}
 	if opts.Output == nil {
 		opts.Output = io.Discard
 	}
@@ -191,6 +215,9 @@ func backupContainer(ctx context.Context, name string, opts BackupOptions) (stri
 	}
 	inspect, err := svc.InspectContainer(ctx, name)
 	if err != nil {
+		return "", err
+	}
+	if err := checkBackupContext(ctx); err != nil {
 		return "", err
 	}
 
@@ -215,6 +242,9 @@ func backupContainer(ctx context.Context, name string, opts BackupOptions) (stri
 	}
 
 	if opts.DryRun {
+		if err := checkBackupContext(ctx); err != nil {
+			return "", err
+		}
 		if opts.IncludeImage && containerManifest.Image != "" {
 			imageFile := filepath.Join("images", safeBackupName(containerManifest.Image)+".tar")
 			containerManifest.ImageArchive = filepath.ToSlash(imageFile)
@@ -257,6 +287,9 @@ func backupContainer(ctx context.Context, name string, opts BackupOptions) (stri
 			return "", err
 		}
 		imageFile := filepath.Join("images", safeBackupName(containerManifest.Image)+".tar")
+		if err := checkBackupContext(ctx); err != nil {
+			return "", err
+		}
 		if err := svc.SaveImage(ctx, []string{containerManifest.Image}, filepath.Join(outputDir, imageFile)); err != nil {
 			return "", fmt.Errorf("save image %s: %w", containerManifest.Image, err)
 		}
@@ -286,14 +319,17 @@ func backupContainer(ctx context.Context, name string, opts BackupOptions) (stri
 		return "", fmt.Errorf("write manifest: %w", err)
 	}
 	if opts.Bundle {
-		if err := writeBackupBundleArtifacts(outputDir, manifest); err != nil {
+		if err := checkBackupContext(ctx); err != nil {
+			return "", err
+		}
+		if err := writeBackupBundleArtifactsWithContext(ctx, outputDir, manifest); err != nil {
 			return "", err
 		}
 		archivePath := opts.BundleOutput
 		if archivePath == "" {
 			archivePath = outputDir + ".tar.gz"
 		}
-		if err := createBackupArchive(outputDir, archivePath); err != nil {
+		if err := createBackupArchiveWithContext(ctx, outputDir, archivePath); err != nil {
 			return "", err
 		}
 		log.Printf("Backup bundle: %s", archivePath)
@@ -317,6 +353,9 @@ func backupNetworks(ctx context.Context, svc backupDockerService, outputDir stri
 
 	var refs []BackupResourceRef
 	for _, name := range names {
+		if err := checkBackupContext(ctx); err != nil {
+			return nil, err
+		}
 		netMeta, err := svc.InspectNetwork(ctx, name)
 		if err != nil {
 			return nil, fmt.Errorf("inspect network %s: %w", name, err)
@@ -337,6 +376,9 @@ func backupVolumes(ctx context.Context, svc backupDockerService, outputDir strin
 	}
 	var refs []BackupResourceRef
 	for _, name := range names {
+		if err := checkBackupContext(ctx); err != nil {
+			return nil, err
+		}
 		volMeta, err := svc.InspectVolume(ctx, name)
 		if err != nil {
 			return nil, fmt.Errorf("inspect volume %s: %w", name, err)
@@ -365,6 +407,9 @@ func inspectBackupNetworkRefs(ctx context.Context, svc backupDockerService, insp
 
 	refs := make([]BackupResourceRef, 0, len(names))
 	for _, name := range names {
+		if err := checkBackupContext(ctx); err != nil {
+			return nil, err
+		}
 		if _, err := svc.InspectNetwork(ctx, name); err != nil {
 			return nil, fmt.Errorf("inspect network %s: %w", name, err)
 		}
@@ -378,6 +423,9 @@ func inspectBackupVolumeRefs(ctx context.Context, svc backupDockerService, inspe
 	names := namedVolumes(inspect)
 	refs := make([]BackupResourceRef, 0, len(names))
 	for _, name := range names {
+		if err := checkBackupContext(ctx); err != nil {
+			return nil, err
+		}
 		if _, err := svc.InspectVolume(ctx, name); err != nil {
 			return nil, fmt.Errorf("inspect volume %s: %w", name, err)
 		}

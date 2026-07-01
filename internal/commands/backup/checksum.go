@@ -2,11 +2,11 @@ package backup
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -15,8 +15,15 @@ import (
 )
 
 func writeChecksums(root string) error {
+	return writeChecksumsWithContext(context.Background(), root)
+}
+
+func writeChecksumsWithContext(ctx context.Context, root string) error {
 	var lines []string
 	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if err := checkBackupContext(ctx); err != nil {
+			return err
+		}
 		if walkErr != nil {
 			return walkErr
 		}
@@ -31,7 +38,7 @@ func writeChecksums(root string) error {
 		if rel == backupChecksumName {
 			return nil
 		}
-		sum, err := fileSHA256(path)
+		sum, err := fileSHA256WithContext(ctx, path)
 		if err != nil {
 			return err
 		}
@@ -41,11 +48,21 @@ func writeChecksums(root string) error {
 	if err != nil {
 		return err
 	}
+	if err := checkBackupContext(ctx); err != nil {
+		return err
+	}
 	sort.Strings(lines)
 	return os.WriteFile(filepath.Join(root, backupChecksumName), []byte(strings.Join(lines, "\n")+"\n"), 0644)
 }
 
 func verifyBackupChecksums(root string) (bool, error) {
+	return verifyBackupChecksumsWithContext(context.Background(), root)
+}
+
+func verifyBackupChecksumsWithContext(ctx context.Context, root string) (bool, error) {
+	if err := checkBackupContext(ctx); err != nil {
+		return false, err
+	}
 	checksumPath := filepath.Join(root, backupChecksumName)
 	file, err := os.Open(checksumPath)
 	if err != nil {
@@ -61,6 +78,9 @@ func verifyBackupChecksums(root string) (bool, error) {
 	lineNumber := 0
 	checked := 0
 	for scanner.Scan() {
+		if err := checkBackupContext(ctx); err != nil {
+			return true, err
+		}
 		lineNumber++
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
@@ -77,7 +97,7 @@ func verifyBackupChecksums(root string) (bool, error) {
 		if err != nil {
 			return true, fmt.Errorf("%s:%d: %w", backupChecksumName, lineNumber, err)
 		}
-		actual, err := fileSHA256(target)
+		actual, err := fileSHA256WithContext(ctx, target)
 		if err != nil {
 			return true, fmt.Errorf("checksum target %s: %w", rel, err)
 		}
@@ -117,13 +137,17 @@ func parseChecksumLine(line string) (string, string, error) {
 }
 
 func fileSHA256(path string) (string, error) {
+	return fileSHA256WithContext(context.Background(), path)
+}
+
+func fileSHA256WithContext(ctx context.Context, path string) (string, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
 	defer file.Close()
 	hash := sha256.New()
-	if _, err := io.Copy(hash, file); err != nil {
+	if err := backupCopyWithContext(ctx, hash, file); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
