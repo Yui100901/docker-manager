@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -158,11 +159,7 @@ func TestIsManifestIndex(t *testing.T) {
 }
 
 func TestProxyFuncFromSettingUsesEnvironmentByDefault(t *testing.T) {
-	t.Setenv("http_proxy", "")
-	t.Setenv("https_proxy", "")
-	t.Setenv("no_proxy", "")
-	t.Setenv("HTTPS_PROXY", "")
-	t.Setenv("NO_PROXY", "")
+	clearProxyEnv(t)
 	t.Setenv("HTTP_PROXY", "http://127.0.0.1:7890")
 
 	proxyFunc, err := proxyFuncFromSetting("")
@@ -184,12 +181,7 @@ func TestProxyFuncFromSettingUsesEnvironmentByDefault(t *testing.T) {
 }
 
 func TestProxyFuncFromSettingNoEnvironmentUsesNoProxy(t *testing.T) {
-	t.Setenv("HTTP_PROXY", "")
-	t.Setenv("HTTPS_PROXY", "")
-	t.Setenv("NO_PROXY", "")
-	t.Setenv("http_proxy", "")
-	t.Setenv("https_proxy", "")
-	t.Setenv("no_proxy", "")
+	clearProxyEnv(t)
 
 	proxyFunc, err := proxyFuncFromSetting("")
 	if err != nil {
@@ -210,6 +202,7 @@ func TestProxyFuncFromSettingNoEnvironmentUsesNoProxy(t *testing.T) {
 }
 
 func TestProxyFuncFromSettingExplicitProxyOverridesEnvironment(t *testing.T) {
+	clearProxyEnv(t)
 	t.Setenv("HTTP_PROXY", "http://127.0.0.1:7890")
 
 	proxyFunc, err := proxyFuncFromSetting("http://10.0.0.1:8080")
@@ -230,6 +223,113 @@ func TestProxyFuncFromSettingExplicitProxyOverridesEnvironment(t *testing.T) {
 	}
 }
 
+func TestProxyFuncFromSettingProxyPrecedenceMatrix(t *testing.T) {
+	tests := []struct {
+		name          string
+		target        string
+		explicitProxy string
+		env           map[string]string
+		want          string
+	}{
+		{
+			name:   "https uses HTTPS_PROXY",
+			target: "https://registry.example.com/v2/",
+			env: map[string]string{
+				"HTTP_PROXY":  "http://http-proxy:8080",
+				"HTTPS_PROXY": "http://https-proxy:8443",
+			},
+			want: "http://https-proxy:8443",
+		},
+		{
+			name:   "http uses HTTP_PROXY",
+			target: "http://registry.example.com/v2/",
+			env: map[string]string{
+				"HTTP_PROXY":  "http://http-proxy:8080",
+				"HTTPS_PROXY": "http://https-proxy:8443",
+			},
+			want: "http://http-proxy:8080",
+		},
+		{
+			name:   "uppercase env wins over lowercase env",
+			target: "http://registry.example.com/v2/",
+			env: map[string]string{
+				"HTTP_PROXY": "http://upper-proxy:8080",
+				"http_proxy": "http://lower-proxy:8080",
+			},
+			want: "http://upper-proxy:8080",
+		},
+		{
+			name:   "lowercase env used when uppercase env is empty",
+			target: "https://registry.example.com/v2/",
+			env: map[string]string{
+				"https_proxy": "http://lower-https-proxy:8443",
+			},
+			want: "http://lower-https-proxy:8443",
+		},
+		{
+			name:   "NO_PROXY bypasses env proxy",
+			target: "https://registry.example.com/v2/",
+			env: map[string]string{
+				"HTTPS_PROXY": "http://https-proxy:8443",
+				"NO_PROXY":    "registry.example.com",
+			},
+			want: "",
+		},
+		{
+			name:   "lowercase no_proxy bypasses env proxy",
+			target: "https://registry.example.com/v2/",
+			env: map[string]string{
+				"HTTPS_PROXY": "http://https-proxy:8443",
+				"no_proxy":    ".example.com",
+			},
+			want: "",
+		},
+		{
+			name:          "explicit proxy ignores env and NO_PROXY",
+			target:        "https://registry.example.com/v2/",
+			explicitProxy: "http://explicit-proxy:9000",
+			env: map[string]string{
+				"HTTPS_PROXY": "http://https-proxy:8443",
+				"NO_PROXY":    "registry.example.com",
+			},
+			want: "http://explicit-proxy:9000",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if runtime.GOOS == "windows" && tt.name == "uppercase env wins over lowercase env" {
+				t.Skip("Windows environment variables are case-insensitive")
+			}
+			clearProxyEnv(t)
+			for key, value := range tt.env {
+				t.Setenv(key, value)
+			}
+			proxyFunc, err := proxyFuncFromSetting(tt.explicitProxy)
+			if err != nil {
+				t.Fatalf("proxyFuncFromSetting() error = %v", err)
+			}
+			req, err := http.NewRequest(http.MethodGet, tt.target, nil)
+			if err != nil {
+				t.Fatalf("NewRequest() error = %v", err)
+			}
+			got, err := proxyFunc(req)
+			if err != nil {
+				t.Fatalf("proxyFunc() error = %v", err)
+			}
+			if tt.want == "" {
+				if got != nil {
+					t.Fatalf("proxy = %v, want nil", got)
+				}
+				return
+			}
+			if got == nil || got.String() != tt.want {
+				t.Fatalf("proxy = %v, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestProxyFuncFromSettingRejectsInvalidProxy(t *testing.T) {
 	if _, err := proxyFuncFromSetting("127.0.0.1:7890"); err == nil {
 		t.Fatal("proxyFuncFromSetting() error = nil, want invalid proxy error")
@@ -237,8 +337,7 @@ func TestProxyFuncFromSettingRejectsInvalidProxy(t *testing.T) {
 }
 
 func TestProxyFuncFromSettingRespectsNoProxy(t *testing.T) {
-	t.Setenv("http_proxy", "")
-	t.Setenv("no_proxy", "")
+	clearProxyEnv(t)
 	t.Setenv("HTTP_PROXY", "http://127.0.0.1:7890")
 	t.Setenv("NO_PROXY", "example.com")
 
@@ -257,6 +356,13 @@ func TestProxyFuncFromSettingRespectsNoProxy(t *testing.T) {
 	}
 	if got != nil {
 		t.Fatalf("proxy = %v, want nil", got)
+	}
+}
+
+func clearProxyEnv(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy"} {
+		t.Setenv(name, "")
 	}
 }
 
@@ -430,6 +536,8 @@ func TestPullCommandReturnsInvalidProxyError(t *testing.T) {
 }
 
 func TestPullCommandUsesConfiguredDefaultProxy(t *testing.T) {
+	clearProxyEnv(t)
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:7890")
 	cmd := NewPullCommandWithDefaults(func() CommandDefaults {
 		return CommandDefaults{Proxy: "127.0.0.1:7890"}
 	})
@@ -440,6 +548,24 @@ func TestPullCommandUsesConfiguredDefaultProxy(t *testing.T) {
 	err := cmd.Execute()
 	if err == nil {
 		t.Fatal("Execute() error = nil, want invalid configured proxy error")
+	}
+	if !strings.Contains(err.Error(), "代理失败") {
+		t.Fatalf("Execute() error = %q, want proxy error", err.Error())
+	}
+}
+
+func TestPullCommandExplicitProxyOverridesConfiguredDefaultProxy(t *testing.T) {
+	clearProxyEnv(t)
+	cmd := NewPullCommandWithDefaults(func() CommandDefaults {
+		return CommandDefaults{Proxy: "http://127.0.0.1:7890"}
+	})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--proxy", "127.0.0.1:7890", "busybox:latest"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want invalid explicit proxy error")
 	}
 	if !strings.Contains(err.Error(), "代理失败") {
 		t.Fatalf("Execute() error = %q, want proxy error", err.Error())

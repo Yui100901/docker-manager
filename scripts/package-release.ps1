@@ -118,7 +118,18 @@ $ChecksumsFile = Join-Path $DistDir "checksums.txt"
 $ManifestFile = Join-Path $DistDir "release-manifest.json"
 $SummaryFile = Join-Path $DistDir "release-summary.md"
 $Artifacts = @()
-Set-Content -Path $ChecksumsFile -Value "" -Encoding ASCII
+$ChecksumLines = New-Object System.Collections.Generic.List[string]
+if (Test-Path $ChecksumsFile) {
+    foreach ($line in Get-Content -Path $ChecksumsFile -Encoding ASCII) {
+        if (-not $line.Trim()) { continue }
+        $parts = $line -split "\s+", 2
+        if ($parts.Count -lt 2) { continue }
+        $archiveName = $parts[1].TrimStart("*")
+        if (Test-Path (Join-Path $DistDir $archiveName)) {
+            $ChecksumLines.Add($line)
+        }
+    }
+}
 
 try {
     if (-not $NoTest) {
@@ -192,7 +203,13 @@ try {
         }
 
         $sha = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
-        Add-Content -Path $ChecksumsFile -Encoding ASCII -Value "$sha  $(Split-Path -Leaf $archive)"
+        $archiveName = Split-Path -Leaf $archive
+        for ($i = $ChecksumLines.Count - 1; $i -ge 0; $i--) {
+            if ($ChecksumLines[$i] -match "\s+\*?$([regex]::Escape($archiveName))$") {
+                $ChecksumLines.RemoveAt($i)
+            }
+        }
+        $ChecksumLines.Add("$sha  $archiveName")
         $summary.Add("| ``$item`` | ``$format`` | ``$(Split-Path -Leaf $archive)`` | ``$sha`` |")
         $Artifacts += [ordered]@{
             platform = $item
@@ -205,6 +222,7 @@ try {
         }
     }
 
+    $ChecksumLines | Set-Content -Path $ChecksumsFile -Encoding ASCII
     [ordered]@{
         version    = $Version
         commit     = $Commit

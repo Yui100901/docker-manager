@@ -87,6 +87,37 @@ sha256_file() {
   fi
 }
 
+load_existing_checksums() {
+  : >"${CHECKSUMS_WORK_FILE}"
+  if [ ! -f "${CHECKSUMS_FILE}" ]; then
+    return
+  fi
+  while IFS= read -r line; do
+    [ -n "${line}" ] || continue
+    set -- ${line}
+    local archive_name="${2:-}"
+    archive_name="${archive_name#\*}"
+    if [ -n "${archive_name}" ] && [ -f "${DIST_DIR}/${archive_name}" ]; then
+      printf '%s\n' "${line}" >>"${CHECKSUMS_WORK_FILE}"
+    fi
+  done <"${CHECKSUMS_FILE}"
+}
+
+update_checksum_file() {
+  local checksum="$1"
+  local archive_name="$2"
+  local next_file="${CHECKSUMS_WORK_FILE}.next"
+  if [ -f "${CHECKSUMS_WORK_FILE}" ]; then
+    awk -v name="${archive_name}" '{
+      file=$2
+      sub(/^\*/, "", file)
+      if (file != name) print
+    }' "${CHECKSUMS_WORK_FILE}" >"${next_file}"
+    mv "${next_file}" "${CHECKSUMS_WORK_FILE}"
+  fi
+  printf '%s  %s\n' "${checksum}" "${archive_name}" >>"${CHECKSUMS_WORK_FILE}"
+}
+
 copy_release_scripts() {
   local goos="$1"
   local package_dir="$2"
@@ -198,7 +229,7 @@ archive_platform() {
     tar -C "${WORK_DIR}" -czf "${archive}" "${name}"
   fi
   checksum=$(sha256_file "${archive}")
-  printf '%s  %s\n' "${checksum}" "$(basename "${archive}")" >>"${CHECKSUMS_FILE}"
+  update_checksum_file "${checksum}" "$(basename "${archive}")"
   printf '    {"platform":"%s","os":"%s","arch":"%s","format":"%s","binary":"%s","archive":"%s","sha256":"%s"}' "${platform}" "${goos}" "${goarch}" "${format}" "${binary}" "$(basename "${archive}")" "${checksum}" >>"${MANIFEST_FILE}"
   printf "| \`%s\` | \`%s\` | \`%s\` | \`%s\` |\n" "${platform}" "${format}" "$(basename "${archive}")" "${checksum}" >>"${SUMMARY_FILE}"
 }
@@ -213,7 +244,8 @@ LDFLAGS="-s -w -X docker-manager/internal/version.version=${VERSION} -X docker-m
 CHECKSUMS_FILE="${DIST_DIR}/checksums.txt"
 MANIFEST_FILE="${DIST_DIR}/release-manifest.json"
 SUMMARY_FILE="${DIST_DIR}/release-summary.md"
-: >"${CHECKSUMS_FILE}"
+CHECKSUMS_WORK_FILE="${WORK_DIR}/checksums.txt"
+load_existing_checksums
 
 if [ "${RUN_TESTS}" = "1" ]; then
   echo "==> go test ./..."
@@ -259,6 +291,7 @@ cat >>"${MANIFEST_FILE}" <<'EOF'
   ]
 }
 EOF
+cp "${CHECKSUMS_WORK_FILE}" "${CHECKSUMS_FILE}"
 
 echo "Release artifacts written to: ${DIST_DIR}"
 echo "Checksums: ${CHECKSUMS_FILE}"

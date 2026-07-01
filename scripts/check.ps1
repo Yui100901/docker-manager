@@ -6,6 +6,17 @@ param(
 $ErrorActionPreference = "Stop"
 $RootDir = Resolve-Path (Join-Path $PSScriptRoot "..")
 
+function Invoke-Native {
+    param(
+        [Parameter(Mandatory = $true)]
+        [scriptblock]$Command
+    )
+    & $Command
+    if ($LASTEXITCODE -ne 0) {
+        throw "Command failed with exit code $LASTEXITCODE"
+    }
+}
+
 Push-Location $RootDir
 try {
     Write-Host "==> gofmt check"
@@ -22,24 +33,24 @@ try {
     }
 
     Write-Host "==> go test ./..."
-    go test ./...
+    Invoke-Native { go test ./... }
 
     Write-Host "==> go vet ./..."
-    go vet ./...
+    Invoke-Native { go vet ./... }
 
     if ($Race) {
         Write-Host "==> go test -race ./..."
         $oldCGO = $env:CGO_ENABLED
         try {
             $env:CGO_ENABLED = "1"
-            go test -race ./...
+            Invoke-Native { go test -race ./... }
         } finally {
             $env:CGO_ENABLED = $oldCGO
         }
     }
 
     Write-Host "==> git diff --check"
-    git diff --check
+    Invoke-Native { git diff --check }
 
     Write-Host "==> PowerShell parse"
     Get-ChildItem -Path scripts -Filter *.ps1 | ForEach-Object {
@@ -56,7 +67,7 @@ try {
         $shellcheck = Get-Command shellcheck -ErrorAction SilentlyContinue
         if ($shellcheck) {
             Write-Host "==> shellcheck"
-            shellcheck scripts/*.sh
+            Invoke-Native { shellcheck scripts/*.sh }
         } else {
             Write-Host "shellcheck not found; skipped"
         }
