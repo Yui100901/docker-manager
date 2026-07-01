@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"docker-manager/internal/commands/backup"
 	"docker-manager/internal/commands/diagnostics"
 	"docker-manager/internal/commands/images"
@@ -9,6 +10,7 @@ import (
 	"docker-manager/internal/completion"
 	"docker-manager/internal/version"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
 
@@ -19,6 +21,9 @@ func Run() int {
 	cfg := appConfig{}
 	opts := outputOptions{}
 	rootCmd := newRootCommand(&cfg, &opts)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	rootCmd.SetContext(ctx)
 	preseedJSONErrorMode(&opts, os.Args[1:])
 	if err := rootCmd.Execute(); err != nil {
 		writeCommandError(rootCmd.ErrOrStderr(), err, opts)
