@@ -19,13 +19,17 @@ const defaultConfigPath = ".dm.yaml"
 const configEnvName = "DM_CONFIG"
 
 type appConfig struct {
-	Proxy     string `yaml:"proxy"`
-	TargetOS  string `yaml:"os"`
-	Arch      string `yaml:"arch"`
-	OutputDir string `yaml:"output_dir"`
-	Verbose   bool   `yaml:"verbose"`
-	Quiet     bool   `yaml:"quiet"`
-	JSON      bool   `yaml:"log_json"`
+	Proxy            string `yaml:"proxy"`
+	TargetOS         string `yaml:"os"`
+	Arch             string `yaml:"arch"`
+	OutputDir        string `yaml:"output_dir"`
+	DockerHost       string `yaml:"docker_host"`
+	DockerTLSVerify  *bool  `yaml:"docker_tls_verify"`
+	DockerCertPath   string `yaml:"docker_cert_path"`
+	DockerAPIVersion string `yaml:"docker_api_version"`
+	Verbose          bool   `yaml:"verbose"`
+	Quiet            bool   `yaml:"quiet"`
+	JSON             bool   `yaml:"log_json"`
 }
 
 type outputOptions struct {

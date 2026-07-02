@@ -2,6 +2,7 @@ package diagnostics
 
 import (
 	"context"
+	"docker-manager/internal/docker"
 	"encoding/json"
 	"errors"
 	"os"
@@ -16,28 +17,30 @@ func checkDoctorDocker(ctx context.Context, timeout time.Duration) []DoctorCheck
 	defer cancel()
 	svc, err := newDoctorDockerService()
 	if err != nil {
-		return []DoctorCheck{{
+		checks := []DoctorCheck{dockerEndpointCheck("", "")}
+		return append(checks, DoctorCheck{
 			Name:        "docker-daemon",
 			Status:      "failed",
 			Message:     err.Error(),
 			Recommended: "确认 Docker daemon 已启动，当前用户有访问 Docker socket 或 named pipe 的权限",
-		}}
+		})
 	}
+	checks := []DoctorCheck{dockerEndpointCheck(svc.DaemonHost(), svc.ClientVersion())}
 	ping, err := svc.Ping(checkCtx)
 	if err != nil {
-		return []DoctorCheck{{
+		return append(checks, DoctorCheck{
 			Name:        "docker-daemon",
 			Status:      "failed",
 			Message:     err.Error(),
 			Recommended: "确认 Docker daemon 已启动；Linux 下检查 docker 组或 sudo 权限",
-		}}
+		})
 	}
-	checks := []DoctorCheck{{
+	checks = append(checks, DoctorCheck{
 		Name:    "docker-daemon",
 		Status:  "ok",
 		Message: "Docker daemon 可访问",
 		Detail:  "api_version=" + ping.APIVersion + " os_type=" + ping.OSType,
-	}}
+	})
 	version, err := svc.ServerVersion(checkCtx)
 	if err != nil {
 		checks = append(checks, DoctorCheck{
@@ -55,6 +58,46 @@ func checkDoctorDocker(ctx context.Context, timeout time.Duration) []DoctorCheck
 		Detail:  "version=" + version.Version + " api_version=" + version.APIVersion + " os=" + version.Os + " arch=" + version.Arch,
 	})
 	return checks
+}
+
+func dockerEndpointCheck(daemonHost, clientVersion string) DoctorCheck {
+	effective := docker.EffectiveOptions()
+	host := strings.TrimSpace(daemonHost)
+	if host == "" {
+		host = strings.TrimSpace(effective.Host)
+	}
+	if host == "" {
+		host = "Docker SDK 默认本地 endpoint"
+	}
+	var detail []string
+	detail = append(detail, "host="+host)
+	if clientVersion != "" {
+		detail = append(detail, "client_api_version="+clientVersion)
+	} else if effective.APIVersion != "" {
+		detail = append(detail, "client_api_version="+effective.APIVersion)
+	}
+	if effective.CertPath != "" {
+		detail = append(detail, "cert_path="+effective.CertPath)
+	}
+	tlsEnabled := effective.TLSVerify != nil && *effective.TLSVerify
+	if tlsEnabled {
+		detail = append(detail, "tls_verify=true")
+	}
+	if strings.HasPrefix(strings.ToLower(host), "tcp://") && !tlsEnabled {
+		return DoctorCheck{
+			Name:        "docker-endpoint",
+			Status:      "warning",
+			Message:     "当前 Docker endpoint 是未启用 TLS 校验的 TCP 地址",
+			Detail:      strings.Join(detail, " "),
+			Recommended: "生产环境不要裸露 2375；优先使用 TLS 2376、SSH 隧道、VPN 或内网访问控制",
+		}
+	}
+	return DoctorCheck{
+		Name:    "docker-endpoint",
+		Status:  "ok",
+		Message: "Docker endpoint 已解析",
+		Detail:  strings.Join(detail, " "),
+	}
 }
 
 func checkDoctorDaemonConfig() []DoctorCheck {

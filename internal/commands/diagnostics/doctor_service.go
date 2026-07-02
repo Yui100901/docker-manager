@@ -12,6 +12,8 @@ import (
 type doctorDockerService interface {
 	Ping(ctx context.Context) (types.Ping, error)
 	ServerVersion(ctx context.Context) (types.Version, error)
+	DaemonHost() string
+	ClientVersion() string
 }
 
 var newDoctorDockerService = func() (doctorDockerService, error) {
@@ -32,4 +34,12 @@ func (s *dockerDoctorService) Ping(ctx context.Context) (types.Ping, error) {
 
 func (s *dockerDoctorService) ServerVersion(ctx context.Context) (types.Version, error) {
 	return s.cli.ServerVersion(ctx)
+}
+
+func (s *dockerDoctorService) DaemonHost() string {
+	return s.cli.DaemonHost()
+}
+
+func (s *dockerDoctorService) ClientVersion() string {
+	return s.cli.ClientVersion()
 }

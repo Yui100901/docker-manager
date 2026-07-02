@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"docker-manager/internal/docker"
 	"encoding/json"
 	"errors"
 	"os"
@@ -13,7 +14,7 @@ import (
 
 func TestLoadAppConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".dm.yaml")
-	data := []byte("proxy: http://127.0.0.1:7890\nos: linux\narch: arm64\noutput_dir: dist\nverbose: true\nlog_json: true\n")
+	data := []byte("proxy: http://127.0.0.1:7890\nos: linux\narch: arm64\noutput_dir: dist\ndocker_host: tcp://docker.example.com:2376\ndocker_tls_verify: true\ndocker_cert_path: /tmp/certs\ndocker_api_version: \"1.46\"\nverbose: true\nlog_json: true\n")
 	if err := os.WriteFile(path, data, 0644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
@@ -24,6 +25,12 @@ func TestLoadAppConfig(t *testing.T) {
 	}
 	if cfg.Proxy != "http://127.0.0.1:7890" || cfg.TargetOS != "linux" || cfg.Arch != "arm64" || cfg.OutputDir != "dist" {
 		t.Fatalf("config = %#v, want proxy/os/arch/output_dir", cfg)
+	}
+	if cfg.DockerHost != "tcp://docker.example.com:2376" || cfg.DockerCertPath != "/tmp/certs" || cfg.DockerAPIVersion != "1.46" {
+		t.Fatalf("docker config = %#v, want host/cert/api", cfg)
+	}
+	if cfg.DockerTLSVerify == nil || !*cfg.DockerTLSVerify {
+		t.Fatalf("docker tls verify = %#v, want true", cfg.DockerTLSVerify)
 	}
 	if !cfg.Verbose || !cfg.JSON {
 		t.Fatalf("config flags = %#v, want verbose and json", cfg)
@@ -127,6 +134,67 @@ func TestRootCommandLogJSONFlagAlias(t *testing.T) {
 	}
 	if !opts.JSON {
 		t.Fatal("--log-json did not enable JSON logs/errors")
+	}
+}
+
+func TestRootCommandAppliesDockerConfigDefaults(t *testing.T) {
+	t.Cleanup(func() { docker.Configure(docker.Options{}) })
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "dm.yaml")
+	if err := os.WriteFile(configPath, []byte("docker_host: tcp://configured.example:2376\ndocker_tls_verify: true\ndocker_cert_path: /configured/certs\ndocker_api_version: \"1.45\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := appConfig{}
+	opts := outputOptions{}
+	cmd := newRootCommand(&cfg, &opts)
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--config", configPath, "version"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	got := docker.CurrentOptions()
+	if got.Host != "tcp://configured.example:2376" || got.CertPath != "/configured/certs" || got.APIVersion != "1.45" {
+		t.Fatalf("docker options = %#v, want configured values", got)
+	}
+	if got.TLSVerify == nil || !*got.TLSVerify {
+		t.Fatalf("docker tls verify = %#v, want true", got.TLSVerify)
+	}
+}
+
+func TestRootCommandDockerFlagsOverrideConfig(t *testing.T) {
+	t.Cleanup(func() { docker.Configure(docker.Options{}) })
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "dm.yaml")
+	if err := os.WriteFile(configPath, []byte("docker_host: tcp://configured.example:2376\ndocker_tls_verify: true\ndocker_cert_path: /configured/certs\ndocker_api_version: \"1.45\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := appConfig{}
+	opts := outputOptions{}
+	cmd := newRootCommand(&cfg, &opts)
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--config", configPath,
+		"--docker-host", "tcp://flag.example:2376",
+		"--docker-tls-verify=false",
+		"--docker-cert-path", "/flag/certs",
+		"--docker-api-version", "1.46",
+		"version",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	got := docker.CurrentOptions()
+	if got.Host != "tcp://flag.example:2376" || got.CertPath != "/flag/certs" || got.APIVersion != "1.46" {
+		t.Fatalf("docker options = %#v, want flag values", got)
+	}
+	if got.TLSVerify == nil || *got.TLSVerify {
+		t.Fatalf("docker tls verify = %#v, want false", got.TLSVerify)
 	}
 }
 

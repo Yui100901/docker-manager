@@ -8,6 +8,7 @@ import (
 	"docker-manager/internal/commands/pull"
 	"docker-manager/internal/commands/reverse"
 	"docker-manager/internal/completion"
+	dockerapi "docker-manager/internal/docker"
 	"docker-manager/internal/version"
 	"os"
 	"os/signal"
@@ -59,6 +60,10 @@ func preseedJSONErrorMode(opts *outputOptions, args []string) {
 func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 	configPath := defaultConfigPath
 	effectiveConfigPath := configPath
+	var dockerHost string
+	var dockerTLSVerify bool
+	var dockerCertPath string
+	var dockerAPIVersion string
 	rootCmd := &cobra.Command{
 		Use:           "dm <command>",
 		Short:         "Docker 运维辅助工具",
@@ -76,6 +81,7 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 			}
 			*cfg = loaded
 			applyOutputDefaults(cmd, cfg, opts)
+			applyDockerDefaults(cmd, cfg, dockerHost, dockerTLSVerify, dockerCertPath, dockerAPIVersion)
 			configureLogging(*opts)
 			return nil
 		},
@@ -91,6 +97,10 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 	rootCmd.PersistentFlags().BoolVar(&opts.Verbose, "verbose", opts.Verbose, "输出详细日志")
 	rootCmd.PersistentFlags().BoolVar(&opts.Quiet, "quiet", opts.Quiet, "隐藏信息日志")
 	rootCmd.PersistentFlags().BoolVar(&opts.JSON, "log-json", opts.JSON, "以 JSON 输出日志和错误，不影响业务报告格式")
+	rootCmd.PersistentFlags().StringVar(&dockerHost, "docker-host", "", "Docker daemon 地址，默认读取 DOCKER_HOST 或本地 Docker")
+	rootCmd.PersistentFlags().BoolVar(&dockerTLSVerify, "docker-tls-verify", false, "启用 Docker TCP TLS 证书校验，默认读取 DOCKER_TLS_VERIFY")
+	rootCmd.PersistentFlags().StringVar(&dockerCertPath, "docker-cert-path", "", "Docker TLS 证书目录，默认读取 DOCKER_CERT_PATH")
+	rootCmd.PersistentFlags().StringVar(&dockerAPIVersion, "docker-api-version", "", "Docker API 版本，默认读取 DOCKER_API_VERSION 或自动协商")
 
 	rootCmd.AddCommand(backup.NewBackupCommand())
 	rootCmd.AddCommand(backup.NewRestoreCommand())
@@ -177,4 +187,28 @@ func applyOutputDefaults(cmd *cobra.Command, cfg *appConfig, opts *outputOptions
 	if flags.Changed("quiet") && opts.Quiet {
 		opts.Verbose = false
 	}
+}
+
+func applyDockerDefaults(cmd *cobra.Command, cfg *appConfig, host string, tlsVerify bool, certPath string, apiVersion string) {
+	flags := cmd.Root().PersistentFlags()
+	opts := dockerapi.Options{
+		Host:       cfg.DockerHost,
+		TLSVerify:  cfg.DockerTLSVerify,
+		CertPath:   cfg.DockerCertPath,
+		APIVersion: cfg.DockerAPIVersion,
+	}
+	if flags.Changed("docker-host") {
+		opts.Host = host
+	}
+	if flags.Changed("docker-tls-verify") {
+		value := tlsVerify
+		opts.TLSVerify = &value
+	}
+	if flags.Changed("docker-cert-path") {
+		opts.CertPath = certPath
+	}
+	if flags.Changed("docker-api-version") {
+		opts.APIVersion = apiVersion
+	}
+	dockerapi.Configure(opts)
 }

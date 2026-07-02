@@ -31,6 +31,14 @@ func (f fakeDoctorDockerService) ServerVersion(ctx context.Context) (types.Versi
 	return types.Version{Version: "28.1.1", APIVersion: "1.48", Os: "linux", Arch: "amd64"}, nil
 }
 
+func (f fakeDoctorDockerService) DaemonHost() string {
+	return "unix:///var/run/docker.sock"
+}
+
+func (f fakeDoctorDockerService) ClientVersion() string {
+	return "1.48"
+}
+
 func TestDoctorOverallStatus(t *testing.T) {
 	if got := doctorOverallStatus([]DoctorCheck{{Status: "ok"}, {Status: "skipped"}}); got != "ok" {
 		t.Fatalf("doctorOverallStatus ok = %q", got)

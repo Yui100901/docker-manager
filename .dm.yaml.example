@@ -3,6 +3,14 @@
 # Copy this file to .dm.yaml and adjust values as needed.
 
 # proxy: http://127.0.0.1:7890
+
+# Docker API endpoint. Leave empty to use local Docker or standard Docker envs:
+# DOCKER_HOST, DOCKER_TLS_VERIFY, DOCKER_CERT_PATH, DOCKER_API_VERSION.
+# docker_host: tcp://docker.example.com:2376
+# docker_tls_verify: true
+# docker_cert_path: /root/.docker/certs
+# docker_api_version: "1.46"
+
 # Optional private CA paths for doctor checks.
 # ca_file: /etc/ssl/certs/company-ca.pem
 # ca_path: /etc/ssl/certs
