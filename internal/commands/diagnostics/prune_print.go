@@ -11,6 +11,13 @@ func printPruneReport(w io.Writer, report PruneReport) {
 	printDockerEndpoint(w, report.DockerEndpoint)
 	printPruneScope(w, report.Scope)
 	fmt.Fprintf(w, "预计可回收空间: %s\n\n", humanBytes(report.EstimatedBytes))
+	if len(report.Warnings) > 0 {
+		fmt.Fprintln(w, "警告:")
+		for _, warning := range report.Warnings {
+			fmt.Fprintf(w, "  - %s\n", warning)
+		}
+		fmt.Fprintln(w)
+	}
 
 	printPruneSection(w, "已停止容器", len(report.StoppedContainers), func() {
 		for _, c := range report.StoppedContainers {

@@ -374,11 +374,20 @@ func runPruneReport(ctx context.Context, opts PruneReportOptions) (PruneReport, 
 		return PruneReport{}, err
 	}
 
-	report, err := buildPruneReportWithContext(ctx, usage, scope)
+	var volumeRefs map[string][]VolumeContainerRef
+	var volumeWarnings []string
+	if scope.includes(pruneKindVolume) && len(usage.Volumes) > 0 {
+		volumeRefs, volumeWarnings = inspectPruneVolumeRefs(ctx, svc)
+	}
+
+	report, err := buildPruneReportWithVolumeRefs(ctx, usage, scope, volumeRefs, volumeWarnings)
 	if err != nil {
 		return report, err
 	}
 	if opts.Apply {
+		if err := ensurePruneVolumeCandidatesStillUnreferenced(ctx, svc, report.UnusedVolumes); err != nil {
+			return report, err
+		}
 		applyResult, err := applyPruneReport(ctx, svc, scope)
 		if err != nil {
 			return report, err
@@ -395,10 +404,15 @@ func buildPruneReport(usage types.DiskUsage, scope PruneScope) PruneReport {
 }
 
 func buildPruneReportWithContext(ctx context.Context, usage types.DiskUsage, scope PruneScope) (PruneReport, error) {
+	return buildPruneReportWithVolumeRefs(ctx, usage, scope, nil, nil)
+}
+
+func buildPruneReportWithVolumeRefs(ctx context.Context, usage types.DiskUsage, scope PruneScope, volumeRefs map[string][]VolumeContainerRef, warnings []string) (PruneReport, error) {
 	report := PruneReport{
 		GeneratedAt:    time.Now().Format(time.RFC3339),
 		DockerEndpoint: docker.Endpoint(),
 		Scope:          scope,
+		Warnings:       append([]string(nil), warnings...),
 	}
 	for _, c := range usage.Containers {
 		if err := ctx.Err(); err != nil {
@@ -446,6 +460,10 @@ func buildPruneReportWithContext(ctx context.Context, usage types.DiskUsage, sco
 		if !scope.includes(pruneKindVolume) || !scope.matchesLabels(vol.Labels) || !scope.matchesCreatedString(vol.CreatedAt) {
 			continue
 		}
+		if refs := volumeRefs[vol.Name]; len(refs) > 0 {
+			report.Warnings = append(report.Warnings, fmt.Sprintf("volume %s 的 DiskUsage refcount=0，但 inspect 发现仍被 %d 个容器引用，已跳过清理候选", vol.Name, len(refs)))
+			continue
+		}
 		report.UnusedVolumes = append(report.UnusedVolumes, PruneVolumeRef{
 			Name:     vol.Name,
 			Driver:   vol.Driver,
@@ -477,6 +495,35 @@ func buildPruneReportWithContext(ctx context.Context, usage types.DiskUsage, sco
 	}
 	sortPruneReport(&report)
 	return report, nil
+}
+
+func inspectPruneVolumeRefs(ctx context.Context, svc pruneDockerService) (map[string][]VolumeContainerRef, []string) {
+	if err := ctx.Err(); err != nil {
+		return nil, []string{fmt.Sprintf("volume 引用复核已取消: %v", err)}
+	}
+	containers, err := svc.ListContainers(ctx, true)
+	if err != nil {
+		return nil, []string{fmt.Sprintf("无法列出容器复核 volume 引用，已仅使用 Docker DiskUsage: %v", err)}
+	}
+	return inspectVolumeContainerRefs(ctx, svc, containers)
+}
+
+func ensurePruneVolumeCandidatesStillUnreferenced(ctx context.Context, svc pruneDockerService, candidates []PruneVolumeRef) error {
+	if len(candidates) == 0 {
+		return nil
+	}
+	refsByVolume, warnings := inspectPruneVolumeRefs(ctx, svc)
+	for _, warning := range warnings {
+		if strings.Contains(warning, "无法列出容器") || strings.Contains(warning, "已取消") {
+			return fmt.Errorf("执行 volume prune 前复核引用失败: %s", warning)
+		}
+	}
+	for _, candidate := range candidates {
+		if refs := refsByVolume[candidate.Name]; len(refs) > 0 {
+			return fmt.Errorf("拒绝执行 volume prune: volume %s 在执行前复核中仍被 %d 个容器引用", candidate.Name, len(refs))
+		}
+	}
+	return nil
 }
 
 func applyPruneReport(ctx context.Context, svc pruneDockerService, scope PruneScope) (PruneApplyResult, error) {

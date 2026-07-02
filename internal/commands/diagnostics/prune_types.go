@@ -24,6 +24,7 @@ type PruneReport struct {
 	UnusedVolumes     []PruneVolumeRef     `json:"unused_volumes,omitempty"`
 	BuildCaches       []PruneBuildCacheRef `json:"build_caches,omitempty"`
 	EstimatedBytes    uint64               `json:"estimated_bytes"`
+	Warnings          []string             `json:"warnings,omitempty"`
 	Applied           bool                 `json:"applied"`
 	Scope             PruneScope           `json:"scope"`
 	ApplyResult       *PruneApplyResult    `json:"apply_result,omitempty"`

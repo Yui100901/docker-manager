@@ -16,6 +16,8 @@ import (
 
 type pruneDockerService interface {
 	DiskUsage(ctx context.Context) (types.DiskUsage, error)
+	ListContainers(ctx context.Context, all bool) ([]container.Summary, error)
+	InspectContainer(ctx context.Context, id string) (container.InspectResponse, error)
 	PruneContainers(ctx context.Context, pruneFilters filters.Args) (container.PruneReport, error)
 	PruneImages(ctx context.Context, pruneFilters filters.Args) (image.PruneReport, error)
 	PruneVolumes(ctx context.Context, pruneFilters filters.Args) (volume.PruneReport, error)
@@ -36,6 +38,14 @@ type dockerPruneService struct {
 
 func (s *dockerPruneService) DiskUsage(ctx context.Context) (types.DiskUsage, error) {
 	return s.cli.DiskUsage(ctx, types.DiskUsageOptions{})
+}
+
+func (s *dockerPruneService) ListContainers(ctx context.Context, all bool) ([]container.Summary, error) {
+	return s.cli.ContainerList(ctx, container.ListOptions{All: all})
+}
+
+func (s *dockerPruneService) InspectContainer(ctx context.Context, id string) (container.InspectResponse, error) {
+	return s.cli.ContainerInspect(ctx, id)
 }
 
 func (s *dockerPruneService) PruneContainers(ctx context.Context, pruneFilters filters.Args) (container.PruneReport, error) {

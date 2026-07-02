@@ -42,6 +42,10 @@ type volumeDockerService interface {
 	MeasureVolumeSize(ctx context.Context, volumeName, helperImage string) (int64, error)
 }
 
+type containerInspectService interface {
+	InspectContainer(ctx context.Context, id string) (container.InspectResponse, error)
+}
+
 var newVolumeDockerService = func() (volumeDockerService, error) {
 	cli, err := docker.NewClient()
 	if err != nil {
@@ -342,7 +346,7 @@ func measureLocalVolumeSizeWithGo(ctx context.Context, vol *VolumeRef) (int64, e
 	return total, nil
 }
 
-func inspectVolumeContainerRefs(ctx context.Context, svc volumeDockerService, containers []container.Summary) (map[string][]VolumeContainerRef, []string) {
+func inspectVolumeContainerRefs(ctx context.Context, svc containerInspectService, containers []container.Summary) (map[string][]VolumeContainerRef, []string) {
 	refs := make(map[string][]VolumeContainerRef)
 	var warnings []string
 	for _, c := range containers {

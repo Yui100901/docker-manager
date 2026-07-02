@@ -14,6 +14,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/volume"
 )
 
@@ -23,6 +24,8 @@ type fakePruneDockerService struct {
 	imageReport     image.PruneReport
 	volumeReport    volume.PruneReport
 	cacheReport     *build.CachePruneReport
+	containers      []container.Summary
+	inspects        map[string]container.InspectResponse
 	calls           []string
 }
 
@@ -32,6 +35,19 @@ func (f *fakePruneDockerService) DiskUsage(ctx context.Context) (types.DiskUsage
 		return types.DiskUsage{}, err
 	}
 	return f.usage, nil
+}
+
+func (f *fakePruneDockerService) ListContainers(ctx context.Context, all bool) ([]container.Summary, error) {
+	f.calls = append(f.calls, "list-containers")
+	return f.containers, nil
+}
+
+func (f *fakePruneDockerService) InspectContainer(ctx context.Context, id string) (container.InspectResponse, error) {
+	f.calls = append(f.calls, "inspect-container:"+id)
+	if f.inspects == nil {
+		return container.InspectResponse{}, nil
+	}
+	return f.inspects[id], nil
 }
 
 func (f *fakePruneDockerService) PruneContainers(ctx context.Context, pruneFilters filters.Args) (container.PruneReport, error) {
@@ -88,6 +104,60 @@ func TestBuildPruneReportIncludesOnlyReclaimableResources(t *testing.T) {
 	}
 	if report.EstimatedBytes != 1700 {
 		t.Fatalf("EstimatedBytes = %d, want 1700", report.EstimatedBytes)
+	}
+}
+
+func TestRunPruneReportSkipsVolumeReferencedByInspect(t *testing.T) {
+	fake := &fakePruneDockerService{
+		usage: types.DiskUsage{
+			Volumes: []*volume.Volume{
+				{Name: "data", Driver: "local", UsageData: &volume.UsageData{RefCount: 0, Size: 500}},
+			},
+		},
+		containers: []container.Summary{{ID: "container-db", Names: []string{"/db"}, State: "running"}},
+		inspects: map[string]container.InspectResponse{
+			"container-db": {
+				ContainerJSONBase: &container.ContainerJSONBase{ID: "container-db", Name: "/db"},
+				Mounts: []container.MountPoint{
+					{Type: mount.TypeVolume, Name: "data", Destination: "/var/lib/postgresql/data", RW: true},
+				},
+			},
+		},
+	}
+	restoreFactory := replacePruneServiceFactory(fake)
+	defer restoreFactory()
+
+	report, err := runPruneReport(context.Background(), PruneReportOptions{})
+	if err != nil {
+		t.Fatalf("runPruneReport() error = %v", err)
+	}
+	if len(report.UnusedVolumes) != 0 {
+		t.Fatalf("UnusedVolumes = %#v, want referenced volume skipped", report.UnusedVolumes)
+	}
+	if len(report.Warnings) == 0 || !strings.Contains(report.Warnings[0], "仍被 1 个容器引用") {
+		t.Fatalf("Warnings = %#v, want referenced volume warning", report.Warnings)
+	}
+	if report.EstimatedBytes != 0 {
+		t.Fatalf("EstimatedBytes = %d, want 0", report.EstimatedBytes)
+	}
+}
+
+func TestEnsurePruneVolumeCandidatesStillUnreferencedRejectsReferencedVolume(t *testing.T) {
+	fake := &fakePruneDockerService{
+		containers: []container.Summary{{ID: "container-db", Names: []string{"/db"}}},
+		inspects: map[string]container.InspectResponse{
+			"container-db": {
+				ContainerJSONBase: &container.ContainerJSONBase{ID: "container-db", Name: "/db"},
+				Mounts: []container.MountPoint{
+					{Type: mount.TypeVolume, Name: "data", Destination: "/data", RW: true},
+				},
+			},
+		},
+	}
+
+	err := ensurePruneVolumeCandidatesStillUnreferenced(context.Background(), fake, []PruneVolumeRef{{Name: "data"}})
+	if err == nil || !strings.Contains(err.Error(), "拒绝执行 volume prune") {
+		t.Fatalf("ensurePruneVolumeCandidatesStillUnreferenced() error = %v, want reject", err)
 	}
 }
 
