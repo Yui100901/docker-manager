@@ -3,17 +3,22 @@ package diagnostics
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/go-connections/nat"
 )
 
 type fakeNetworkDockerService struct {
-	containers []container.Summary
-	networks   []network.Summary
-	allFlag    bool
+	containers  []container.Summary
+	networks    []network.Summary
+	inspects    map[string]container.InspectResponse
+	netInspects map[string]network.Inspect
+	inspectErr  error
+	allFlag     bool
 }
 
 func (f *fakeNetworkDockerService) ListContainers(ctx context.Context, all bool) ([]container.Summary, error) {
@@ -23,6 +28,36 @@ func (f *fakeNetworkDockerService) ListContainers(ctx context.Context, all bool)
 
 func (f *fakeNetworkDockerService) ListNetworks(ctx context.Context) ([]network.Summary, error) {
 	return f.networks, nil
+}
+
+func (f *fakeNetworkDockerService) InspectContainer(ctx context.Context, id string) (container.InspectResponse, error) {
+	if f.inspectErr != nil {
+		return container.InspectResponse{}, f.inspectErr
+	}
+	if f.inspects == nil {
+		return container.InspectResponse{}, errors.New("missing fake inspect")
+	}
+	inspect, ok := f.inspects[id]
+	if !ok {
+		return container.InspectResponse{}, errors.New("missing fake inspect")
+	}
+	return inspect, nil
+}
+
+func (f *fakeNetworkDockerService) InspectNetwork(ctx context.Context, name string) (network.Inspect, error) {
+	if f.netInspects == nil {
+		for _, net := range f.networks {
+			if net.Name == name {
+				return net, nil
+			}
+		}
+		return network.Inspect{}, errors.New("missing fake network inspect")
+	}
+	inspect, ok := f.netInspects[name]
+	if !ok {
+		return network.Inspect{}, errors.New("missing fake network inspect")
+	}
+	return inspect, nil
 }
 
 func TestBuildNetworkReportCombinesNetworksPortsAndRisks(t *testing.T) {
@@ -71,6 +106,117 @@ func TestBuildNetworkReportCombinesNetworksPortsAndRisks(t *testing.T) {
 	}
 	if !hasNetworkRisk(report, "port-conflict") {
 		t.Fatalf("Risks = %#v, want port-conflict", report.Risks)
+	}
+}
+
+func TestRunNetworkReportUsesInspectForNetworkMetadataAndPorts(t *testing.T) {
+	fake := &fakeNetworkDockerService{
+		containers: []container.Summary{{
+			ID:    "container-api",
+			Names: []string{"/api"},
+			Image: "summary-image",
+			State: "running",
+		}},
+		networks: []network.Summary{{Name: "app_net", Driver: "bridge"}},
+		inspects: map[string]container.InspectResponse{
+			"container-api": {
+				ContainerJSONBase: &container.ContainerJSONBase{
+					ID:         "container-api",
+					Name:       "/api",
+					HostConfig: &container.HostConfig{NetworkMode: "app_net"},
+					State: &container.State{
+						Status: container.StateRunning,
+					},
+				},
+				Config: &container.Config{
+					Image:        "nginx:latest",
+					ExposedPorts: nat.PortSet{"443/tcp": struct{}{}},
+				},
+				NetworkSettings: &container.NetworkSettings{
+					NetworkSettingsBase: container.NetworkSettingsBase{
+						Ports: nat.PortMap{
+							"80/tcp": []nat.PortBinding{{HostIP: "0.0.0.0", HostPort: "8080"}},
+						},
+					},
+					Networks: map[string]*network.EndpointSettings{
+						"app_net": {
+							NetworkID:  "network-id",
+							EndpointID: "endpoint-id",
+							IPAddress:  "172.20.0.2",
+							Gateway:    "172.20.0.1",
+							MacAddress: "02:42:ac:14:00:02",
+							Aliases:    []string{"api"},
+							DNSNames:   []string{"api", "container-api"},
+							DriverOpts: map[string]string{"foo": "bar"},
+						},
+					},
+				},
+			},
+		},
+		netInspects: map[string]network.Inspect{
+			"app_net": {
+				Name:       "app_net",
+				ID:         "network-id",
+				Driver:     "bridge",
+				Scope:      "local",
+				EnableIPv4: true,
+				IPAM: network.IPAM{Driver: "default", Config: []network.IPAMConfig{{
+					Subnet:  "172.20.0.0/16",
+					Gateway: "172.20.0.1",
+				}}},
+				Containers: map[string]network.EndpointResource{
+					"container-api": {Name: "api", EndpointID: "endpoint-id", IPv4Address: "172.20.0.2/16"},
+				},
+			},
+		},
+	}
+	restore := replaceNetworkServiceFactory(fake)
+	defer restore()
+
+	report, err := runNetworkReport(context.Background(), NetworkOptions{})
+	if err != nil {
+		t.Fatalf("runNetworkReport() error = %v", err)
+	}
+	if len(report.Networks) != 1 || report.Networks[0].ID != "network-id" || report.Networks[0].IPAM.Config[0].Subnet != "172.20.0.0/16" {
+		t.Fatalf("Networks = %#v, want inspect metadata", report.Networks)
+	}
+	if len(report.Networks[0].Containers) != 1 || report.Networks[0].Containers[0].Gateway != "172.20.0.1" || report.Networks[0].Containers[0].DriverOpts["foo"] != "bar" {
+		t.Fatalf("Endpoint = %#v, want merged inspect endpoint", report.Networks[0].Containers)
+	}
+	if len(report.Ports) != 2 {
+		t.Fatalf("Ports = %#v, want published 80 and exposed 443", report.Ports)
+	}
+	if !hasNetworkRisk(report, "public-bind") {
+		t.Fatalf("Risks = %#v, want public-bind", report.Risks)
+	}
+}
+
+func TestRunNetworkReportFallsBackToSummariesWhenInspectFails(t *testing.T) {
+	fake := &fakeNetworkDockerService{
+		containers: []container.Summary{{
+			ID:    "container-api",
+			Names: []string{"/api"},
+			Image: "nginx:latest",
+			State: "running",
+			NetworkSettings: &container.NetworkSettingsSummary{
+				Networks: map[string]*network.EndpointSettings{"app_net": {IPAddress: "172.20.0.2"}},
+			},
+		}},
+		networks:   []network.Summary{{Name: "app_net", Driver: "bridge"}},
+		inspectErr: errors.New("inspect denied"),
+	}
+	restore := replaceNetworkServiceFactory(fake)
+	defer restore()
+
+	report, err := runNetworkReport(context.Background(), NetworkOptions{})
+	if err != nil {
+		t.Fatalf("runNetworkReport() error = %v", err)
+	}
+	if len(report.Warnings) == 0 {
+		t.Fatalf("Warnings = %#v, want inspect fallback warning", report.Warnings)
+	}
+	if len(report.Networks) != 1 || len(report.Networks[0].Containers) != 1 {
+		t.Fatalf("Networks = %#v, want summary fallback endpoint", report.Networks)
 	}
 }
 
