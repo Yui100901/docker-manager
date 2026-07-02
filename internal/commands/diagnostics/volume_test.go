@@ -3,6 +3,7 @@ package diagnostics
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -12,9 +13,13 @@ import (
 )
 
 type fakeVolumeDockerService struct {
-	volumes    volume.ListResponse
-	containers []container.Summary
-	allFlag    bool
+	volumes       volume.ListResponse
+	containers    []container.Summary
+	inspects      map[string]container.InspectResponse
+	inspectErr    error
+	measuredSizes map[string]int64
+	measureErr    error
+	allFlag       bool
 }
 
 func (f *fakeVolumeDockerService) ListVolumes(ctx context.Context) (volume.ListResponse, error) {
@@ -24,6 +29,26 @@ func (f *fakeVolumeDockerService) ListVolumes(ctx context.Context) (volume.ListR
 func (f *fakeVolumeDockerService) ListContainers(ctx context.Context, all bool) ([]container.Summary, error) {
 	f.allFlag = all
 	return f.containers, nil
+}
+
+func (f *fakeVolumeDockerService) InspectContainer(ctx context.Context, id string) (container.InspectResponse, error) {
+	if f.inspectErr != nil {
+		return container.InspectResponse{}, f.inspectErr
+	}
+	if f.inspects == nil {
+		return container.InspectResponse{}, nil
+	}
+	return f.inspects[id], nil
+}
+
+func (f *fakeVolumeDockerService) MeasureVolumeSize(ctx context.Context, volumeName, helperImage string) (int64, error) {
+	if f.measureErr != nil {
+		return -1, f.measureErr
+	}
+	if f.measuredSizes == nil {
+		return -1, errors.New("missing fake measured size")
+	}
+	return f.measuredSizes[volumeName], nil
 }
 
 func TestBuildVolumeReportClassifiesUnusedSuspectedAndUsedVolumes(t *testing.T) {
@@ -83,6 +108,101 @@ func TestBuildVolumeReportAllIncludesUsedVolumeContainers(t *testing.T) {
 	refs := report.Volumes[0].Containers
 	if len(refs) != 1 || refs[0].Name != "db" || refs[0].Destination != "/data" || refs[0].RW {
 		t.Fatalf("Containers = %#v, want db /data rw=false", refs)
+	}
+}
+
+func TestRunVolumeReportUsesInspectMountsForVolumeRefs(t *testing.T) {
+	fake := &fakeVolumeDockerService{
+		volumes: volume.ListResponse{Volumes: []*volume.Volume{
+			{Name: "db_data", Driver: "local"},
+		}},
+		containers: []container.Summary{{
+			ID:    "container-db",
+			Names: []string{"/db"},
+			Image: "postgres:16",
+			State: "running",
+		}},
+		inspects: map[string]container.InspectResponse{
+			"container-db": {
+				ContainerJSONBase: &container.ContainerJSONBase{
+					ID:   "container-db",
+					Name: "/db",
+					State: &container.State{
+						Status: container.StateRunning,
+					},
+				},
+				Config: &container.Config{Image: "postgres:16"},
+				Mounts: []container.MountPoint{
+					{Type: mount.TypeVolume, Name: "db_data", Source: "/var/lib/docker/volumes/db_data/_data", Destination: "/var/lib/postgresql/data", RW: true},
+				},
+			},
+		},
+	}
+	restore := replaceVolumeServiceFactory(fake)
+	defer restore()
+
+	report, err := runVolumeReport(context.Background(), VolumeOptions{All: true, SizeMode: volumeSizeModeAPI})
+	if err != nil {
+		t.Fatalf("runVolumeReport() error = %v", err)
+	}
+	if len(report.Volumes) != 1 || report.Volumes[0].Status != "used" || report.Volumes[0].RefSource != "inspect" {
+		t.Fatalf("volume = %#v, want used by inspect", report.Volumes)
+	}
+	refs := report.Volumes[0].Containers
+	if len(refs) != 1 || refs[0].Image != "postgres:16" || refs[0].Destination != "/var/lib/postgresql/data" {
+		t.Fatalf("refs = %#v, want inspect-derived db_data mount", refs)
+	}
+}
+
+func TestRunVolumeReportFallsBackToSummaryMountsWhenInspectFails(t *testing.T) {
+	fake := &fakeVolumeDockerService{
+		volumes: volume.ListResponse{Volumes: []*volume.Volume{
+			{Name: "db_data", Driver: "local"},
+		}},
+		containers: []container.Summary{{
+			ID:    "container-db",
+			Names: []string{"/db"},
+			State: "running",
+			Mounts: []container.MountPoint{
+				{Type: mount.TypeVolume, Name: "db_data", Destination: "/data", RW: true},
+			},
+		}},
+		inspectErr: errors.New("inspect denied"),
+	}
+	restore := replaceVolumeServiceFactory(fake)
+	defer restore()
+
+	report, err := runVolumeReport(context.Background(), VolumeOptions{All: true, SizeMode: volumeSizeModeAPI})
+	if err != nil {
+		t.Fatalf("runVolumeReport() error = %v", err)
+	}
+	if len(report.Warnings) == 0 {
+		t.Fatalf("Warnings = %#v, want inspect fallback warning", report.Warnings)
+	}
+	if len(report.Volumes) != 1 || len(report.Volumes[0].Containers) != 1 || report.Volumes[0].Containers[0].Destination != "/data" {
+		t.Fatalf("volume = %#v, want summary fallback ref", report.Volumes)
+	}
+}
+
+func TestRunVolumeReportDockerRunSizeModeMeasuresUnknownLocalVolumes(t *testing.T) {
+	fake := &fakeVolumeDockerService{
+		volumes: volume.ListResponse{Volumes: []*volume.Volume{
+			{Name: "unused", Driver: "local"},
+		}},
+		measuredSizes: map[string]int64{"unused": 4096},
+	}
+	restore := replaceVolumeServiceFactory(fake)
+	defer restore()
+
+	report, err := runVolumeReport(context.Background(), VolumeOptions{SizeMode: volumeSizeModeDockerRun, SizeImage: "busybox:latest"})
+	if err != nil {
+		t.Fatalf("runVolumeReport() error = %v", err)
+	}
+	if len(report.Volumes) != 1 || report.Volumes[0].Size != 4096 || report.Volumes[0].SizeSource != volumeSizeModeDockerRun {
+		t.Fatalf("volume = %#v, want docker-run measured size", report.Volumes)
+	}
+	if report.Summary.UnknownSize != 0 || report.Summary.ReclaimableSize != 4096 {
+		t.Fatalf("summary = %#v, want measured reclaimable size", report.Summary)
 	}
 }
 
