@@ -8,6 +8,7 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -55,6 +56,18 @@ func (cm *ContainerManager) Inspect(containerID string) (container.InspectRespon
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	return cm.cli.ContainerInspect(ctx, containerID)
+}
+
+func (cm *ContainerManager) InspectNetwork(name string) (network.Inspect, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return cm.cli.NetworkInspect(ctx, name, network.InspectOptions{})
+}
+
+func (cm *ContainerManager) InspectVolume(name string) (volume.Volume, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return cm.cli.VolumeInspect(ctx, name)
 }
 
 // Create 获取容器信息

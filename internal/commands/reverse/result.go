@@ -7,11 +7,15 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"docker-manager/internal/docker"
 
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/api/types/volume"
 	"gopkg.in/yaml.v3"
 )
 
@@ -41,6 +45,8 @@ type ReverseResult struct {
 	ParsedResults  []ParsedResult
 	RunCommands    map[string][]string
 	ComposeMap     map[string]ComposeService
+	VolumeMeta     map[string]volume.Volume
+	NetworkMeta    map[string]network.Inspect
 	DockerEndpoint string
 	options        ReverseOptions
 }
@@ -53,6 +59,8 @@ func NewReverseResult(results []ParsedResult, options ReverseOptions) *ReverseRe
 	}
 	rr.RunCommands = make(map[string][]string)
 	rr.ComposeMap = make(map[string]ComposeService)
+	rr.VolumeMeta = make(map[string]volume.Volume)
+	rr.NetworkMeta = make(map[string]network.Inspect)
 
 	for _, r := range results {
 		rr.RunCommands[r.Name] = r.Command
@@ -249,14 +257,14 @@ func (rr *ReverseResult) buildTopLevelComposeMeta() (map[string]interface{}, map
 			name := parts[0]
 			// heuristics: treat as named volume if name does not contain path separators
 			if !strings.Contains(name, "/") && !strings.Contains(name, "\\") {
-				volumes[name] = map[string]interface{}{}
+				volumes[name] = rr.composeVolumeDefinition(name)
 			}
 		}
 
 		// networks: include network_mode if it's a custom network name
 		nm := svc.NetworkMode
 		if nm != "" && nm != "default" && nm != "bridge" && nm != "host" && nm != "none" {
-			networks[nm] = map[string]interface{}{}
+			networks[nm] = rr.composeNetworkDefinition(nm)
 		}
 	}
 
@@ -269,11 +277,114 @@ func (rr *ReverseResult) buildTopLevelComposeMeta() (map[string]interface{}, map
 	return volumes, networks
 }
 
+func (rr *ReverseResult) composeVolumeDefinition(name string) map[string]interface{} {
+	def := map[string]interface{}{"external": false}
+	meta, ok := rr.VolumeMeta[name]
+	if !ok {
+		return def
+	}
+	if meta.Driver != "" {
+		def["driver"] = meta.Driver
+	}
+	if len(meta.Options) > 0 {
+		def["driver_opts"] = sortedStringMap(meta.Options)
+	}
+	if len(meta.Labels) > 0 {
+		def["labels"] = sortedStringMap(meta.Labels)
+	}
+	return def
+}
+
+func (rr *ReverseResult) composeNetworkDefinition(name string) map[string]interface{} {
+	def := map[string]interface{}{"external": false}
+	meta, ok := rr.NetworkMeta[name]
+	if !ok {
+		return def
+	}
+	if meta.Driver != "" {
+		def["driver"] = meta.Driver
+	}
+	if len(meta.Options) > 0 {
+		def["driver_opts"] = sortedStringMap(meta.Options)
+	}
+	if len(meta.Labels) > 0 {
+		def["labels"] = sortedStringMap(meta.Labels)
+	}
+	if meta.Internal {
+		def["internal"] = true
+	}
+	if meta.Attachable {
+		def["attachable"] = true
+	}
+	if meta.EnableIPv6 {
+		def["enable_ipv6"] = true
+	}
+	if ipam := composeIPAM(meta.IPAM); len(ipam) > 0 {
+		def["ipam"] = ipam
+	}
+	return def
+}
+
+func composeIPAM(ipam network.IPAM) map[string]interface{} {
+	result := map[string]interface{}{}
+	if ipam.Driver != "" {
+		result["driver"] = ipam.Driver
+	}
+	if len(ipam.Options) > 0 {
+		result["options"] = sortedStringMap(ipam.Options)
+	}
+	var configs []map[string]interface{}
+	for _, cfg := range ipam.Config {
+		entry := map[string]interface{}{}
+		if cfg.Subnet != "" {
+			entry["subnet"] = cfg.Subnet
+		}
+		if cfg.IPRange != "" {
+			entry["ip_range"] = cfg.IPRange
+		}
+		if cfg.Gateway != "" {
+			entry["gateway"] = cfg.Gateway
+		}
+		if len(cfg.AuxAddress) > 0 {
+			entry["aux_addresses"] = sortedStringMap(cfg.AuxAddress)
+		}
+		if len(entry) > 0 {
+			configs = append(configs, entry)
+		}
+	}
+	if len(configs) > 0 {
+		result["config"] = configs
+	}
+	return result
+}
+
+func sortedStringMap(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for _, key := range sortedMapKeys(src) {
+		dst[key] = src[key]
+	}
+	return dst
+}
+
+func sortedMapKeys(src map[string]string) []string {
+	keys := make([]string, 0, len(src))
+	for key := range src {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 func reverseWithOptions(names []string, options ReverseOptions) (*ReverseResult, error) {
 	if err := ensureContainerManager(); err != nil {
 		return nil, err
 	}
 	var results []ParsedResult
+	volumeMeta := map[string]volume.Volume{}
+	networkMeta := map[string]network.Inspect{}
 
 	for _, name := range names {
 		info, err := containerManager.Inspect(name)
@@ -284,9 +395,88 @@ func reverseWithOptions(names []string, options ReverseOptions) (*ReverseResult,
 
 		parser := NewParser(info, options)
 		results = append(results, parser.ToResult())
+		collectReverseResourceMetadata(info, volumeMeta, networkMeta)
 	}
 
-	return NewReverseResult(results, options), nil
+	result := NewReverseResult(results, options)
+	result.VolumeMeta = volumeMeta
+	result.NetworkMeta = networkMeta
+	return result, nil
+}
+
+func collectReverseResourceMetadata(info container.InspectResponse, volumeMeta map[string]volume.Volume, networkMeta map[string]network.Inspect) {
+	for _, name := range reverseNamedVolumeNames(info) {
+		if _, ok := volumeMeta[name]; ok {
+			continue
+		}
+		meta, err := containerManager.InspectVolume(name)
+		if err != nil {
+			log.Printf("volume %s inspect failed: %v", name, err)
+			continue
+		}
+		volumeMeta[name] = meta
+	}
+	for _, name := range reverseNetworkNames(info) {
+		if _, ok := networkMeta[name]; ok {
+			continue
+		}
+		meta, err := containerManager.InspectNetwork(name)
+		if err != nil {
+			log.Printf("network %s inspect failed: %v", name, err)
+			continue
+		}
+		networkMeta[name] = meta
+	}
+}
+
+func reverseNamedVolumeNames(info container.InspectResponse) []string {
+	seen := map[string]bool{}
+	for _, mount := range info.Mounts {
+		if string(mount.Type) == "volume" && mount.Name != "" {
+			seen[mount.Name] = true
+		}
+	}
+	return sortedBoolMapKeys(seen)
+}
+
+func reverseNetworkNames(info container.InspectResponse) []string {
+	seen := map[string]bool{}
+	if info.NetworkSettings != nil {
+		for name := range info.NetworkSettings.Networks {
+			if isReverseCustomNetwork(name) {
+				seen[name] = true
+			}
+		}
+	}
+	if info.ContainerJSONBase != nil && info.HostConfig != nil {
+		networkMode := string(info.HostConfig.NetworkMode)
+		if isReverseCustomNetwork(networkMode) {
+			seen[networkMode] = true
+		}
+	}
+	return sortedBoolMapKeys(seen)
+}
+
+func sortedBoolMapKeys(src map[string]bool) []string {
+	keys := make([]string, 0, len(src))
+	for key := range src {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func isReverseCustomNetwork(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	switch name {
+	case "default", "bridge", "host", "none":
+		return false
+	default:
+		return !strings.HasPrefix(name, "container:") && !strings.HasPrefix(name, "service:")
+	}
 }
 
 func backupContainerInspect(name, backupDir string) (string, error) {

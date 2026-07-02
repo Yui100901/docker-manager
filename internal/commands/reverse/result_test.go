@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/go-connections/nat"
 	units "github.com/docker/go-units"
 )
@@ -405,5 +407,69 @@ func TestComposeFormatterFormat(t *testing.T) {
 	}
 	if service.Logging.Options["max-size"] != "10m" || service.Logging.Options["max-file"] != "3" {
 		t.Fatalf("Logging.Options = %#v, want max-size=10m and max-file=3", service.Logging.Options)
+	}
+}
+
+func TestDockerComposeFileStringIncludesInspectedVolumeAndNetworkMetadata(t *testing.T) {
+	result := NewReverseResult([]ParsedResult{{
+		Name: "api",
+		Compose: ComposeService{
+			Image:       "demo/api:latest",
+			Volumes:     []string{"api_data:/data"},
+			NetworkMode: "app_net",
+		},
+	}}, ReverseOptions{ReverseType: ReverseCompose})
+	result.VolumeMeta["api_data"] = volume.Volume{
+		Name:   "api_data",
+		Driver: "local",
+		Labels: map[string]string{"owner": "team-a"},
+		Options: map[string]string{
+			"type":   "nfs",
+			"device": ":/exports/api",
+		},
+	}
+	result.NetworkMeta["app_net"] = network.Inspect{
+		Name:       "app_net",
+		Driver:     "bridge",
+		Internal:   true,
+		Attachable: true,
+		EnableIPv6: true,
+		Labels:     map[string]string{"tier": "backend"},
+		Options:    map[string]string{"com.docker.network.bridge.name": "br-app"},
+		IPAM: network.IPAM{
+			Driver:  "default",
+			Options: map[string]string{"foo": "bar"},
+			Config: []network.IPAMConfig{{
+				Subnet:     "172.20.0.0/16",
+				IPRange:    "172.20.5.0/24",
+				Gateway:    "172.20.0.1",
+				AuxAddress: map[string]string{"router": "172.20.0.254"},
+			}},
+		},
+	}
+
+	got := result.DockerComposeFileString()
+	for _, want := range []string{
+		"api_data:",
+		"driver: local",
+		"driver_opts:",
+		"device: :/exports/api",
+		"labels:",
+		"owner: team-a",
+		"app_net:",
+		"driver: bridge",
+		"internal: true",
+		"attachable: true",
+		"enable_ipv6: true",
+		"ipam:",
+		"subnet: 172.20.0.0/16",
+		"ip_range: 172.20.5.0/24",
+		"gateway: 172.20.0.1",
+		"aux_addresses:",
+		"router: 172.20.0.254",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("compose yaml =\n%s\nwant %q", got, want)
+		}
 	}
 }
