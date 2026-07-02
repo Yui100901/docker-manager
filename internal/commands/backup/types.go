@@ -96,11 +96,39 @@ type BackupContainerManifest struct {
 	ComposeFile   string              `json:"compose_file"`
 	Networks      []BackupResourceRef `json:"networks,omitempty"`
 	Volumes       []BackupResourceRef `json:"volumes,omitempty"`
+	Mounts        []BackupMountRef    `json:"mounts,omitempty"`
+	Devices       []BackupDeviceRef   `json:"devices,omitempty"`
 }
 
 type BackupResourceRef struct {
 	Name string `json:"name"`
 	File string `json:"file"`
+}
+
+type BackupMountRef struct {
+	Type             string `json:"type"`
+	Name             string `json:"name,omitempty"`
+	Source           string `json:"source,omitempty"`
+	Destination      string `json:"destination,omitempty"`
+	Driver           string `json:"driver,omitempty"`
+	Mode             string `json:"mode,omitempty"`
+	RW               bool   `json:"rw"`
+	Propagation      string `json:"propagation,omitempty"`
+	Verification     string `json:"verification,omitempty"`
+	HostPathExists   *bool  `json:"host_path_exists,omitempty"`
+	HostPathReadable *bool  `json:"host_path_readable,omitempty"`
+	HostPathWritable *bool  `json:"host_path_writable,omitempty"`
+	Warning          string `json:"warning,omitempty"`
+}
+
+type BackupDeviceRef struct {
+	Type              string `json:"type"`
+	PathOnHost        string `json:"path_on_host,omitempty"`
+	PathInContainer   string `json:"path_in_container,omitempty"`
+	CgroupPermissions string `json:"cgroup_permissions,omitempty"`
+	Verification      string `json:"verification,omitempty"`
+	HostPathExists    *bool  `json:"host_path_exists,omitempty"`
+	Warning           string `json:"warning,omitempty"`
 }
 
 type restoreDryRunPlan struct {

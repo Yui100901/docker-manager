@@ -3,6 +3,7 @@ package backup
 import (
 	"bytes"
 	"context"
+	"docker-manager/internal/docker"
 	"encoding/json"
 	"errors"
 	"io"
@@ -97,15 +98,30 @@ func (f *fakeBackupDockerService) StartContainer(ctx context.Context, id string)
 }
 
 func TestBackupContainerWritesBundle(t *testing.T) {
+	bindDir := t.TempDir()
+	deviceDir := t.TempDir()
+	devicePath := filepath.Join(deviceDir, "fake-device")
+	if err := os.WriteFile(devicePath, []byte("device"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
 	fake := &fakeBackupDockerService{
 		inspect: container.InspectResponse{
 			ContainerJSONBase: &container.ContainerJSONBase{
-				Name:       "/demo",
-				HostConfig: &container.HostConfig{},
+				Name: "/demo",
+				HostConfig: &container.HostConfig{
+					Tmpfs: map[string]string{"/cache": "rw,noexec"},
+					Resources: container.Resources{
+						Devices: []container.DeviceMapping{
+							{PathOnHost: devicePath, PathInContainer: "/dev/demo", CgroupPermissions: "rwm"},
+						},
+					},
+				},
 			},
 			Config: &container.Config{Image: "busybox:latest"},
 			Mounts: []container.MountPoint{
-				{Type: mount.TypeVolume, Name: "demo_data", Destination: "/data"},
+				{Type: mount.TypeVolume, Name: "demo_data", Destination: "/data", RW: true},
+				{Type: mount.TypeBind, Source: bindDir, Destination: "/host", RW: true},
 			},
 			NetworkSettings: &container.NetworkSettings{
 				Networks: map[string]*network.EndpointSettings{
@@ -143,6 +159,37 @@ func TestBackupContainerWritesBundle(t *testing.T) {
 	if entry.ImageArchive == "" {
 		t.Fatal("ImageArchive is empty")
 	}
+	bindMount := findBackupMount(entry.Mounts, "bind", "/host")
+	if bindMount == nil {
+		t.Fatalf("Mounts = %#v, want bind mount /host", entry.Mounts)
+	}
+	if bindMount.Source != bindDir || bindMount.Verification != "verified-local" {
+		t.Fatalf("bind mount = %#v, want verified local source %q", bindMount, bindDir)
+	}
+	if bindMount.HostPathExists == nil || !*bindMount.HostPathExists {
+		t.Fatalf("bind mount exists = %#v, want true", bindMount.HostPathExists)
+	}
+	if bindMount.HostPathReadable == nil || !*bindMount.HostPathReadable {
+		t.Fatalf("bind mount readable = %#v, want true", bindMount.HostPathReadable)
+	}
+	if bindMount.HostPathWritable == nil || !*bindMount.HostPathWritable {
+		t.Fatalf("bind mount writable = %#v, want true", bindMount.HostPathWritable)
+	}
+	if volumeMount := findBackupMount(entry.Mounts, "volume", "/data"); volumeMount == nil || volumeMount.Name != "demo_data" {
+		t.Fatalf("Mounts = %#v, want named volume demo_data", entry.Mounts)
+	}
+	if tmpfsMount := findBackupMount(entry.Mounts, "tmpfs", "/cache"); tmpfsMount == nil || tmpfsMount.Verification != "not-applicable" {
+		t.Fatalf("Mounts = %#v, want tmpfs /cache", entry.Mounts)
+	}
+	if len(entry.Devices) != 1 {
+		t.Fatalf("Devices = %#v, want one device", entry.Devices)
+	}
+	if entry.Devices[0].Type != "device" || entry.Devices[0].PathOnHost != devicePath || entry.Devices[0].PathInContainer != "/dev/demo" {
+		t.Fatalf("Device = %#v, want manifest device dependency", entry.Devices[0])
+	}
+	if entry.Devices[0].Verification != "verified-local" || entry.Devices[0].HostPathExists == nil || !*entry.Devices[0].HostPathExists {
+		t.Fatalf("Device verification = %#v, want verified local existing path", entry.Devices[0])
+	}
 	for _, rel := range []string{
 		entry.InspectFile,
 		entry.ComposeFile,
@@ -156,6 +203,51 @@ func TestBackupContainerWritesBundle(t *testing.T) {
 	}
 	if !hasCall(fake.calls, "save-image:busybox:latest") {
 		t.Fatalf("calls = %#v, want save-image", fake.calls)
+	}
+}
+
+func TestBackupMountRefsMarksBindSourceUnverifiedForRemoteDocker(t *testing.T) {
+	t.Cleanup(func() { docker.Configure(docker.Options{}) })
+	docker.Configure(docker.Options{Host: "tcp://docker.example:2375"})
+
+	refs := backupMountRefs(container.InspectResponse{
+		Mounts: []container.MountPoint{
+			{Type: mount.TypeBind, Source: "/srv/data", Destination: "/data"},
+		},
+	})
+	bindMount := findBackupMount(refs, "bind", "/data")
+	if bindMount == nil {
+		t.Fatalf("Mounts = %#v, want bind mount", refs)
+	}
+	if bindMount.Verification != "unverified-remote" {
+		t.Fatalf("Verification = %q, want unverified-remote", bindMount.Verification)
+	}
+	if bindMount.HostPathExists != nil || bindMount.HostPathReadable != nil || bindMount.HostPathWritable != nil {
+		t.Fatalf("remote bind mount path checks = %#v, want no local path booleans", bindMount)
+	}
+	if !strings.Contains(bindMount.Warning, "Docker daemon host") {
+		t.Fatalf("Warning = %q, want remote daemon host warning", bindMount.Warning)
+	}
+}
+
+func TestBackupMountRefsMarksNamedPipeUnverifiedLocal(t *testing.T) {
+	t.Cleanup(func() { docker.Configure(docker.Options{}) })
+	docker.Configure(docker.Options{Host: "npipe:////./pipe/docker_engine"})
+
+	refs := backupMountRefs(container.InspectResponse{
+		Mounts: []container.MountPoint{
+			{Type: mount.TypeNamedPipe, Source: `\\.\pipe\docker_engine`, Destination: `\\.\pipe\docker_engine`},
+		},
+	})
+	npipeMount := findBackupMount(refs, "npipe", `\\.\pipe\docker_engine`)
+	if npipeMount == nil {
+		t.Fatalf("Mounts = %#v, want npipe mount", refs)
+	}
+	if npipeMount.Verification != "unverified-local" {
+		t.Fatalf("Verification = %q, want unverified-local", npipeMount.Verification)
+	}
+	if npipeMount.HostPathExists != nil || npipeMount.HostPathReadable != nil || npipeMount.HostPathWritable != nil {
+		t.Fatalf("npipe path checks = %#v, want no filesystem booleans", npipeMount)
 	}
 }
 
@@ -890,6 +982,15 @@ func readTestJSON(t *testing.T, path string, value interface{}) {
 	if err := json.Unmarshal(data, value); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func findBackupMount(refs []BackupMountRef, mountType, destination string) *BackupMountRef {
+	for i := range refs {
+		if refs[i].Type == mountType && refs[i].Destination == destination {
+			return &refs[i]
+		}
+	}
+	return nil
 }
 
 func hasCall(calls []string, want string) bool {
