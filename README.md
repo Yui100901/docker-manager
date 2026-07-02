@@ -199,6 +199,8 @@ dm --docker-host tcp://192.168.31.57:2376 --docker-tls-verify --docker-cert-path
 
 优先级为: 全局命令行参数 > `.dm.yaml` > Docker 环境变量 > 本地 Docker 默认 endpoint。生产环境不要裸露未加 TLS 的 `tcp://host:2375`；`dm doctor` 会对明文 TCP endpoint 给出 warning。该设置只影响容器、镜像、volume、network、backup/restore、report 等 Docker API 操作；`pull` 访问源 registry 的代理和认证仍由 `pull` 自身参数、registry 凭据和代理配置控制。
 
+当连接远程 Docker 时，报告和审计输出会显示来源 endpoint，例如 `来源 Docker: tcp://192.168.31.57:2375` 或 JSON 字段 `docker_endpoint`。会修改 Docker 状态的命令会在执行前提示目标 endpoint；`rerun`、`restore`、`prune --apply` 等路径可以借此确认不会误操作本机或错误的远端主机。
+
 示例 `.dm.yaml`:
 
 ```yaml
