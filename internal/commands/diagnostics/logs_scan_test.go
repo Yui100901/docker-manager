@@ -89,6 +89,43 @@ func TestBuildLogsScanReportScansExplicitContainers(t *testing.T) {
 	}
 }
 
+func TestBuildLogsScanReportSkipsUnsupportedLogDriver(t *testing.T) {
+	fake := &fakeLogsScanDockerService{
+		inspects: map[string]container.InspectResponse{
+			"api": {
+				ContainerJSONBase: &container.ContainerJSONBase{
+					Name: "/api",
+					HostConfig: &container.HostConfig{
+						LogConfig: container.LogConfig{Type: "syslog"},
+					},
+				},
+				Config: &container.Config{Image: "demo/api"},
+			},
+		},
+		logs: map[string]string{"api": "ERROR should not be read\n"},
+	}
+
+	report, err := buildLogsScanReport(context.Background(), fake, []container.Summary{{ID: "api", Names: []string{"/api"}}}, LogsScanOptions{
+		Tail:     100,
+		Keywords: []string{"error"},
+	})
+	if err != nil {
+		t.Fatalf("buildLogsScanReport() error = %v", err)
+	}
+	if len(fake.logOptions) != 0 {
+		t.Fatalf("ContainerLogs called %#v, want skipped for syslog", fake.logOptions)
+	}
+	if report.Summary.Errors != 1 || report.Summary.LogsUnavailable != 1 {
+		t.Fatalf("Summary = %#v, want one unavailable log error", report.Summary)
+	}
+	if len(report.Containers) != 1 || report.Containers[0].LogDriver != "syslog" || report.Containers[0].LogReadability != "unsupported" {
+		t.Fatalf("Container = %#v, want unsupported syslog", report.Containers)
+	}
+	if !strings.Contains(report.Containers[0].Error, "syslog") {
+		t.Fatalf("Error = %q, want syslog reason", report.Containers[0].Error)
+	}
+}
+
 func TestBuildLogsScanReportRedactsSecretsWhenRequested(t *testing.T) {
 	fake := &fakeLogsScanDockerService{
 		logs: map[string]string{

@@ -66,32 +66,35 @@ type HealthSummary struct {
 	Unhealthy       int `json:"unhealthy"`
 	RestartWarnings int `json:"restart_warnings"`
 	LogWarnings     int `json:"log_warnings"`
+	LogsUnavailable int `json:"logs_unavailable"`
 	PublicBindings  int `json:"public_bindings"`
 }
 
 type HealthContainer struct {
-	ID            string             `json:"id"`
-	Name          string             `json:"name"`
-	Image         string             `json:"image,omitempty"`
-	ImageID       string             `json:"image_id,omitempty"`
-	ImageDigest   string             `json:"image_digest,omitempty"`
-	State         string             `json:"state,omitempty"`
-	Status        string             `json:"status,omitempty"`
-	RestartCount  int                `json:"restart_count"`
-	RestartPolicy string             `json:"restart_policy,omitempty"`
-	HealthStatus  string             `json:"health_status,omitempty"`
-	FailingStreak int                `json:"failing_streak,omitempty"`
-	ExitCode      int                `json:"exit_code,omitempty"`
-	Error         string             `json:"error,omitempty"`
-	PublicPorts   []string           `json:"public_ports,omitempty"`
-	ExposedPorts  []string           `json:"exposed_ports,omitempty"`
-	Ports         []HealthPortRef    `json:"ports,omitempty"`
-	Networks      []HealthNetworkRef `json:"networks,omitempty"`
-	Mounts        []HealthMountRef   `json:"mounts,omitempty"`
-	LogDriver     string             `json:"log_driver,omitempty"`
-	LogOptions    map[string]string  `json:"log_options,omitempty"`
-	NetworkMode   string             `json:"network_mode,omitempty"`
-	LogMatches    []LogMatch         `json:"log_matches,omitempty"`
+	ID                    string             `json:"id"`
+	Name                  string             `json:"name"`
+	Image                 string             `json:"image,omitempty"`
+	ImageID               string             `json:"image_id,omitempty"`
+	ImageDigest           string             `json:"image_digest,omitempty"`
+	State                 string             `json:"state,omitempty"`
+	Status                string             `json:"status,omitempty"`
+	RestartCount          int                `json:"restart_count"`
+	RestartPolicy         string             `json:"restart_policy,omitempty"`
+	HealthStatus          string             `json:"health_status,omitempty"`
+	FailingStreak         int                `json:"failing_streak,omitempty"`
+	ExitCode              int                `json:"exit_code,omitempty"`
+	Error                 string             `json:"error,omitempty"`
+	PublicPorts           []string           `json:"public_ports,omitempty"`
+	ExposedPorts          []string           `json:"exposed_ports,omitempty"`
+	Ports                 []HealthPortRef    `json:"ports,omitempty"`
+	Networks              []HealthNetworkRef `json:"networks,omitempty"`
+	Mounts                []HealthMountRef   `json:"mounts,omitempty"`
+	LogDriver             string             `json:"log_driver,omitempty"`
+	LogOptions            map[string]string  `json:"log_options,omitempty"`
+	LogReadability        string             `json:"log_readability,omitempty"`
+	LogReadabilityMessage string             `json:"log_readability_message,omitempty"`
+	NetworkMode           string             `json:"network_mode,omitempty"`
+	LogMatches            []LogMatch         `json:"log_matches,omitempty"`
 }
 
 type HealthPortRef struct {
@@ -228,6 +231,7 @@ func buildHealthReport(ctx context.Context, svc healthDockerService, containers 
 		applyInspectHealth(&item, inspect)
 		applyHealthPorts(&item, summary, inspect, true)
 		addStateIssues(&report, item, inspect, opts)
+		addLogDriverIssue(&report, item)
 
 		for _, port := range item.PublicPorts {
 			report.Summary.PublicBindings++
@@ -239,7 +243,7 @@ func buildHealthReport(ctx context.Context, svc healthDockerService, containers 
 			})
 		}
 
-		if !opts.NoLogs && opts.LogTail != 0 && len(keywords) > 0 {
+		if !opts.NoLogs && item.LogReadability != "disabled" && item.LogReadability != "unsupported" && opts.LogTail != 0 && len(keywords) > 0 {
 			matches, err := scanHealthLogs(ctx, svc, ref, inspect, opts.LogTail, keywords, opts.RedactSecrets)
 			if err != nil {
 				report.Issues = append(report.Issues, HealthIssue{
@@ -287,12 +291,16 @@ func applyInspectHealth(item *HealthContainer, inspect container.InspectResponse
 	if inspect.ImageManifestDescriptor != nil && inspect.ImageManifestDescriptor.Digest != "" {
 		item.ImageDigest = inspect.ImageManifestDescriptor.Digest.String()
 	}
-	if inspect.HostConfig != nil {
-		item.RestartPolicy = healthRestartPolicy(inspect.HostConfig.RestartPolicy)
-		item.LogDriver = inspect.HostConfig.LogConfig.Type
-		item.LogOptions = cloneStringMap(inspect.HostConfig.LogConfig.Config)
-		item.NetworkMode = string(inspect.HostConfig.NetworkMode)
+	if hostConfig := healthHostConfig(inspect); hostConfig != nil {
+		item.RestartPolicy = healthRestartPolicy(hostConfig.RestartPolicy)
+		item.LogDriver = hostConfig.LogConfig.Type
+		item.LogOptions = cloneStringMap(hostConfig.LogConfig.Config)
+		item.NetworkMode = string(hostConfig.NetworkMode)
 	}
+	availability := containerLogDriverAvailability(inspect)
+	item.LogDriver = availability.Driver
+	item.LogReadability = availability.Status
+	item.LogReadabilityMessage = availability.Reason
 	item.Networks = healthNetworks(inspect)
 	item.Mounts = healthMounts(inspect)
 	if inspect.State == nil {
@@ -307,6 +315,13 @@ func applyInspectHealth(item *HealthContainer, inspect container.InspectResponse
 		item.HealthStatus = string(inspect.State.Health.Status)
 		item.FailingStreak = inspect.State.Health.FailingStreak
 	}
+}
+
+func healthHostConfig(inspect container.InspectResponse) *container.HostConfig {
+	if inspect.ContainerJSONBase == nil {
+		return nil
+	}
+	return inspect.HostConfig
 }
 
 func applyHealthPorts(item *HealthContainer, summary container.Summary, inspect container.InspectResponse, hasInspect bool) {
@@ -444,7 +459,23 @@ func addStateIssues(report *HealthReport, item HealthContainer, inspect containe
 	}
 }
 
+func addLogDriverIssue(report *HealthReport, item HealthContainer) {
+	if item.LogReadability != "disabled" && item.LogReadability != "unsupported" {
+		return
+	}
+	report.Summary.LogsUnavailable++
+	report.Issues = append(report.Issues, HealthIssue{
+		Severity:  "warn",
+		Container: item.Name,
+		Type:      "logs-unavailable",
+		Message:   item.LogReadabilityMessage,
+	})
+}
+
 func scanHealthLogs(ctx context.Context, svc healthDockerService, id string, inspect container.InspectResponse, tail int, keywords []string, redactSecrets bool) ([]LogMatch, error) {
+	if availability := containerLogDriverAvailability(inspect); !availability.Readable {
+		return nil, fmt.Errorf("%s", availability.Reason)
+	}
 	tailValue := strconv.Itoa(tail)
 	if tail < 0 {
 		tailValue = "all"
@@ -600,6 +631,9 @@ func printHealthReport(w io.Writer, report HealthReport) {
 		}
 		if c.RestartPolicy != "" || c.LogDriver != "" || c.NetworkMode != "" {
 			fmt.Fprintf(w, "      restart=%s log-driver=%s network-mode=%s\n", c.RestartPolicy, c.LogDriver, c.NetworkMode)
+		}
+		if c.LogReadability != "" || c.LogReadabilityMessage != "" {
+			fmt.Fprintf(w, "      log-readable=%s note=%s\n", c.LogReadability, c.LogReadabilityMessage)
 		}
 		for _, network := range c.Networks {
 			fmt.Fprintf(w, "      网络=%s ip=%s gateway=%s endpoint=%s aliases=%s\n", network.Name, network.IPAddress, network.Gateway, network.EndpointID, strings.Join(network.Aliases, ","))

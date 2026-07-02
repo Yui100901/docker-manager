@@ -19,6 +19,7 @@ type fakeHealthDockerService struct {
 	inspects   map[string]container.InspectResponse
 	logs       map[string]string
 	allFlag    bool
+	logOptions []container.LogsOptions
 }
 
 func (f *fakeHealthDockerService) ListContainers(ctx context.Context, all bool) ([]container.Summary, error) {
@@ -34,6 +35,7 @@ func (f *fakeHealthDockerService) InspectContainer(ctx context.Context, id strin
 }
 
 func (f *fakeHealthDockerService) ContainerLogs(ctx context.Context, id string, options container.LogsOptions) (io.ReadCloser, error) {
+	f.logOptions = append(f.logOptions, options)
 	return io.NopCloser(strings.NewReader(f.logs[id])), nil
 }
 
@@ -244,6 +246,49 @@ func TestBuildHealthReportIncludesResourceDependenciesFromInspect(t *testing.T) 
 	}
 	if report.Summary.PublicBindings != 1 || !hasHealthIssue(report, "public-port") {
 		t.Fatalf("Summary=%#v Issues=%#v, want public port issue", report.Summary, report.Issues)
+	}
+}
+
+func TestBuildHealthReportReportsUnsupportedLogDriver(t *testing.T) {
+	fake := &fakeHealthDockerService{
+		containers: []container.Summary{{
+			ID:    "api-id",
+			Names: []string{"/api"},
+			Image: "demo/api",
+			State: "running",
+		}},
+		inspects: map[string]container.InspectResponse{
+			"api-id": {
+				ContainerJSONBase: &container.ContainerJSONBase{
+					Name: "/api",
+					HostConfig: &container.HostConfig{
+						LogConfig: container.LogConfig{Type: "awslogs"},
+					},
+					State: &container.State{Status: container.StateRunning},
+				},
+				Config: &container.Config{Image: "demo/api"},
+			},
+		},
+		logs: map[string]string{"api-id": "ERROR should not be read\n"},
+	}
+
+	report := buildHealthReport(context.Background(), fake, fake.containers, HealthOptions{
+		LogTail:          100,
+		RestartThreshold: 3,
+		Keywords:         []string{"error"},
+	})
+
+	if len(fake.logOptions) != 0 {
+		t.Fatalf("ContainerLogs called %#v, want skipped for awslogs", fake.logOptions)
+	}
+	if report.Summary.LogsUnavailable != 1 || !hasHealthIssue(report, "logs-unavailable") {
+		t.Fatalf("Summary=%#v Issues=%#v, want logs-unavailable", report.Summary, report.Issues)
+	}
+	if len(report.Containers) != 1 || report.Containers[0].LogDriver != "awslogs" || report.Containers[0].LogReadability != "unsupported" {
+		t.Fatalf("Containers = %#v, want unsupported awslogs", report.Containers)
+	}
+	if !strings.Contains(report.Containers[0].LogReadabilityMessage, "awslogs") {
+		t.Fatalf("LogReadabilityMessage = %q, want awslogs reason", report.Containers[0].LogReadabilityMessage)
 	}
 }
 

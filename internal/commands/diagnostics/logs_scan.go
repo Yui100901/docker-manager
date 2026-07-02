@@ -62,15 +62,19 @@ type LogsScanSummary struct {
 	ContainersMatched int `json:"containers_matched"`
 	TotalMatches      int `json:"total_matches"`
 	Errors            int `json:"errors"`
+	LogsUnavailable   int `json:"logs_unavailable"`
 }
 
 type LogsScanContainer struct {
-	ID      string         `json:"id"`
-	Name    string         `json:"name"`
-	Image   string         `json:"image,omitempty"`
-	State   string         `json:"state,omitempty"`
-	Error   string         `json:"error,omitempty"`
-	Matches []LogScanMatch `json:"matches,omitempty"`
+	ID                    string         `json:"id"`
+	Name                  string         `json:"name"`
+	Image                 string         `json:"image,omitempty"`
+	State                 string         `json:"state,omitempty"`
+	LogDriver             string         `json:"log_driver,omitempty"`
+	LogReadability        string         `json:"log_readability,omitempty"`
+	LogReadabilityMessage string         `json:"log_readability_message,omitempty"`
+	Error                 string         `json:"error,omitempty"`
+	Matches               []LogScanMatch `json:"matches,omitempty"`
 }
 
 type LogScanMatch struct {
@@ -222,6 +226,15 @@ func buildLogsScanReport(ctx context.Context, svc logsScanDockerService, targets
 			return report, err
 		}
 		applyLogsScanInspect(&item, inspect)
+		availability := containerLogDriverAvailability(inspect)
+		applyLogsScanAvailability(&item, availability)
+		if !availability.Readable {
+			item.Error = availability.Reason
+			report.Summary.Errors++
+			report.Summary.LogsUnavailable++
+			report.Containers = append(report.Containers, item)
+			continue
+		}
 
 		text, err := readContainerLogText(ctx, svc, ref, inspect, opts)
 		if err != nil {
@@ -273,7 +286,16 @@ func applyLogsScanInspect(item *LogsScanContainer, inspect container.InspectResp
 	}
 }
 
+func applyLogsScanAvailability(item *LogsScanContainer, availability logDriverAvailability) {
+	item.LogDriver = availability.Driver
+	item.LogReadability = availability.Status
+	item.LogReadabilityMessage = availability.Reason
+}
+
 func readContainerLogText(ctx context.Context, svc logsScanDockerService, id string, inspect container.InspectResponse, opts LogsScanOptions) (string, error) {
+	if availability := containerLogDriverAvailability(inspect); !availability.Readable {
+		return "", fmt.Errorf("%s", availability.Reason)
+	}
 	tailValue := strconv.Itoa(opts.Tail)
 	if opts.Tail < 0 {
 		tailValue = "all"
@@ -385,6 +407,9 @@ func printLogsScanReport(w io.Writer, report LogsScanReport) {
 			status += " 错误=" + c.Error
 		}
 		fmt.Fprintf(w, "%s 状态=%s 镜像=%s %s\n", c.Name, c.State, c.Image, status)
+		if c.LogDriver != "" || c.LogReadability != "" || c.LogReadabilityMessage != "" {
+			fmt.Fprintf(w, "    log-driver=%s log-readable=%s note=%s\n", c.LogDriver, c.LogReadability, c.LogReadabilityMessage)
+		}
 		for _, match := range c.Matches {
 			for _, before := range match.Before {
 				fmt.Fprintf(w, "    | %s\n", before)
