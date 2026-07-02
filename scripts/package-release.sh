@@ -149,8 +149,9 @@ write_install_guide() {
 ## Install
 
 \`\`\`powershell
+.\scripts\install.ps1
+.\scripts\install.ps1 -NoCompletion
 .\scripts\install.ps1 -Binary .\${binary}
-.\scripts\install.ps1 -Binary .\${binary} -NoCompletion
 \`\`\`
 
 Verify after installation:
@@ -176,9 +177,10 @@ EOF
 ## Install
 
 \`\`\`bash
+bash scripts/install.sh
+bash scripts/install.sh --completion bash --completion zsh --completion fish
+bash scripts/install.sh --no-completion
 bash scripts/install.sh --binary ./${binary}
-bash scripts/install.sh --binary ./${binary} --completion bash --completion zsh --completion fish
-bash scripts/install.sh --binary ./${binary} --no-completion
 \`\`\`
 
 Verify after installation:

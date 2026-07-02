@@ -49,17 +49,18 @@ function Write-InstallGuide {
 
 ## Install
 
-````powershell
+~~~powershell
+.\scripts\install.ps1
+.\scripts\install.ps1 -NoCompletion
 .\scripts\install.ps1 -Binary .\$Binary
-.\scripts\install.ps1 -Binary .\$Binary -NoCompletion
-````
+~~~
 
 Verify after installation:
 
-````powershell
+~~~powershell
 dm version
 dm doctor --check-e2e=false
-````
+~~~
 "@
         Set-Content -Path $Path -Value $content -Encoding UTF8
         return
@@ -77,18 +78,19 @@ dm doctor --check-e2e=false
 
 ## Install
 
-````bash
+~~~bash
+bash scripts/install.sh
+bash scripts/install.sh --completion bash --completion zsh --completion fish
+bash scripts/install.sh --no-completion
 bash scripts/install.sh --binary ./$Binary
-bash scripts/install.sh --binary ./$Binary --completion bash --completion zsh --completion fish
-bash scripts/install.sh --binary ./$Binary --no-completion
-````
+~~~
 
 Verify after installation:
 
-````bash
+~~~bash
 dm version
 dm doctor --check-e2e=false
-````
+~~~
 "@
     Set-Content -Path $Path -Value $content -Encoding UTF8
 }

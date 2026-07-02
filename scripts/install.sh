@@ -243,11 +243,11 @@ resolve_binary() {
     printf '%s\n' "${BINARY}"
     return 0
   fi
-  if [ -x "${ROOT_DIR}/dm" ]; then
+  if [ -f "${ROOT_DIR}/dm" ]; then
     printf '%s\n' "${ROOT_DIR}/dm"
     return 0
   fi
-  if [ -x "${ROOT_DIR}/bin/dev/dm" ]; then
+  if [ -f "${ROOT_DIR}/bin/dev/dm" ]; then
     printf '%s\n' "${ROOT_DIR}/bin/dev/dm"
     return 0
   fi
