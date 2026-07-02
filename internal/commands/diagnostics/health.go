@@ -70,18 +70,56 @@ type HealthSummary struct {
 }
 
 type HealthContainer struct {
-	ID            string     `json:"id"`
-	Name          string     `json:"name"`
-	Image         string     `json:"image,omitempty"`
-	State         string     `json:"state,omitempty"`
-	Status        string     `json:"status,omitempty"`
-	RestartCount  int        `json:"restart_count"`
-	HealthStatus  string     `json:"health_status,omitempty"`
-	FailingStreak int        `json:"failing_streak,omitempty"`
-	ExitCode      int        `json:"exit_code,omitempty"`
-	Error         string     `json:"error,omitempty"`
-	PublicPorts   []string   `json:"public_ports,omitempty"`
-	LogMatches    []LogMatch `json:"log_matches,omitempty"`
+	ID            string             `json:"id"`
+	Name          string             `json:"name"`
+	Image         string             `json:"image,omitempty"`
+	ImageID       string             `json:"image_id,omitempty"`
+	ImageDigest   string             `json:"image_digest,omitempty"`
+	State         string             `json:"state,omitempty"`
+	Status        string             `json:"status,omitempty"`
+	RestartCount  int                `json:"restart_count"`
+	RestartPolicy string             `json:"restart_policy,omitempty"`
+	HealthStatus  string             `json:"health_status,omitempty"`
+	FailingStreak int                `json:"failing_streak,omitempty"`
+	ExitCode      int                `json:"exit_code,omitempty"`
+	Error         string             `json:"error,omitempty"`
+	PublicPorts   []string           `json:"public_ports,omitempty"`
+	ExposedPorts  []string           `json:"exposed_ports,omitempty"`
+	Ports         []HealthPortRef    `json:"ports,omitempty"`
+	Networks      []HealthNetworkRef `json:"networks,omitempty"`
+	Mounts        []HealthMountRef   `json:"mounts,omitempty"`
+	LogDriver     string             `json:"log_driver,omitempty"`
+	LogOptions    map[string]string  `json:"log_options,omitempty"`
+	NetworkMode   string             `json:"network_mode,omitempty"`
+	LogMatches    []LogMatch         `json:"log_matches,omitempty"`
+}
+
+type HealthPortRef struct {
+	HostIP        string `json:"host_ip,omitempty"`
+	HostPort      uint16 `json:"host_port,omitempty"`
+	ContainerPort uint16 `json:"container_port"`
+	Protocol      string `json:"protocol"`
+	Published     bool   `json:"published"`
+	Source        string `json:"source,omitempty"`
+}
+
+type HealthNetworkRef struct {
+	Name        string   `json:"name"`
+	NetworkID   string   `json:"network_id,omitempty"`
+	EndpointID  string   `json:"endpoint_id,omitempty"`
+	IPAddress   string   `json:"ip_address,omitempty"`
+	IPv6Address string   `json:"ipv6_address,omitempty"`
+	Gateway     string   `json:"gateway,omitempty"`
+	Aliases     []string `json:"aliases,omitempty"`
+}
+
+type HealthMountRef struct {
+	Type        string `json:"type"`
+	Name        string `json:"name,omitempty"`
+	Source      string `json:"source,omitempty"`
+	Destination string `json:"destination,omitempty"`
+	Mode        string `json:"mode,omitempty"`
+	RW          bool   `json:"rw"`
 }
 
 type LogMatch struct {
@@ -159,12 +197,11 @@ func buildHealthReport(ctx context.Context, svc healthDockerService, containers 
 			ref = name
 		}
 		item := HealthContainer{
-			ID:          shortID(summary.ID),
-			Name:        name,
-			Image:       summary.Image,
-			State:       string(summary.State),
-			Status:      summary.Status,
-			PublicPorts: publicPortBindings(summary.Ports),
+			ID:     shortID(summary.ID),
+			Name:   name,
+			Image:  summary.Image,
+			State:  string(summary.State),
+			Status: summary.Status,
 		}
 		report.Summary.Total++
 		switch summary.State {
@@ -184,10 +221,12 @@ func buildHealthReport(ctx context.Context, svc healthDockerService, containers 
 				Type:      "inspect-failed",
 				Message:   fmt.Sprintf("inspect 失败: %v", err),
 			})
+			applyHealthPorts(&item, summary, container.InspectResponse{}, false)
 			report.Containers = append(report.Containers, item)
 			continue
 		}
 		applyInspectHealth(&item, inspect)
+		applyHealthPorts(&item, summary, inspect, true)
 		addStateIssues(&report, item, inspect, opts)
 
 		for _, port := range item.PublicPorts {
@@ -236,10 +275,26 @@ func applyInspectHealth(item *HealthContainer, inspect container.InspectResponse
 			item.Name = normalizeContainerName(inspect.Name)
 		}
 		item.RestartCount = inspect.RestartCount
+		if inspect.Image != "" {
+			item.ImageID = shortID(inspect.Image)
+		}
 	}
-	if inspect.Config != nil && item.Image == "" {
-		item.Image = inspect.Config.Image
+	if inspect.Config != nil {
+		if item.Image == "" {
+			item.Image = inspect.Config.Image
+		}
 	}
+	if inspect.ImageManifestDescriptor != nil && inspect.ImageManifestDescriptor.Digest != "" {
+		item.ImageDigest = inspect.ImageManifestDescriptor.Digest.String()
+	}
+	if inspect.HostConfig != nil {
+		item.RestartPolicy = healthRestartPolicy(inspect.HostConfig.RestartPolicy)
+		item.LogDriver = inspect.HostConfig.LogConfig.Type
+		item.LogOptions = cloneStringMap(inspect.HostConfig.LogConfig.Config)
+		item.NetworkMode = string(inspect.HostConfig.NetworkMode)
+	}
+	item.Networks = healthNetworks(inspect)
+	item.Mounts = healthMounts(inspect)
 	if inspect.State == nil {
 		return
 	}
@@ -252,6 +307,89 @@ func applyInspectHealth(item *HealthContainer, inspect container.InspectResponse
 		item.HealthStatus = string(inspect.State.Health.Status)
 		item.FailingStreak = inspect.State.Health.FailingStreak
 	}
+}
+
+func applyHealthPorts(item *HealthContainer, summary container.Summary, inspect container.InspectResponse, hasInspect bool) {
+	mappings := networkPortMappings(summary, inspect, hasInspect, item.Name)
+	if hasInspect && len(mappings) == 0 {
+		mappings = networkPortMappings(summary, container.InspectResponse{}, false, item.Name)
+	}
+	item.Ports = make([]HealthPortRef, 0, len(mappings))
+	item.PublicPorts = nil
+	item.ExposedPorts = nil
+	for _, mapping := range mappings {
+		item.Ports = append(item.Ports, HealthPortRef{
+			HostIP:        mapping.HostIP,
+			HostPort:      mapping.HostPort,
+			ContainerPort: mapping.ContainerPort,
+			Protocol:      mapping.Protocol,
+			Published:     mapping.Published,
+			Source:        mapping.Source,
+		})
+		if mapping.Published && isPublicHostIP(mapping.HostIP) {
+			item.PublicPorts = append(item.PublicPorts, fmt.Sprintf("%s:%d->%d/%s", mapping.HostIP, mapping.HostPort, mapping.ContainerPort, mapping.Protocol))
+			continue
+		}
+		if !mapping.Published {
+			item.ExposedPorts = append(item.ExposedPorts, fmt.Sprintf("%d/%s", mapping.ContainerPort, mapping.Protocol))
+		}
+	}
+	sort.Strings(item.PublicPorts)
+	sort.Strings(item.ExposedPorts)
+}
+
+func healthRestartPolicy(policy container.RestartPolicy) string {
+	if policy.Name == "" {
+		return ""
+	}
+	if policy.Name == "on-failure" && policy.MaximumRetryCount > 0 {
+		return fmt.Sprintf("%s:%d", policy.Name, policy.MaximumRetryCount)
+	}
+	return string(policy.Name)
+}
+
+func healthNetworks(inspect container.InspectResponse) []HealthNetworkRef {
+	if inspect.NetworkSettings == nil || len(inspect.NetworkSettings.Networks) == 0 {
+		return nil
+	}
+	networks := make([]HealthNetworkRef, 0, len(inspect.NetworkSettings.Networks))
+	for name, endpoint := range inspect.NetworkSettings.Networks {
+		ref := HealthNetworkRef{Name: name}
+		if endpoint != nil {
+			ref.NetworkID = shortID(endpoint.NetworkID)
+			ref.EndpointID = endpoint.EndpointID
+			ref.IPAddress = endpoint.IPAddress
+			ref.IPv6Address = endpoint.GlobalIPv6Address
+			ref.Gateway = endpoint.Gateway
+			ref.Aliases = sortedStrings(endpoint.Aliases)
+		}
+		networks = append(networks, ref)
+	}
+	sort.Slice(networks, func(i, j int) bool {
+		return networks[i].Name < networks[j].Name
+	})
+	return networks
+}
+
+func healthMounts(inspect container.InspectResponse) []HealthMountRef {
+	if len(inspect.Mounts) == 0 {
+		return nil
+	}
+	mounts := make([]HealthMountRef, 0, len(inspect.Mounts))
+	for _, m := range inspect.Mounts {
+		mounts = append(mounts, HealthMountRef{
+			Type:        string(m.Type),
+			Name:        m.Name,
+			Source:      m.Source,
+			Destination: m.Destination,
+			Mode:        m.Mode,
+			RW:          m.RW,
+		})
+	}
+	sort.Slice(mounts, func(i, j int) bool {
+		return mounts[i].Destination < mounts[j].Destination
+	})
+	return mounts
 }
 
 func addStateIssues(report *HealthReport, item HealthContainer, inspect container.InspectResponse, opts HealthOptions) {
@@ -457,8 +595,23 @@ func printHealthReport(w io.Writer, report HealthReport) {
 			health = "none"
 		}
 		fmt.Fprintf(w, "  - %s 状态=%s 健康=%s 重启次数=%d 镜像=%s\n", c.Name, c.State, health, c.RestartCount, c.Image)
+		if c.ImageID != "" || c.ImageDigest != "" {
+			fmt.Fprintf(w, "      镜像ID=%s digest=%s\n", c.ImageID, c.ImageDigest)
+		}
+		if c.RestartPolicy != "" || c.LogDriver != "" || c.NetworkMode != "" {
+			fmt.Fprintf(w, "      restart=%s log-driver=%s network-mode=%s\n", c.RestartPolicy, c.LogDriver, c.NetworkMode)
+		}
+		for _, network := range c.Networks {
+			fmt.Fprintf(w, "      网络=%s ip=%s gateway=%s endpoint=%s aliases=%s\n", network.Name, network.IPAddress, network.Gateway, network.EndpointID, strings.Join(network.Aliases, ","))
+		}
+		for _, mount := range c.Mounts {
+			fmt.Fprintf(w, "      挂载=%s name=%s source=%s target=%s rw=%v mode=%s\n", mount.Type, mount.Name, mount.Source, mount.Destination, mount.RW, mount.Mode)
+		}
 		for _, port := range c.PublicPorts {
 			fmt.Fprintf(w, "      公网端口=%s\n", port)
+		}
+		for _, port := range c.ExposedPorts {
+			fmt.Fprintf(w, "      暴露端口=%s\n", port)
 		}
 		for _, match := range c.LogMatches {
 			fmt.Fprintf(w, "      日志[%s] %s\n", strings.Join(match.Keywords, ","), match.Line)

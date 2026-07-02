@@ -9,6 +9,9 @@ import (
 	"testing"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/mount"
+	"github.com/docker/docker/api/types/network"
+	"github.com/docker/go-connections/nat"
 )
 
 type fakeHealthDockerService struct {
@@ -155,6 +158,92 @@ func TestRunHealthReportFiltersContainersByWildcard(t *testing.T) {
 	}
 	if len(report.Containers) != 1 || report.Containers[0].Name != "api-1" {
 		t.Fatalf("Containers = %#v, want api-1", report.Containers)
+	}
+}
+
+func TestBuildHealthReportIncludesResourceDependenciesFromInspect(t *testing.T) {
+	fake := &fakeHealthDockerService{
+		containers: []container.Summary{{
+			ID:    "api-id",
+			Names: []string{"/api"},
+			Image: "summary/api",
+			State: "running",
+		}},
+		inspects: map[string]container.InspectResponse{
+			"api-id": {
+				ContainerJSONBase: &container.ContainerJSONBase{
+					ID:           "api-id",
+					Name:         "/api",
+					Image:        "sha256:image-id",
+					RestartCount: 1,
+					HostConfig: &container.HostConfig{
+						NetworkMode: "app_net",
+						RestartPolicy: container.RestartPolicy{
+							Name:              "on-failure",
+							MaximumRetryCount: 5,
+						},
+						LogConfig: container.LogConfig{
+							Type:   "json-file",
+							Config: map[string]string{"max-size": "10m"},
+						},
+					},
+					State: &container.State{Status: container.StateRunning},
+				},
+				Config: &container.Config{
+					Image:        "demo/api:latest",
+					ExposedPorts: nat.PortSet{"443/tcp": struct{}{}},
+				},
+				NetworkSettings: &container.NetworkSettings{
+					NetworkSettingsBase: container.NetworkSettingsBase{
+						Ports: nat.PortMap{
+							"80/tcp": []nat.PortBinding{{HostIP: "0.0.0.0", HostPort: "8080"}},
+						},
+					},
+					Networks: map[string]*network.EndpointSettings{
+						"app_net": {
+							NetworkID:  "network-id",
+							EndpointID: "endpoint-id",
+							IPAddress:  "172.20.0.2",
+							Gateway:    "172.20.0.1",
+							Aliases:    []string{"api"},
+						},
+					},
+				},
+				Mounts: []container.MountPoint{
+					{Type: mount.TypeVolume, Name: "api_data", Destination: "/data", RW: true},
+					{Type: mount.TypeBind, Source: "/host/config", Destination: "/config", Mode: "ro", RW: false},
+				},
+			},
+		},
+		logs: map[string]string{"api-id": "ok\n"},
+	}
+
+	report := buildHealthReport(context.Background(), fake, fake.containers, HealthOptions{
+		NoLogs:           true,
+		RestartThreshold: 3,
+	})
+
+	if len(report.Containers) != 1 {
+		t.Fatalf("Containers = %#v, want one container", report.Containers)
+	}
+	item := report.Containers[0]
+	if item.ImageID != "image-id" || item.RestartPolicy != "on-failure:5" || item.LogDriver != "json-file" || item.LogOptions["max-size"] != "10m" || item.NetworkMode != "app_net" {
+		t.Fatalf("container = %#v, want image/log/restart/network context", item)
+	}
+	if len(item.Networks) != 1 || item.Networks[0].Name != "app_net" || item.Networks[0].IPAddress != "172.20.0.2" || item.Networks[0].Gateway != "172.20.0.1" {
+		t.Fatalf("Networks = %#v, want app_net inspect context", item.Networks)
+	}
+	if len(item.Mounts) != 2 || item.Mounts[0].Destination != "/config" || item.Mounts[1].Name != "api_data" {
+		t.Fatalf("Mounts = %#v, want sorted bind and volume mounts", item.Mounts)
+	}
+	if len(item.PublicPorts) != 1 || item.PublicPorts[0] != "0.0.0.0:8080->80/tcp" {
+		t.Fatalf("PublicPorts = %#v, want published public port", item.PublicPorts)
+	}
+	if len(item.ExposedPorts) != 1 || item.ExposedPorts[0] != "443/tcp" {
+		t.Fatalf("ExposedPorts = %#v, want exposed-only 443/tcp", item.ExposedPorts)
+	}
+	if report.Summary.PublicBindings != 1 || !hasHealthIssue(report, "public-port") {
+		t.Fatalf("Summary=%#v Issues=%#v, want public port issue", report.Summary, report.Issues)
 	}
 }
 
