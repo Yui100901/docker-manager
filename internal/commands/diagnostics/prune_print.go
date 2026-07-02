@@ -8,6 +8,7 @@ import (
 
 func printPruneReport(w io.Writer, report PruneReport) {
 	fmt.Fprintf(w, "Docker 清理报告 (%s)\n", report.GeneratedAt)
+	printDockerEndpoint(w, report.DockerEndpoint)
 	printPruneScope(w, report.Scope)
 	fmt.Fprintf(w, "预计可回收空间: %s\n\n", humanBytes(report.EstimatedBytes))
 

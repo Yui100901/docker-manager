@@ -42,9 +42,10 @@ type VolumeOptions struct {
 }
 
 type VolumeReport struct {
-	Volumes  []VolumeRef   `json:"volumes"`
-	Warnings []string      `json:"warnings,omitempty"`
-	Summary  VolumeSummary `json:"summary"`
+	DockerEndpoint string        `json:"docker_endpoint"`
+	Volumes        []VolumeRef   `json:"volumes"`
+	Warnings       []string      `json:"warnings,omitempty"`
+	Summary        VolumeSummary `json:"summary"`
 }
 
 type VolumeSummary struct {
@@ -130,7 +131,7 @@ func runVolumeReport(ctx context.Context, opts VolumeOptions) (VolumeReport, err
 
 func buildVolumeReport(volumes volume.ListResponse, containers []container.Summary, opts VolumeOptions) VolumeReport {
 	refsByVolume := volumeContainerRefs(containers)
-	report := VolumeReport{Warnings: append([]string(nil), volumes.Warnings...)}
+	report := VolumeReport{DockerEndpoint: docker.Endpoint(), Warnings: append([]string(nil), volumes.Warnings...)}
 
 	for _, vol := range filterVolumesByPatterns(volumes.Volumes, opts.Filters) {
 		if vol == nil {
@@ -223,6 +224,7 @@ func volumeUsageStatus(ref VolumeRef) string {
 
 func printVolumeReport(w io.Writer, report VolumeReport, opts VolumeOptions) {
 	fmt.Fprintln(w, "Docker volume 报告")
+	printDockerEndpoint(w, report.DockerEndpoint)
 	fmt.Fprintf(w, "Volume: 总数=%d 已列出=%d 未使用=%d 疑似未使用=%d 使用中=%d 未知大小=%d 可回收=%s\n\n",
 		report.Summary.Total,
 		len(report.Volumes),

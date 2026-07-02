@@ -2,6 +2,7 @@ package diagnostics
 
 import (
 	"context"
+	"docker-manager/internal/docker"
 	"fmt"
 	"io"
 	"sort"
@@ -30,6 +31,9 @@ func NewPruneReportCommand() *cobra.Command {
 		Short: "生成 Docker 可清理资源报告，可选执行清理",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if opts.Apply && docker.IsRemoteEndpoint() {
+				fmt.Fprintf(cmd.OutOrStdout(), "Target Docker: %s\n", docker.Endpoint())
+			}
 			report, err := runPruneReport(cmd.Context(), opts)
 			if err != nil {
 				return fmt.Errorf("生成清理报告失败: %w", err)
@@ -352,7 +356,11 @@ func runPruneReport(ctx context.Context, opts PruneReportOptions) (PruneReport, 
 	// Keep destructive cleanup behind an explicit confirmation even when the
 	// report scope is narrow; dry-run/report output remains the default path.
 	if opts.Apply && !opts.Confirm {
-		return PruneReport{}, fmt.Errorf("report prune --apply 会删除 Docker 资源；如确认执行，请添加 --confirm")
+		message := "report prune --apply 会删除 Docker 资源"
+		if docker.IsRemoteEndpoint() {
+			message += "；目标 Docker: " + docker.Endpoint()
+		}
+		return PruneReport{}, fmt.Errorf("%s；如确认执行，请添加 --confirm", message)
 	}
 	svc, err := newPruneDockerService()
 	if err != nil {
@@ -388,8 +396,9 @@ func buildPruneReport(usage types.DiskUsage, scope PruneScope) PruneReport {
 
 func buildPruneReportWithContext(ctx context.Context, usage types.DiskUsage, scope PruneScope) (PruneReport, error) {
 	report := PruneReport{
-		GeneratedAt: time.Now().Format(time.RFC3339),
-		Scope:       scope,
+		GeneratedAt:    time.Now().Format(time.RFC3339),
+		DockerEndpoint: docker.Endpoint(),
+		Scope:          scope,
 	}
 	for _, c := range usage.Containers {
 		if err := ctx.Err(); err != nil {

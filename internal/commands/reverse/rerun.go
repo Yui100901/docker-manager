@@ -1,6 +1,7 @@
 package reverse
 
 import (
+	"docker-manager/internal/docker"
 	"fmt"
 	"io"
 	"time"
@@ -26,12 +27,15 @@ func NewRerunCommand() *cobra.Command {
 				return fmt.Errorf("rerun 是破坏性操作，必须提供容器名称/筛选条件，或显式使用 --running")
 			}
 			if !dryRun && !confirm {
-				return fmt.Errorf("rerun 会停止、删除并重建容器；如确认执行，请添加 --confirm；如仅审计，请使用 --dry-run")
+				return fmt.Errorf("%s；如确认执行，请添加 --confirm；如仅审计，请使用 --dry-run", destructiveDockerMessage("rerun 会停止、删除并重建容器"))
 			}
 			targetFilters := append(append([]string(nil), filters...), args...)
 			targets, err := resolveReverseContainerTargets(targetFilters, running)
 			if err != nil {
 				return err
+			}
+			if !dryRun {
+				printDestructiveDockerTarget(cmd.OutOrStdout())
 			}
 			return rerunContainers(targets, rerunOptions{
 				DryRun: dryRun,
@@ -46,6 +50,19 @@ func NewRerunCommand() *cobra.Command {
 	cmd.Flags().StringArrayVarP(&filters, "filter", "f", nil, "筛选容器，支持 name:/id:/image:/state:/status:/label: 和 * ? 通配符，可重复指定")
 	_ = cmd.RegisterFlagCompletionFunc("filter", completion.LocalContainers)
 	return cmd
+}
+
+func destructiveDockerMessage(action string) string {
+	if docker.IsRemoteEndpoint() {
+		return fmt.Sprintf("%s；目标 Docker: %s", action, docker.Endpoint())
+	}
+	return action
+}
+
+func printDestructiveDockerTarget(w io.Writer) {
+	if docker.IsRemoteEndpoint() {
+		fmt.Fprintf(w, "Target Docker: %s\n", docker.Endpoint())
+	}
 }
 
 type rerunOptions struct {

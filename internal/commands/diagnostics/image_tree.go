@@ -41,20 +41,21 @@ type ImageTreeOptions struct {
 }
 
 type ImageTreeReport struct {
-	ImageRef      string           `json:"image_ref"`
-	ID            string           `json:"id"`
-	RepoTags      []string         `json:"repo_tags,omitempty"`
-	RepoDigests   []string         `json:"repo_digests,omitempty"`
-	Platform      string           `json:"platform,omitempty"`
-	Created       string           `json:"created,omitempty"`
-	Size          int64            `json:"size"`
-	RootFSType    string           `json:"rootfs_type,omitempty"`
-	RootFSLayers  []string         `json:"rootfs_layers,omitempty"`
-	HistorySize   int64            `json:"history_size"`
-	LayerCount    int              `json:"layer_count"`
-	MetadataCount int              `json:"metadata_count"`
-	History       []ImageLayerInfo `json:"history"`
-	LargestLayers []ImageLayerInfo `json:"largest_layers,omitempty"`
+	DockerEndpoint string           `json:"docker_endpoint"`
+	ImageRef       string           `json:"image_ref"`
+	ID             string           `json:"id"`
+	RepoTags       []string         `json:"repo_tags,omitempty"`
+	RepoDigests    []string         `json:"repo_digests,omitempty"`
+	Platform       string           `json:"platform,omitempty"`
+	Created        string           `json:"created,omitempty"`
+	Size           int64            `json:"size"`
+	RootFSType     string           `json:"rootfs_type,omitempty"`
+	RootFSLayers   []string         `json:"rootfs_layers,omitempty"`
+	HistorySize    int64            `json:"history_size"`
+	LayerCount     int              `json:"layer_count"`
+	MetadataCount  int              `json:"metadata_count"`
+	History        []ImageLayerInfo `json:"history"`
+	LargestLayers  []ImageLayerInfo `json:"largest_layers,omitempty"`
 }
 
 type ImageLayerInfo struct {
@@ -119,15 +120,16 @@ func runImageTree(ctx context.Context, imageRef string, opts ImageTreeOptions) (
 
 func buildImageTreeReport(imageRef string, inspect imageapi.InspectResponse, history []imageapi.HistoryResponseItem, opts ImageTreeOptions) ImageTreeReport {
 	report := ImageTreeReport{
-		ImageRef:     imageRef,
-		ID:           shortID(inspect.ID),
-		RepoTags:     sortedStrings(inspect.RepoTags),
-		RepoDigests:  sortedStrings(inspect.RepoDigests),
-		Platform:     imagePlatform(inspect),
-		Created:      inspect.Created,
-		Size:         inspect.Size,
-		RootFSType:   inspect.RootFS.Type,
-		RootFSLayers: append([]string(nil), inspect.RootFS.Layers...),
+		DockerEndpoint: docker.Endpoint(),
+		ImageRef:       imageRef,
+		ID:             shortID(inspect.ID),
+		RepoTags:       sortedStrings(inspect.RepoTags),
+		RepoDigests:    sortedStrings(inspect.RepoDigests),
+		Platform:       imagePlatform(inspect),
+		Created:        inspect.Created,
+		Size:           inspect.Size,
+		RootFSType:     inspect.RootFS.Type,
+		RootFSLayers:   append([]string(nil), inspect.RootFS.Layers...),
 	}
 
 	ordered := append([]imageapi.HistoryResponseItem(nil), history...)
@@ -161,6 +163,7 @@ func buildImageTreeReport(imageRef string, inspect imageapi.InspectResponse, his
 
 func printImageTreeReport(w io.Writer, report ImageTreeReport, opts ImageTreeOptions) {
 	fmt.Fprintf(w, "镜像层报告: %s\n", report.ImageRef)
+	printDockerEndpoint(w, report.DockerEndpoint)
 	fmt.Fprintf(w, "ID: %s\n", displayLayerText(report.ID, opts.NoTrunc, 20))
 	fmt.Fprintf(w, "平台: %s\n", report.Platform)
 	fmt.Fprintf(w, "大小: %s history_size=%s 文件系统层=%d history 条目=%d 元数据条目=%d\n", humanBytes(uint64FromInt64(report.Size)), humanBytes(uint64FromInt64(report.HistorySize)), len(report.RootFSLayers), len(report.History), report.MetadataCount)

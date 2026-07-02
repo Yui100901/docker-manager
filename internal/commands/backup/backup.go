@@ -10,6 +10,7 @@ import (
 	"sort"
 	"time"
 
+	"docker-manager/internal/docker"
 	"docker-manager/internal/resourcefilter"
 	"docker-manager/internal/version"
 
@@ -453,6 +454,7 @@ func namedVolumes(inspect container.InspectResponse) []string {
 
 func printBackupDryRunPlan(w io.Writer, outputDir string, manifest BackupManifest, opts BackupOptions) {
 	fmt.Fprintf(w, "备份 dry-run 计划: %s\n", outputDir)
+	fmt.Fprintf(w, "  来源 Docker: %s\n", docker.Endpoint())
 	fmt.Fprintf(w, "  容器数量: %d\n", len(manifest.Containers))
 	fmt.Fprintf(w, "  源平台: %s\n", manifest.SourcePlatform)
 	fmt.Fprintf(w, "  将生成文件: %s, %s, %s\n", backupManifestName, backupInspectName, backupComposeName)

@@ -3,6 +3,7 @@ package diagnostics
 import (
 	"bytes"
 	"context"
+	"docker-manager/internal/docker"
 	"errors"
 	"strings"
 	"testing"
@@ -97,6 +98,19 @@ func TestRunPruneReportApplyRequiresConfirm(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "--confirm") {
 		t.Fatalf("runPruneReport() error = %q, want --confirm hint", err.Error())
+	}
+}
+
+func TestRunPruneReportApplyRequiresConfirmMentionsRemoteDocker(t *testing.T) {
+	t.Cleanup(func() { docker.Configure(docker.Options{}) })
+	docker.Configure(docker.Options{Host: "tcp://docker.example:2375"})
+
+	_, err := runPruneReport(context.Background(), PruneReportOptions{Apply: true})
+	if err == nil {
+		t.Fatal("runPruneReport() error = nil, want confirm error")
+	}
+	if !strings.Contains(err.Error(), "tcp://docker.example:2375") {
+		t.Fatalf("runPruneReport() error = %q, want remote endpoint", err.Error())
 	}
 }
 

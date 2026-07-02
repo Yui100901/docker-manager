@@ -49,11 +49,12 @@ type LogsScanOptions struct {
 }
 
 type LogsScanReport struct {
-	GeneratedAt string              `json:"generated_at"`
-	Target      TargetSelection     `json:"target"`
-	Keywords    []string            `json:"keywords"`
-	Containers  []LogsScanContainer `json:"containers"`
-	Summary     LogsScanSummary     `json:"summary"`
+	GeneratedAt    string              `json:"generated_at"`
+	DockerEndpoint string              `json:"docker_endpoint"`
+	Target         TargetSelection     `json:"target"`
+	Keywords       []string            `json:"keywords"`
+	Containers     []LogsScanContainer `json:"containers"`
+	Summary        LogsScanSummary     `json:"summary"`
 }
 
 type LogsScanSummary struct {
@@ -181,8 +182,9 @@ func logsScanTargets(ctx context.Context, svc logsScanDockerService, opts LogsSc
 func buildLogsScanReport(ctx context.Context, svc logsScanDockerService, targets []container.Summary, opts LogsScanOptions) (LogsScanReport, error) {
 	keywords := normalizeKeywords(opts.Keywords)
 	report := LogsScanReport{
-		GeneratedAt: time.Now().Format(time.RFC3339),
-		Keywords:    keywords,
+		GeneratedAt:    time.Now().Format(time.RFC3339),
+		DockerEndpoint: docker.Endpoint(),
+		Keywords:       keywords,
 	}
 	for _, target := range targets {
 		if err := ctx.Err(); err != nil {
@@ -372,6 +374,7 @@ func surroundingLines(lines []string, start, end int) []string {
 
 func printLogsScanReport(w io.Writer, report LogsScanReport) {
 	fmt.Fprintf(w, "Docker 日志扫描 (%s)\n", report.GeneratedAt)
+	printDockerEndpoint(w, report.DockerEndpoint)
 	printTargetSelection(w, report.Target)
 	fmt.Fprintf(w, "关键词: %s\n", strings.Join(report.Keywords, ", "))
 	fmt.Fprintf(w, "摘要: 已扫描=%d 命中容器=%d 命中行=%d 错误=%d\n\n", report.Summary.ScannedContainers, report.Summary.ContainersMatched, report.Summary.TotalMatches, report.Summary.Errors)

@@ -43,3 +43,17 @@ func TestEffectiveOptionsExplicitOverridesEnv(t *testing.T) {
 		t.Fatalf("TLSVerify = %#v, want false from explicit config", got.TLSVerify)
 	}
 }
+
+func TestEndpointRemoteDetection(t *testing.T) {
+	t.Cleanup(func() { Configure(Options{}) })
+	Configure(Options{})
+	t.Setenv("DOCKER_HOST", "")
+	if IsRemoteEndpoint() {
+		t.Fatalf("IsRemoteEndpoint() = true for default local endpoint %q", Endpoint())
+	}
+
+	Configure(Options{Host: "tcp://docker.example:2375"})
+	if !IsRemoteEndpoint() {
+		t.Fatalf("IsRemoteEndpoint() = false for %q", Endpoint())
+	}
+}

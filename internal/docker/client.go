@@ -2,6 +2,8 @@ package docker
 
 import (
 	"os"
+	"runtime"
+	"strings"
 	"sync"
 
 	"github.com/docker/docker/client"
@@ -52,6 +54,23 @@ func CurrentOptions() Options {
 	return clientOptions
 }
 
+// Endpoint returns the currently selected Docker endpoint. It prefers explicit
+// config and DOCKER_* env values, then falls back to the platform local daemon.
+func Endpoint() string {
+	opts := EffectiveOptions()
+	if strings.TrimSpace(opts.Host) != "" {
+		return strings.TrimSpace(opts.Host)
+	}
+	return defaultLocalEndpoint()
+}
+
+// IsRemoteEndpoint reports whether the selected endpoint is not the platform
+// local Docker socket or named pipe.
+func IsRemoteEndpoint() bool {
+	host := strings.ToLower(strings.TrimSpace(Endpoint()))
+	return !(strings.HasPrefix(host, "unix://") || strings.HasPrefix(host, "npipe://"))
+}
+
 // EffectiveOptions resolves explicit options over Docker's DOCKER_* environment
 // variables. SDK defaults such as the platform-specific local socket are not
 // expanded here; callers can read Client.DaemonHost after NewClient.
@@ -82,6 +101,13 @@ func EffectiveOptions() Options {
 		opts.TLSVerify = &value
 	}
 	return opts
+}
+
+func defaultLocalEndpoint() string {
+	if runtime.GOOS == "windows" {
+		return "npipe:////./pipe/docker_engine"
+	}
+	return "unix:///var/run/docker.sock"
 }
 
 func sameOptions(a, b Options) bool {

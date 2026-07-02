@@ -3,6 +3,7 @@ package diagnostics
 import (
 	"bytes"
 	"context"
+	"docker-manager/internal/docker"
 	"io"
 	"strings"
 	"testing"
@@ -154,6 +155,32 @@ func TestRunHealthReportFiltersContainersByWildcard(t *testing.T) {
 	}
 	if len(report.Containers) != 1 || report.Containers[0].Name != "api-1" {
 		t.Fatalf("Containers = %#v, want api-1", report.Containers)
+	}
+}
+
+func TestRunHealthReportIncludesDockerEndpoint(t *testing.T) {
+	t.Cleanup(func() { docker.Configure(docker.Options{}) })
+	docker.Configure(docker.Options{Host: "tcp://docker.example:2375"})
+	fake := &fakeHealthDockerService{
+		containers: []container.Summary{{ID: "api-id", Names: []string{"/api"}, State: "running"}},
+		inspects: map[string]container.InspectResponse{
+			"api-id": {ContainerJSONBase: &container.ContainerJSONBase{Name: "/api", State: &container.State{Status: "running"}}},
+		},
+	}
+	restore := replaceHealthServiceFactory(fake)
+	defer restore()
+
+	report, err := runHealthReport(context.Background(), HealthOptions{NoLogs: true})
+	if err != nil {
+		t.Fatalf("runHealthReport() error = %v", err)
+	}
+	if report.DockerEndpoint != "tcp://docker.example:2375" {
+		t.Fatalf("DockerEndpoint = %q, want remote endpoint", report.DockerEndpoint)
+	}
+	var out bytes.Buffer
+	printHealthReport(&out, report)
+	if !strings.Contains(out.String(), "来源 Docker: tcp://docker.example:2375") {
+		t.Fatalf("health text output = %q, want docker endpoint", out.String())
 	}
 }
 

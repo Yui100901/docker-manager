@@ -41,11 +41,12 @@ type InspectDiffOptions struct {
 }
 
 type InspectDiffReport struct {
-	LeftName  string             `json:"left_name"`
-	RightName string             `json:"right_name"`
-	Added     []InspectDiffEntry `json:"added,omitempty"`
-	Removed   []InspectDiffEntry `json:"removed,omitempty"`
-	Changed   []InspectDiffEntry `json:"changed,omitempty"`
+	DockerEndpoint string             `json:"docker_endpoint"`
+	LeftName       string             `json:"left_name"`
+	RightName      string             `json:"right_name"`
+	Added          []InspectDiffEntry `json:"added,omitempty"`
+	Removed        []InspectDiffEntry `json:"removed,omitempty"`
+	Changed        []InspectDiffEntry `json:"changed,omitempty"`
 }
 
 type InspectDiffEntry struct {
@@ -95,7 +96,7 @@ func runInspectDiff(ctx context.Context, leftName, rightName string, opts Inspec
 func buildInspectDiffReport(leftName, rightName string, left, right container.InspectResponse, opts InspectDiffOptions) InspectDiffReport {
 	leftFields := inspectComparableFields(left, opts)
 	rightFields := inspectComparableFields(right, opts)
-	report := InspectDiffReport{LeftName: leftName, RightName: rightName}
+	report := InspectDiffReport{DockerEndpoint: docker.Endpoint(), LeftName: leftName, RightName: rightName}
 
 	seen := map[string]bool{}
 	for path, leftValue := range leftFields {
@@ -333,6 +334,7 @@ func sortInspectDiffEntries(entries []InspectDiffEntry) {
 func printInspectDiffReport(w io.Writer, report InspectDiffReport) {
 	total := len(report.Added) + len(report.Removed) + len(report.Changed)
 	fmt.Fprintf(w, "容器 inspect 差异: %s -> %s\n", report.LeftName, report.RightName)
+	printDockerEndpoint(w, report.DockerEndpoint)
 	fmt.Fprintf(w, "摘要: 变更=%d 新增=%d 删除=%d 总计=%d\n\n", len(report.Changed), len(report.Added), len(report.Removed), total)
 	if total == 0 {
 		fmt.Fprintln(w, "未发现可对比差异。")

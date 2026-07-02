@@ -18,6 +18,7 @@ type PruneReportOptions struct {
 
 type PruneReport struct {
 	GeneratedAt       string               `json:"generated_at"`
+	DockerEndpoint    string               `json:"docker_endpoint"`
 	StoppedContainers []PruneContainerRef  `json:"stopped_containers,omitempty"`
 	DanglingImages    []PruneImageRef      `json:"dangling_images,omitempty"`
 	UnusedVolumes     []PruneVolumeRef     `json:"unused_volumes,omitempty"`

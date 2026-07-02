@@ -2,7 +2,10 @@ package backup
 
 import (
 	"docker-manager/internal/completion"
+	"docker-manager/internal/docker"
 	"fmt"
+	"io"
+
 	"github.com/spf13/cobra"
 )
 
@@ -56,6 +59,9 @@ func NewRestoreCommand() *cobra.Command {
 			if opts.Name != "" && len(args) > 1 {
 				return fmt.Errorf("--name 只支持恢复单个备份")
 			}
+			if !opts.DryRun {
+				printRestoreDockerTarget(cmd.OutOrStdout())
+			}
 			for _, arg := range args {
 				if err := restoreBackup(cmd.Context(), arg, opts); err != nil {
 					return fmt.Errorf("恢复失败: %w", err)
@@ -75,4 +81,10 @@ func NewRestoreCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", false, "只预览恢复动作，不修改 Docker")
 	cmd.Flags().BoolVar(&opts.SkipChecksum, "skip-checksum", false, "跳过 checksums.txt 完整性校验")
 	return cmd
+}
+
+func printRestoreDockerTarget(w io.Writer) {
+	if docker.IsRemoteEndpoint() {
+		fmt.Fprintf(w, "Target Docker: %s\n", docker.Endpoint())
+	}
 }

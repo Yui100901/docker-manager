@@ -38,16 +38,18 @@ func ensureContainerManager() error {
 }
 
 type ReverseResult struct {
-	ParsedResults []ParsedResult
-	RunCommands   map[string][]string
-	ComposeMap    map[string]ComposeService
-	options       ReverseOptions
+	ParsedResults  []ParsedResult
+	RunCommands    map[string][]string
+	ComposeMap     map[string]ComposeService
+	DockerEndpoint string
+	options        ReverseOptions
 }
 
 func NewReverseResult(results []ParsedResult, options ReverseOptions) *ReverseResult {
 	rr := &ReverseResult{
-		ParsedResults: results,
-		options:       options,
+		ParsedResults:  results,
+		DockerEndpoint: docker.Endpoint(),
+		options:        options,
 	}
 	rr.RunCommands = make(map[string][]string)
 	rr.ComposeMap = make(map[string]ComposeService)
@@ -62,6 +64,9 @@ func NewReverseResult(results []ParsedResult, options ReverseOptions) *ReverseRe
 func (rr *ReverseResult) Print(w io.Writer) {
 	if w == nil {
 		w = io.Discard
+	}
+	if rr.DockerEndpoint != "" {
+		fmt.Fprintf(w, "# Source Docker: %s\n", rr.DockerEndpoint)
 	}
 	if rr.options.ReverseType == ReverseCmd || rr.options.ReverseType == ReverseAll {
 		if rr.options.PrettyFormat {
