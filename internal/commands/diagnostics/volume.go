@@ -5,6 +5,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -26,6 +30,8 @@ import (
 const (
 	volumeSizeModeAPI       = "api"
 	volumeSizeModeDockerRun = "docker-run"
+	volumeSizeModeLocalGo   = "local-go"
+	volumeSizeModeAuto      = "auto"
 	volumeDefaultSizeImage  = "busybox:latest"
 )
 
@@ -43,6 +49,8 @@ var newVolumeDockerService = func() (volumeDockerService, error) {
 	}
 	return &dockerVolumeService{cli: cli}, nil
 }
+
+var measureLocalVolumeSize = measureLocalVolumeSizeWithGo
 
 type dockerVolumeService struct {
 	cli *client.Client
@@ -132,8 +140,8 @@ func newVolumeListUnusedCommand() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&opts.All, "all", false, "显示所有 volume，包括仍被容器引用的 volume")
 	cmd.Flags().BoolVar(&opts.NoTrunc, "no-trunc", false, "显示完整 volume 名称和挂载点")
-	cmd.Flags().StringVar(&opts.SizeMode, "size-mode", volumeSizeModeAPI, "volume 大小探测方式: api | docker-run")
-	cmd.Flags().StringVar(&opts.SizeImage, "size-image", volumeDefaultSizeImage, "docker-run 大小探测使用的 helper 镜像，必须已存在于目标 Docker")
+	cmd.Flags().StringVar(&opts.SizeMode, "size-mode", volumeSizeModeAPI, "volume 大小探测方式: api | local-go | docker-run | auto")
+	cmd.Flags().StringVar(&opts.SizeImage, "size-image", volumeDefaultSizeImage, "docker-run/auto 大小探测使用的 helper 镜像，必须已存在于目标 Docker")
 	cmd.Flags().StringArrayVarP(&opts.Filters, "filter", "f", nil, "筛选 volume，支持名称/driver/mountpoint/label 和 * ? 通配符，可重复指定")
 	_ = cmd.RegisterFlagCompletionFunc("filter", completion.LocalVolumes)
 	rpt.AddFormatFlag(cmd, &opts.Format)
@@ -146,9 +154,9 @@ func normalizeVolumeOptions(opts *VolumeOptions) error {
 		opts.SizeMode = volumeSizeModeAPI
 	}
 	switch opts.SizeMode {
-	case volumeSizeModeAPI, volumeSizeModeDockerRun:
+	case volumeSizeModeAPI, volumeSizeModeLocalGo, volumeSizeModeDockerRun, volumeSizeModeAuto:
 	default:
-		return fmt.Errorf("不支持的 --size-mode %q，请使用 api 或 docker-run", opts.SizeMode)
+		return fmt.Errorf("不支持的 --size-mode %q，请使用 api、local-go、docker-run 或 auto", opts.SizeMode)
 	}
 	if strings.TrimSpace(opts.SizeImage) == "" {
 		opts.SizeImage = volumeDefaultSizeImage
@@ -157,6 +165,9 @@ func normalizeVolumeOptions(opts *VolumeOptions) error {
 }
 
 func runVolumeReport(ctx context.Context, opts VolumeOptions) (VolumeReport, error) {
+	if err := normalizeVolumeOptions(&opts); err != nil {
+		return VolumeReport{}, err
+	}
 	svc, err := newVolumeDockerService()
 	if err != nil {
 		return VolumeReport{}, err
@@ -171,8 +182,8 @@ func runVolumeReport(ctx context.Context, opts VolumeOptions) (VolumeReport, err
 	}
 	refsByVolume, warnings := inspectVolumeContainerRefs(ctx, svc, containers)
 	report := buildVolumeReportWithRefs(volumes, refsByVolume, warnings, opts)
-	if opts.SizeMode == volumeSizeModeDockerRun {
-		probeVolumeSizes(ctx, svc, &report, opts.SizeImage)
+	if opts.SizeMode != volumeSizeModeAPI {
+		probeVolumeSizes(ctx, svc, &report, opts)
 	}
 	return report, nil
 }
@@ -240,7 +251,7 @@ func buildVolumeReportWithRefs(volumes volume.ListResponse, refsByVolume map[str
 	return report
 }
 
-func probeVolumeSizes(ctx context.Context, svc volumeDockerService, report *VolumeReport, helperImage string) {
+func probeVolumeSizes(ctx context.Context, svc volumeDockerService, report *VolumeReport, opts VolumeOptions) {
 	for i := range report.Volumes {
 		if err := ctx.Err(); err != nil {
 			report.Warnings = append(report.Warnings, fmt.Sprintf("volume 大小探测已取消: %v", err))
@@ -250,14 +261,14 @@ func probeVolumeSizes(ctx context.Context, svc volumeDockerService, report *Volu
 		if vol.Size >= 0 || vol.Driver != "local" {
 			continue
 		}
-		size, err := svc.MeasureVolumeSize(ctx, vol.Name, helperImage)
+		size, source, err := measureVolumeSize(ctx, svc, vol, opts)
 		if err != nil {
 			vol.SizeError = err.Error()
 			report.Warnings = append(report.Warnings, fmt.Sprintf("volume %s 大小探测失败: %v", vol.Name, err))
 			continue
 		}
 		vol.Size = size
-		vol.SizeSource = volumeSizeModeDockerRun
+		vol.SizeSource = source
 		if report.Summary.UnknownSize > 0 {
 			report.Summary.UnknownSize--
 		}
@@ -265,6 +276,70 @@ func probeVolumeSizes(ctx context.Context, svc volumeDockerService, report *Volu
 			report.Summary.ReclaimableSize += size
 		}
 	}
+}
+
+func measureVolumeSize(ctx context.Context, svc volumeDockerService, vol *VolumeRef, opts VolumeOptions) (int64, string, error) {
+	switch opts.SizeMode {
+	case volumeSizeModeLocalGo:
+		size, err := measureLocalVolumeSize(ctx, vol)
+		return size, volumeSizeModeLocalGo, err
+	case volumeSizeModeDockerRun:
+		size, err := svc.MeasureVolumeSize(ctx, vol.Name, opts.SizeImage)
+		return size, volumeSizeModeDockerRun, err
+	case volumeSizeModeAuto:
+		size, err := measureLocalVolumeSize(ctx, vol)
+		if err == nil {
+			return size, volumeSizeModeLocalGo, nil
+		}
+		localErr := err
+		size, err = svc.MeasureVolumeSize(ctx, vol.Name, opts.SizeImage)
+		if err == nil {
+			return size, volumeSizeModeDockerRun, nil
+		}
+		return -1, "", fmt.Errorf("local-go 不可用: %v; docker-run 失败: %w", localErr, err)
+	default:
+		return -1, "", fmt.Errorf("不支持的大小探测方式 %q", opts.SizeMode)
+	}
+}
+
+func measureLocalVolumeSizeWithGo(ctx context.Context, vol *VolumeRef) (int64, error) {
+	if runtime.GOOS != "linux" {
+		return -1, fmt.Errorf("local-go 仅支持 Linux 本机 Docker，当前系统为 %s", runtime.GOOS)
+	}
+	if docker.IsRemoteEndpoint() || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(docker.Endpoint())), "unix://") {
+		return -1, fmt.Errorf("local-go 仅支持 unix socket 本机 Docker，当前 endpoint=%s", docker.Endpoint())
+	}
+	if strings.TrimSpace(vol.Mountpoint) == "" {
+		return -1, fmt.Errorf("volume %s 没有 mountpoint", vol.Name)
+	}
+	root := filepath.Clean(vol.Mountpoint)
+	info, err := os.Stat(root)
+	if err != nil {
+		return -1, fmt.Errorf("读取 mountpoint %s 失败: %w", root, err)
+	}
+	if !info.IsDir() {
+		return -1, fmt.Errorf("mountpoint %s 不是目录", root)
+	}
+
+	var total int64
+	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if walkErr != nil {
+			return walkErr
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		total += localFileDiskUsage(info)
+		return nil
+	})
+	if err != nil {
+		return -1, fmt.Errorf("遍历 mountpoint %s 失败: %w", root, err)
+	}
+	return total, nil
 }
 
 func inspectVolumeContainerRefs(ctx context.Context, svc volumeDockerService, containers []container.Summary) (map[string][]VolumeContainerRef, []string) {

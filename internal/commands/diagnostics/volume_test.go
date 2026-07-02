@@ -206,6 +206,73 @@ func TestRunVolumeReportDockerRunSizeModeMeasuresUnknownLocalVolumes(t *testing.
 	}
 }
 
+func TestRunVolumeReportLocalGoSizeModeMeasuresUnknownLocalVolumes(t *testing.T) {
+	fake := &fakeVolumeDockerService{
+		volumes: volume.ListResponse{Volumes: []*volume.Volume{
+			{Name: "unused", Driver: "local", Mountpoint: "/var/lib/docker/volumes/unused/_data"},
+		}},
+	}
+	restoreService := replaceVolumeServiceFactory(fake)
+	defer restoreService()
+	restoreLocal := replaceLocalVolumeSize(func(ctx context.Context, vol *VolumeRef) (int64, error) {
+		if vol.Name != "unused" {
+			t.Fatalf("local measure volume = %s, want unused", vol.Name)
+		}
+		return 8192, nil
+	})
+	defer restoreLocal()
+
+	report, err := runVolumeReport(context.Background(), VolumeOptions{SizeMode: volumeSizeModeLocalGo})
+	if err != nil {
+		t.Fatalf("runVolumeReport() error = %v", err)
+	}
+	if len(report.Volumes) != 1 || report.Volumes[0].Size != 8192 || report.Volumes[0].SizeSource != volumeSizeModeLocalGo {
+		t.Fatalf("volume = %#v, want local-go measured size", report.Volumes)
+	}
+	if report.Summary.UnknownSize != 0 || report.Summary.ReclaimableSize != 8192 {
+		t.Fatalf("summary = %#v, want local-go reclaimable size", report.Summary)
+	}
+}
+
+func TestRunVolumeReportAutoSizeModeFallsBackToDockerRun(t *testing.T) {
+	fake := &fakeVolumeDockerService{
+		volumes: volume.ListResponse{Volumes: []*volume.Volume{
+			{Name: "unused", Driver: "local", Mountpoint: "/var/lib/docker/volumes/unused/_data"},
+		}},
+		measuredSizes: map[string]int64{"unused": 16384},
+	}
+	restoreService := replaceVolumeServiceFactory(fake)
+	defer restoreService()
+	restoreLocal := replaceLocalVolumeSize(func(ctx context.Context, vol *VolumeRef) (int64, error) {
+		return -1, errors.New("not local linux")
+	})
+	defer restoreLocal()
+
+	report, err := runVolumeReport(context.Background(), VolumeOptions{SizeMode: volumeSizeModeAuto, SizeImage: "busybox:latest"})
+	if err != nil {
+		t.Fatalf("runVolumeReport() error = %v", err)
+	}
+	if len(report.Volumes) != 1 || report.Volumes[0].Size != 16384 || report.Volumes[0].SizeSource != volumeSizeModeDockerRun {
+		t.Fatalf("volume = %#v, want docker-run fallback measured size", report.Volumes)
+	}
+	if report.Volumes[0].SizeError != "" || len(report.Warnings) != 0 {
+		t.Fatalf("warnings=%#v sizeError=%q, want successful fallback without warning", report.Warnings, report.Volumes[0].SizeError)
+	}
+}
+
+func TestNormalizeVolumeOptionsAcceptsNewSizeModes(t *testing.T) {
+	for _, mode := range []string{volumeSizeModeAPI, volumeSizeModeLocalGo, volumeSizeModeDockerRun, volumeSizeModeAuto} {
+		opts := VolumeOptions{SizeMode: mode}
+		if err := normalizeVolumeOptions(&opts); err != nil {
+			t.Fatalf("normalizeVolumeOptions(%q) error = %v", mode, err)
+		}
+	}
+	opts := VolumeOptions{SizeMode: "bad"}
+	if err := normalizeVolumeOptions(&opts); err == nil {
+		t.Fatal("normalizeVolumeOptions(bad) error = nil, want error")
+	}
+}
+
 func TestBuildVolumeReportFiltersVolumesByWildcard(t *testing.T) {
 	report := buildVolumeReport(volume.ListResponse{
 		Volumes: []*volume.Volume{
@@ -270,5 +337,13 @@ func replaceVolumeServiceFactory(fake *fakeVolumeDockerService) func() {
 	}
 	return func() {
 		newVolumeDockerService = previous
+	}
+}
+
+func replaceLocalVolumeSize(fn func(context.Context, *VolumeRef) (int64, error)) func() {
+	previous := measureLocalVolumeSize
+	measureLocalVolumeSize = fn
+	return func() {
+		measureLocalVolumeSize = previous
 	}
 }
