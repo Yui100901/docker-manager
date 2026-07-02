@@ -6,13 +6,17 @@ import (
 	"strings"
 	"testing"
 
+	containerapi "github.com/docker/docker/api/types/container"
 	imageapi "github.com/docker/docker/api/types/image"
 )
 
 type fakeImageTreeDockerService struct {
-	inspect imageapi.InspectResponse
-	history []imageapi.HistoryResponseItem
-	calls   []string
+	inspect           imageapi.InspectResponse
+	history           []imageapi.HistoryResponseItem
+	images            []imageapi.Summary
+	containers        []containerapi.Summary
+	containerInspects map[string]containerapi.InspectResponse
+	calls             []string
 }
 
 func (f *fakeImageTreeDockerService) ImageInspect(ctx context.Context, imageRef string) (imageapi.InspectResponse, error) {
@@ -23,6 +27,24 @@ func (f *fakeImageTreeDockerService) ImageInspect(ctx context.Context, imageRef 
 func (f *fakeImageTreeDockerService) ImageHistory(ctx context.Context, imageRef string) ([]imageapi.HistoryResponseItem, error) {
 	f.calls = append(f.calls, "history:"+imageRef)
 	return f.history, nil
+}
+
+func (f *fakeImageTreeDockerService) ImageList(ctx context.Context) ([]imageapi.Summary, error) {
+	f.calls = append(f.calls, "list-images")
+	return f.images, nil
+}
+
+func (f *fakeImageTreeDockerService) ListContainers(ctx context.Context, all bool) ([]containerapi.Summary, error) {
+	f.calls = append(f.calls, "list-containers")
+	return f.containers, nil
+}
+
+func (f *fakeImageTreeDockerService) InspectContainer(ctx context.Context, id string) (containerapi.InspectResponse, error) {
+	f.calls = append(f.calls, "inspect-container:"+id)
+	if inspect, ok := f.containerInspects[id]; ok {
+		return inspect, nil
+	}
+	return containerapi.InspectResponse{}, nil
 }
 
 func TestBuildImageTreeReportOrdersHistoryAndFindsLargestLayers(t *testing.T) {
@@ -39,8 +61,8 @@ func TestBuildImageTreeReportOrdersHistoryAndFindsLargestLayers(t *testing.T) {
 		{ID: "sha256:base", CreatedBy: "/bin/sh -c #(nop)  ADD file", Size: 300},
 	}, ImageTreeOptions{Top: 1})
 
-	if report.ID != "imageid12345" {
-		t.Fatalf("ID = %q, want imageid12345", report.ID)
+	if report.ID != "imageid1234567890" {
+		t.Fatalf("ID = %q, want imageid1234567890", report.ID)
 	}
 	if report.Platform != "linux/amd64" {
 		t.Fatalf("Platform = %q, want linux/amd64", report.Platform)
@@ -70,22 +92,76 @@ func TestRunImageTreeCallsInspectAndHistory(t *testing.T) {
 	if _, err := runImageTree(context.Background(), "busybox:latest", ImageTreeOptions{Top: 5}); err != nil {
 		t.Fatalf("runImageTree() error = %v", err)
 	}
-	if strings.Join(fake.calls, ",") != "inspect:busybox:latest,history:busybox:latest" {
-		t.Fatalf("calls = %#v, want inspect then history", fake.calls)
+	wantCalls := "inspect:busybox:latest,history:busybox:latest,list-images,list-containers"
+	if strings.Join(fake.calls, ",") != wantCalls {
+		t.Fatalf("calls = %#v, want %s", fake.calls, wantCalls)
+	}
+}
+
+func TestRunImageTreeIncludesLocalRefsAndUsedByContainers(t *testing.T) {
+	imageID := "sha256:abc1234567890"
+	fake := &fakeImageTreeDockerService{
+		inspect: imageapi.InspectResponse{
+			ID:          imageID,
+			RepoTags:    []string{"demo:latest"},
+			RepoDigests: []string{"demo@sha256:one"},
+			Size:        1,
+		},
+		history: []imageapi.HistoryResponseItem{{ID: imageID, Size: 1}},
+		images: []imageapi.Summary{{
+			ID:          imageID,
+			RepoTags:    []string{"demo:latest", "demo:stable"},
+			RepoDigests: []string{"demo@sha256:one", "demo@sha256:two"},
+		}},
+		containers: []containerapi.Summary{
+			{ID: "api-container-id", Names: []string{"/api"}, Image: "demo:stable", ImageID: imageID, State: "running", Status: "Up"},
+			{ID: "other-container-id", Names: []string{"/other"}, Image: "other:latest", ImageID: "sha256:other", State: "exited"},
+		},
+		containerInspects: map[string]containerapi.InspectResponse{
+			"api-container-id": {
+				ContainerJSONBase: &containerapi.ContainerJSONBase{
+					ID:    "api-container-id",
+					Name:  "/api",
+					Image: imageID,
+				},
+			},
+		},
+	}
+	restore := replaceImageTreeServiceFactory(fake)
+	defer restore()
+
+	report, err := runImageTree(context.Background(), "demo:latest", ImageTreeOptions{Top: 5})
+	if err != nil {
+		t.Fatalf("runImageTree() error = %v", err)
+	}
+	if strings.Join(report.LocalRefs.RepoTags, ",") != "demo:latest,demo:stable" {
+		t.Fatalf("LocalRefs.RepoTags = %#v, want latest and stable", report.LocalRefs.RepoTags)
+	}
+	if strings.Join(report.LocalRefs.RepoDigests, ",") != "demo@sha256:one,demo@sha256:two" {
+		t.Fatalf("LocalRefs.RepoDigests = %#v, want both digests", report.LocalRefs.RepoDigests)
+	}
+	if len(report.UsedBy) != 1 || report.UsedBy[0].Name != "api" || report.UsedBy[0].ID != "api-container-id" {
+		t.Fatalf("UsedBy = %#v, want api container", report.UsedBy)
+	}
+	if report.UsedBy[0].ImageID != "abc1234567890" {
+		t.Fatalf("UsedBy image ID = %q, want full normalized ID", report.UsedBy[0].ImageID)
 	}
 }
 
 func TestPrintImageTreeReportIncludesSummaryLargestAndHistory(t *testing.T) {
+	longCommand := "RUN " + strings.Repeat("install-package-", 20)
 	var out bytes.Buffer
 	printImageTreeReport(&out, ImageTreeReport{
 		ImageRef:      "demo:latest",
-		ID:            "imageid123456",
+		ID:            "imageid1234567890abcdef",
 		Platform:      "linux/amd64",
 		Size:          1024,
 		HistorySize:   1024,
 		RootFSLayers:  []string{"layer1"},
-		History:       []ImageLayerInfo{{Index: 1, ID: "layer1", CreatedBy: "RUN install", Size: 1024, SizePercent: 100}},
-		LargestLayers: []ImageLayerInfo{{Index: 1, ID: "layer1", CreatedBy: "RUN install", Size: 1024, SizePercent: 100}},
+		LocalRefs:     ImageLocalRefs{RepoTags: []string{"demo:latest", "demo:stable"}},
+		UsedBy:        []ImageUsageRef{{ID: "container-id-full", Name: "api", Image: "demo:stable", ImageID: "imageid1234567890abcdef", State: "running", Status: "Up"}},
+		History:       []ImageLayerInfo{{Index: 1, ID: "layer1-full-id", CreatedBy: longCommand, Size: 1024, SizePercent: 100}},
+		LargestLayers: []ImageLayerInfo{{Index: 1, ID: "layer1-full-id", CreatedBy: longCommand, Size: 1024, SizePercent: 100}},
 	}, ImageTreeOptions{Top: 5})
 
 	got := out.String()
@@ -93,6 +169,33 @@ func TestPrintImageTreeReportIncludesSummaryLargestAndHistory(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("output = %q, want %q", got, want)
 		}
+	}
+}
+
+func TestPrintImageTreeReportDoesNotTruncateReportText(t *testing.T) {
+	longCommand := "RUN " + strings.Repeat("install-package-", 20)
+	var out bytes.Buffer
+	printImageTreeReport(&out, ImageTreeReport{
+		ImageRef:      "demo:latest",
+		ID:            "imageid1234567890abcdef",
+		Platform:      "linux/amd64",
+		Size:          1024,
+		HistorySize:   1024,
+		RootFSLayers:  []string{"layer1"},
+		LocalRefs:     ImageLocalRefs{RepoTags: []string{"demo:latest", "demo:stable"}},
+		UsedBy:        []ImageUsageRef{{ID: "container-id-full", Name: "api", Image: "demo:stable", ImageID: "imageid1234567890abcdef", State: "running", Status: "Up"}},
+		History:       []ImageLayerInfo{{Index: 1, ID: "layer1-full-id", CreatedBy: longCommand, Size: 1024, SizePercent: 100}},
+		LargestLayers: []ImageLayerInfo{{Index: 1, ID: "layer1-full-id", CreatedBy: longCommand, Size: 1024, SizePercent: 100}},
+	}, ImageTreeOptions{Top: 5})
+
+	got := out.String()
+	for _, want := range []string{longCommand, "Local refs:", "Used by containers:", "container-id-full", "imageid1234567890abcdef"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("output = %q, want %q", got, want)
+		}
+	}
+	if strings.Contains(got, "...") {
+		t.Fatalf("output = %q, report text should not truncate with ellipsis", got)
 	}
 }
 
