@@ -2,8 +2,11 @@ package completion
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,9 +16,19 @@ import (
 	imageapi "github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/volume"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 const completionTimeout = 2 * time.Second
+const defaultConfigPath = ".dm.yaml"
+const configEnvName = "DM_CONFIG"
+
+type dockerCompletionConfig struct {
+	DockerHost       string `yaml:"docker_host"`
+	DockerTLSVerify  *bool  `yaml:"docker_tls_verify"`
+	DockerCertPath   string `yaml:"docker_cert_path"`
+	DockerAPIVersion string `yaml:"docker_api_version"`
+}
 
 func NewCommand() *cobra.Command {
 	cmd := &cobra.Command{
@@ -48,6 +61,9 @@ func FixedValues(values ...string) cobra.CompletionFunc {
 }
 
 func LocalContainers(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	if err := prepareDockerCompletion(cmd); err != nil {
+		return nil, cobra.ShellCompDirectiveError
+	}
 	values, err := localContainerCompletionValues(cmd.Context())
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveError
@@ -56,6 +72,9 @@ func LocalContainers(cmd *cobra.Command, args []string, toComplete string) ([]st
 }
 
 func LocalImages(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	if err := prepareDockerCompletion(cmd); err != nil {
+		return nil, cobra.ShellCompDirectiveError
+	}
 	values, err := localImageCompletionValues(cmd.Context())
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveError
@@ -64,11 +83,93 @@ func LocalImages(cmd *cobra.Command, args []string, toComplete string) ([]string
 }
 
 func LocalVolumes(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	if err := prepareDockerCompletion(cmd); err != nil {
+		return nil, cobra.ShellCompDirectiveError
+	}
 	values, err := localVolumeCompletionValues(cmd.Context())
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveError
 	}
 	return filterCompletionValues(values, toComplete), cobra.ShellCompDirectiveNoFileComp
+}
+
+func prepareDockerCompletion(cmd *cobra.Command) error {
+	if cmd == nil {
+		return nil
+	}
+	root := cmd.Root()
+	if root == nil {
+		root = cmd
+	}
+	flags := root.PersistentFlags()
+	configPath := defaultConfigPath
+	configFlagChanged := false
+	if flag := flags.Lookup("config"); flag != nil {
+		configPath = flag.Value.String()
+		configFlagChanged = flag.Changed
+	}
+	cfg, err := loadDockerCompletionConfig(resolveCompletionConfigPath(configPath, configFlagChanged))
+	if err != nil {
+		return err
+	}
+	opts := docker.Options{
+		Host:       cfg.DockerHost,
+		TLSVerify:  cfg.DockerTLSVerify,
+		CertPath:   cfg.DockerCertPath,
+		APIVersion: cfg.DockerAPIVersion,
+	}
+	if flag := flags.Lookup("docker-host"); flag != nil && flag.Changed {
+		opts.Host = flag.Value.String()
+	}
+	if flag := flags.Lookup("docker-tls-verify"); flag != nil && flag.Changed {
+		value, err := strconv.ParseBool(flag.Value.String())
+		if err != nil {
+			return err
+		}
+		opts.TLSVerify = &value
+	}
+	if flag := flags.Lookup("docker-cert-path"); flag != nil && flag.Changed {
+		opts.CertPath = flag.Value.String()
+	}
+	if flag := flags.Lookup("docker-api-version"); flag != nil && flag.Changed {
+		opts.APIVersion = flag.Value.String()
+	}
+	docker.Configure(opts)
+	return nil
+}
+
+func resolveCompletionConfigPath(path string, flagChanged bool) string {
+	if flagChanged {
+		if strings.TrimSpace(path) == "" {
+			return defaultConfigPath
+		}
+		return path
+	}
+	if envPath := strings.TrimSpace(os.Getenv(configEnvName)); envPath != "" {
+		return envPath
+	}
+	if strings.TrimSpace(path) == "" {
+		return defaultConfigPath
+	}
+	return path
+}
+
+func loadDockerCompletionConfig(path string) (dockerCompletionConfig, error) {
+	var cfg dockerCompletionConfig
+	if strings.TrimSpace(path) == "" {
+		path = defaultConfigPath
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return cfg, nil
+		}
+		return cfg, err
+	}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
 }
 
 func localContainerCompletionValues(ctx context.Context) ([]string, error) {
