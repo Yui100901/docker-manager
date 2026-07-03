@@ -3,7 +3,7 @@ package diagnostics
 import (
 	"time"
 
-	rpt "docker-manager/internal/report"
+	"docker-manager/internal/commandflags"
 )
 
 type DoctorOptions struct {
@@ -15,7 +15,7 @@ type DoctorOptions struct {
 	Timeout       time.Duration
 	CheckE2E      bool
 	MinDiskFreeMB int64
-	rpt.FormatOptions
+	commandflags.FormatOptions
 }
 
 type DoctorDefaults struct {

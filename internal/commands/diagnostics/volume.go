@@ -1,7 +1,6 @@
 package diagnostics
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -10,9 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
-	"strconv"
 	"strings"
-	"time"
 
 	"docker-manager/internal/commandflags"
 	"docker-manager/internal/completion"
@@ -20,11 +17,9 @@ import (
 	rpt "docker-manager/internal/report"
 
 	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
-	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/spf13/cobra"
 )
 
@@ -67,7 +62,7 @@ type VolumeOptions struct {
 	SizeMode  string
 	SizeImage string
 	Filters   []string
-	rpt.FormatOptions
+	commandflags.FormatOptions
 }
 
 type VolumeReport struct {
@@ -459,61 +454,6 @@ func volumeUsageStatus(ref VolumeRef) string {
 	return "suspected-unused"
 }
 
-func printVolumeReport(w io.Writer, report VolumeReport, opts VolumeOptions) {
-	fmt.Fprintln(w, "Docker volume 报告")
-	printDockerEndpoint(w, report.DockerEndpoint)
-	fmt.Fprintf(w, "Volume: 总数=%d 已列出=%d 未使用=%d 疑似未使用=%d 使用中=%d 未知大小=%d 可回收=%s\n\n",
-		report.Summary.Total,
-		len(report.Volumes),
-		report.Summary.Unused,
-		report.Summary.SuspectedUnused,
-		report.Summary.Used,
-		report.Summary.UnknownSize,
-		humanBytes(uint64FromInt64(report.Summary.ReclaimableSize)),
-	)
-	if len(report.Warnings) > 0 {
-		fmt.Fprintln(w, "警告:")
-		for _, warning := range report.Warnings {
-			fmt.Fprintf(w, "  - %s\n", warning)
-		}
-		fmt.Fprintln(w)
-	}
-
-	fmt.Fprintln(w, "Volume:")
-	if len(report.Volumes) == 0 {
-		fmt.Fprintln(w, "  无")
-		return
-	}
-	for _, vol := range report.Volumes {
-		name := displayLayerText(vol.Name, opts.NoTrunc, 48)
-		mountpoint := displayLayerText(vol.Mountpoint, opts.NoTrunc, 72)
-		fmt.Fprintf(w, "  - %s 状态=%s driver=%s 引用=%d(%s) 大小=%s 匿名=%v\n", name, vol.Status, vol.Driver, vol.RefCount, vol.RefSource, volumeSizeText(vol), vol.Anonymous)
-		if mountpoint != "" {
-			fmt.Fprintf(w, "      mountpoint=%s\n", mountpoint)
-		}
-		if vol.SizeError != "" {
-			fmt.Fprintf(w, "      size-error=%s\n", vol.SizeError)
-		}
-		if len(vol.Containers) == 0 {
-			fmt.Fprintln(w, "      容器=无")
-			continue
-		}
-		for _, c := range vol.Containers {
-			fmt.Fprintf(w, "      容器=%s 镜像=%s 状态=%s 挂载点=%s 可写=%v 模式=%s\n", c.Name, c.Image, c.State, c.Destination, c.RW, c.Mode)
-		}
-	}
-}
-
-func volumeSizeText(vol VolumeRef) string {
-	if vol.Size < 0 {
-		return "未知"
-	}
-	if vol.SizeSource == "" {
-		return humanBytes(uint64FromInt64(vol.Size))
-	}
-	return fmt.Sprintf("%s(%s)", humanBytes(uint64FromInt64(vol.Size)), vol.SizeSource)
-}
-
 func sortVolumeReport(report *VolumeReport) {
 	sort.Slice(report.Volumes, func(i, j int) bool {
 		if report.Volumes[i].Status == report.Volumes[j].Status {
@@ -557,126 +497,4 @@ func cloneStringMap(src map[string]string) map[string]string {
 		dst[key] = value
 	}
 	return dst
-}
-
-func (s *dockerVolumeService) ListVolumes(ctx context.Context) (volume.ListResponse, error) {
-	return s.cli.VolumeList(ctx, volume.ListOptions{Filters: filters.NewArgs()})
-}
-
-func (s *dockerVolumeService) ListContainers(ctx context.Context, all bool) ([]container.Summary, error) {
-	return s.cli.ContainerList(ctx, container.ListOptions{All: all})
-}
-
-func (s *dockerVolumeService) InspectContainer(ctx context.Context, id string) (container.InspectResponse, error) {
-	return s.cli.ContainerInspect(ctx, id)
-}
-
-func (s *dockerVolumeService) MeasureVolumeSize(ctx context.Context, volumeName, helperImage string) (int64, error) {
-	if strings.TrimSpace(helperImage) == "" {
-		helperImage = volumeDefaultSizeImage
-	}
-	if _, err := s.cli.ImageInspect(ctx, helperImage); err != nil {
-		return -1, fmt.Errorf("helper 镜像 %q 在目标 Docker 上不可用: %w", helperImage, err)
-	}
-
-	containerName := "dm_volume_size_" + time.Now().Format("20060102150405") + "_" + safeVolumeProbeName(volumeName)
-	resp, err := s.cli.ContainerCreate(ctx,
-		&container.Config{
-			Image: helperImage,
-			Cmd: []string{
-				"sh",
-				"-c",
-				`bytes=$(du -sb /mnt/volume 2>/dev/null | awk '{print $1}'); if [ -n "$bytes" ]; then echo "$bytes"; else du -sk /mnt/volume 2>/dev/null | awk '{print $1 * 1024}'; fi`,
-			},
-		},
-		&container.HostConfig{
-			Mounts: []mount.Mount{{
-				Type:     mount.TypeVolume,
-				Source:   volumeName,
-				Target:   "/mnt/volume",
-				ReadOnly: true,
-			}},
-		},
-		nil,
-		nil,
-		containerName,
-	)
-	if err != nil {
-		return -1, fmt.Errorf("创建大小探测容器失败: %w", err)
-	}
-	defer removeVolumeProbeContainer(s.cli, resp.ID)
-
-	if err := s.cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
-		return -1, fmt.Errorf("启动大小探测容器失败: %w", err)
-	}
-	waitC, errC := s.cli.ContainerWait(ctx, resp.ID, container.WaitConditionNotRunning)
-	select {
-	case waitResp := <-waitC:
-		if waitResp.Error != nil {
-			return -1, fmt.Errorf("大小探测容器失败: %s", waitResp.Error.Message)
-		}
-		if waitResp.StatusCode != 0 {
-			stderr := readVolumeProbeLogs(ctx, s.cli, resp.ID, true)
-			return -1, fmt.Errorf("大小探测容器退出码=%d stderr=%s", waitResp.StatusCode, strings.TrimSpace(stderr))
-		}
-	case err := <-errC:
-		if err != nil {
-			return -1, fmt.Errorf("等待大小探测容器失败: %w", err)
-		}
-	case <-ctx.Done():
-		return -1, ctx.Err()
-	}
-
-	stdout := readVolumeProbeLogs(ctx, s.cli, resp.ID, false)
-	fields := strings.Fields(stdout)
-	if len(fields) == 0 {
-		return -1, fmt.Errorf("大小探测容器没有输出")
-	}
-	size, err := strconv.ParseInt(fields[0], 10, 64)
-	if err != nil {
-		return -1, fmt.Errorf("解析大小探测输出 %q 失败: %w", strings.TrimSpace(stdout), err)
-	}
-	return size, nil
-}
-
-func readVolumeProbeLogs(ctx context.Context, cli *client.Client, containerID string, stderrOnly bool) string {
-	logs, err := cli.ContainerLogs(ctx, containerID, container.LogsOptions{ShowStdout: !stderrOnly, ShowStderr: true, Tail: "all"})
-	if err != nil {
-		return err.Error()
-	}
-	defer logs.Close()
-	var stdout, stderr bytes.Buffer
-	_, _ = stdcopy.StdCopy(&stdout, &stderr, logs)
-	if stderrOnly {
-		return stderr.String()
-	}
-	if stdout.Len() > 0 {
-		return stdout.String()
-	}
-	return stderr.String()
-}
-
-func removeVolumeProbeContainer(cli *client.Client, containerID string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	_ = cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true})
-}
-
-func safeVolumeProbeName(name string) string {
-	var b strings.Builder
-	for _, r := range name {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
-			b.WriteRune(r)
-		default:
-			b.WriteByte('_')
-		}
-		if b.Len() >= 40 {
-			break
-		}
-	}
-	if b.Len() == 0 {
-		return "volume"
-	}
-	return b.String()
 }

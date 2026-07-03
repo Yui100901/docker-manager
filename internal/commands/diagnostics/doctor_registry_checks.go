@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"docker-manager/internal/commandflags"
 	rpt "docker-manager/internal/report"
 )
 
@@ -99,7 +100,7 @@ func checkDoctorRegistry(ctx context.Context, registry string, opts DoctorOption
 		DockerConfig:  opts.DockerConfig,
 		PlainHTTP:     opts.PlainHTTP,
 		Timeout:       opts.Timeout,
-		FormatOptions: rpt.FormatOptions{Format: rpt.FormatJSON},
+		FormatOptions: commandflags.FormatOptions{Format: rpt.FormatJSON},
 	})
 	if err != nil {
 		return []DoctorCheck{{

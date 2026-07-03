@@ -2,7 +2,7 @@ package backup
 
 import (
 	"context"
-	"docker-manager/internal/commands/reverse"
+	"docker-manager/internal/runconfig"
 	"encoding/json"
 	"fmt"
 	"github.com/docker/docker/api/types/container"
@@ -11,18 +11,72 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 func writeComposeFile(path string, inspect container.InspectResponse) error {
-	parser := reverse.NewParser(inspect, reverse.ReverseOptions{
+	parser := runconfig.NewParser(inspect, runconfig.ReverseOptions{
 		PreserveVolumes: true,
-		ReverseType:     reverse.ReverseCompose,
+		ReverseType:     runconfig.ReverseCompose,
 	})
-	result := reverse.NewReverseResult([]reverse.ParsedResult{parser.ToResult()}, reverse.ReverseOptions{
-		PreserveVolumes: true,
-		ReverseType:     reverse.ReverseCompose,
-	})
+	result := newBackupComposeResult([]runconfig.ParsedResult{parser.ToResult()})
 	return os.WriteFile(path, []byte(result.DockerComposeFileString()), 0644)
+}
+
+type backupComposeResult struct {
+	ComposeMap map[string]runconfig.ComposeService
+}
+
+func newBackupComposeResult(results []runconfig.ParsedResult) *backupComposeResult {
+	result := &backupComposeResult{ComposeMap: map[string]runconfig.ComposeService{}}
+	for _, item := range results {
+		result.ComposeMap[item.Name] = item.Compose
+	}
+	return result
+}
+
+func (result *backupComposeResult) DockerComposeFileString() string {
+	volumes, networks := buildBackupTopLevelComposeMeta(result.ComposeMap)
+	yml, _ := yaml.Marshal(runconfig.ComposeFile{Services: result.ComposeMap, Volumes: volumes, Networks: networks})
+	return string(yml)
+}
+
+func buildBackupTopLevelComposeMeta(services map[string]runconfig.ComposeService) (map[string]interface{}, map[string]interface{}) {
+	volumes := map[string]interface{}{}
+	networks := map[string]interface{}{}
+	for _, svc := range services {
+		for _, volume := range svc.Volumes {
+			parts := strings.SplitN(volume, ":", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			name := parts[0]
+			if !strings.Contains(name, "/") && !strings.Contains(name, "\\") {
+				volumes[name] = map[string]interface{}{"external": false}
+			}
+		}
+		networkMode := strings.TrimSpace(svc.NetworkMode)
+		if isBackupCustomNetwork(networkMode) {
+			networks[networkMode] = map[string]interface{}{"external": false}
+		}
+	}
+	if len(volumes) == 0 {
+		volumes = nil
+	}
+	if len(networks) == 0 {
+		networks = nil
+	}
+	return volumes, networks
+}
+
+func isBackupCustomNetwork(name string) bool {
+	switch name {
+	case "", "default", "bridge", "host", "none":
+		return false
+	default:
+		return !strings.HasPrefix(name, "container:") && !strings.HasPrefix(name, "service:")
+	}
 }
 
 func writeJSONFile(path string, value interface{}) error {

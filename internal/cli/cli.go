@@ -12,25 +12,13 @@ import (
 	"sync"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	"docker-manager/internal/appconfig"
 )
 
-const defaultConfigPath = ".dm.yaml"
-const configEnvName = "DM_CONFIG"
+const defaultConfigPath = appconfig.DefaultPath
+const configEnvName = appconfig.EnvName
 
-type appConfig struct {
-	Proxy            string `yaml:"proxy"`
-	TargetOS         string `yaml:"os"`
-	Arch             string `yaml:"arch"`
-	OutputDir        string `yaml:"output_dir"`
-	DockerHost       string `yaml:"docker_host"`
-	DockerTLSVerify  *bool  `yaml:"docker_tls_verify"`
-	DockerCertPath   string `yaml:"docker_cert_path"`
-	DockerAPIVersion string `yaml:"docker_api_version"`
-	Verbose          bool   `yaml:"verbose"`
-	Quiet            bool   `yaml:"quiet"`
-	JSON             bool   `yaml:"log_json"`
-}
+type appConfig = appconfig.Config
 
 type outputOptions struct {
 	Verbose bool
@@ -44,37 +32,11 @@ type jsonLogWriter struct {
 }
 
 func loadAppConfig(path string) (appConfig, error) {
-	var cfg appConfig
-	if path == "" {
-		path = defaultConfigPath
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return cfg, nil
-		}
-		return cfg, err
-	}
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return cfg, err
-	}
-	return cfg, nil
+	return appconfig.Load(path)
 }
 
 func resolveConfigPath(path string, flagChanged bool) string {
-	if flagChanged {
-		if path == "" {
-			return defaultConfigPath
-		}
-		return path
-	}
-	if envPath := strings.TrimSpace(os.Getenv(configEnvName)); envPath != "" {
-		return envPath
-	}
-	if path == "" {
-		return defaultConfigPath
-	}
-	return path
+	return appconfig.ResolvePath(path, flagChanged)
 }
 
 func configureLogging(opts outputOptions) {

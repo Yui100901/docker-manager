@@ -1,7 +1,7 @@
 package diagnostics
 
 import (
-	rpt "docker-manager/internal/report"
+	"docker-manager/internal/commandflags"
 
 	"github.com/docker/docker/api/types/filters"
 )
@@ -13,7 +13,7 @@ type PruneReportOptions struct {
 	Filters       []string
 	Until         string
 	ProtectLabels []string
-	rpt.FormatOptions
+	commandflags.FormatOptions
 }
 
 type PruneReport struct {

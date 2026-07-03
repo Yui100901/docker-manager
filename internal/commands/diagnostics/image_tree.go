@@ -42,7 +42,7 @@ type dockerImageTreeService struct {
 type ImageTreeOptions struct {
 	NoTrunc bool
 	Top     int
-	rpt.FormatOptions
+	commandflags.FormatOptions
 }
 
 type ImageTreeReport struct {

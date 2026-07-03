@@ -27,7 +27,7 @@ type VersionInfo struct {
 }
 
 func NewCommand() *cobra.Command {
-	opts := report.FormatOptions{}
+	opts := commandflags.FormatOptions{}
 	cmd := &cobra.Command{
 		Use:   "version",
 		Short: "输出 dm 版本、commit 和构建信息",

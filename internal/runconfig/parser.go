@@ -1,4 +1,4 @@
-package reverse
+package runconfig
 
 import (
 	"fmt"
@@ -417,6 +417,10 @@ func mergePortRanges(bindings []PortBindingSpec) []string {
 		result = append(result, formatRange(start, prev))
 	}
 	return result
+}
+
+func MergePortRanges(bindings []PortBindingSpec) []string {
+	return mergePortRanges(bindings)
 }
 
 func formatRange(start, end PortBindingSpec) string {

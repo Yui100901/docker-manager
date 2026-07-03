@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	rpt "docker-manager/internal/report"
+	"docker-manager/internal/commandflags"
 
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -40,7 +40,7 @@ type PullBatchOptions struct {
 	StateFile      string
 	ReportFile     string
 	ProgressOutput io.Writer
-	rpt.FormatOptions
+	commandflags.FormatOptions
 }
 
 type PullBatchReport struct {

@@ -13,10 +13,6 @@ const (
 	FormatHTML     = "html"
 )
 
-type FormatOptions struct {
-	Format string
-}
-
 func Print(w io.Writer, format string, report interface{}, printText func(io.Writer)) error {
 	switch format {
 	case "", FormatText:

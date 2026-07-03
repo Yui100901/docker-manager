@@ -1,4 +1,4 @@
-package reverse
+package runconfig
 
 type ReverseType string
 

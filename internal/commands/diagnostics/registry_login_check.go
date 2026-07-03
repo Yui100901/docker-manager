@@ -47,7 +47,7 @@ type RegistryLoginCheckOptions struct {
 	Timeout       time.Duration
 	FailOnError   bool
 	FailOnWarning bool
-	rpt.FormatOptions
+	commandflags.FormatOptions
 }
 
 type RegistryLoginCheckReport struct {

@@ -1,4 +1,4 @@
-package reverse
+package runconfig
 
 type ComposeFile struct {
 	Services map[string]ComposeService `yaml:"services"`

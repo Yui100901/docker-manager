@@ -2,33 +2,24 @@ package completion
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"docker-manager/internal/appconfig"
 	"docker-manager/internal/docker"
 
 	"github.com/docker/docker/api/types/container"
 	imageapi "github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/volume"
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 )
 
 const completionTimeout = 2 * time.Second
-const defaultConfigPath = ".dm.yaml"
-const configEnvName = "DM_CONFIG"
-
-type dockerCompletionConfig struct {
-	DockerHost       string `yaml:"docker_host"`
-	DockerTLSVerify  *bool  `yaml:"docker_tls_verify"`
-	DockerCertPath   string `yaml:"docker_cert_path"`
-	DockerAPIVersion string `yaml:"docker_api_version"`
-}
+const defaultConfigPath = appconfig.DefaultPath
+const configEnvName = appconfig.EnvName
 
 func NewCommand() *cobra.Command {
 	cmd := &cobra.Command{
@@ -108,7 +99,7 @@ func prepareDockerCompletion(cmd *cobra.Command) error {
 		configPath = flag.Value.String()
 		configFlagChanged = flag.Changed
 	}
-	cfg, err := loadDockerCompletionConfig(resolveCompletionConfigPath(configPath, configFlagChanged))
+	cfg, err := appconfig.Load(appconfig.ResolvePath(configPath, configFlagChanged))
 	if err != nil {
 		return err
 	}
@@ -136,40 +127,6 @@ func prepareDockerCompletion(cmd *cobra.Command) error {
 	}
 	docker.Configure(opts)
 	return nil
-}
-
-func resolveCompletionConfigPath(path string, flagChanged bool) string {
-	if flagChanged {
-		if strings.TrimSpace(path) == "" {
-			return defaultConfigPath
-		}
-		return path
-	}
-	if envPath := strings.TrimSpace(os.Getenv(configEnvName)); envPath != "" {
-		return envPath
-	}
-	if strings.TrimSpace(path) == "" {
-		return defaultConfigPath
-	}
-	return path
-}
-
-func loadDockerCompletionConfig(path string) (dockerCompletionConfig, error) {
-	var cfg dockerCompletionConfig
-	if strings.TrimSpace(path) == "" {
-		path = defaultConfigPath
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return cfg, nil
-		}
-		return cfg, err
-	}
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return cfg, err
-	}
-	return cfg, nil
 }
 
 func localContainerCompletionValues(ctx context.Context) ([]string, error) {

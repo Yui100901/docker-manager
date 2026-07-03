@@ -7,6 +7,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
+type FormatOptions struct {
+	Format string
+}
+
 // AddReportFormatFlag wires the shared report output flag at command-construction time.
 // Keeping this helper outside internal/report lets the renderer package stay free of Cobra.
 func AddReportFormatFlag(cmd *cobra.Command, format *string) {

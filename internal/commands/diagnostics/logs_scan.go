@@ -46,7 +46,7 @@ type LogsScanOptions struct {
 	Keywords      []string
 	Filters       []string
 	RedactSecrets bool
-	rpt.FormatOptions
+	commandflags.FormatOptions
 }
 
 type LogsScanReport struct {

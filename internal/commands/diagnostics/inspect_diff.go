@@ -38,7 +38,7 @@ type dockerInspectDiffService struct {
 
 type InspectDiffOptions struct {
 	RedactSecrets bool
-	rpt.FormatOptions
+	commandflags.FormatOptions
 }
 
 type InspectDiffReport struct {
