@@ -5,6 +5,7 @@ import (
 	"io"
 	"runtime"
 
+	"docker-manager/internal/commandflags"
 	"docker-manager/internal/report"
 
 	"github.com/spf13/cobra"
@@ -38,7 +39,7 @@ func NewCommand() *cobra.Command {
 			})
 		},
 	}
-	report.AddFormatFlag(cmd, &opts.Format)
+	commandflags.AddReportFormatFlag(cmd, &opts.Format)
 	return cmd
 }
 

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"docker-manager/internal/commandflags"
 	"docker-manager/internal/completion"
 	"docker-manager/internal/docker"
 	rpt "docker-manager/internal/report"
@@ -119,7 +120,7 @@ func NewImageTreeCommand() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&opts.NoTrunc, "no-trunc", false, "显示完整 layer ID 和构建命令")
 	cmd.Flags().IntVar(&opts.Top, "top", opts.Top, "显示最大的前 N 个 layer，0 表示不显示")
-	rpt.AddFormatFlag(cmd, &opts.Format)
+	commandflags.AddReportFormatFlag(cmd, &opts.Format)
 	return cmd
 }
 

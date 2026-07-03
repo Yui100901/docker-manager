@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"docker-manager/internal/commandflags"
 	"docker-manager/internal/completion"
 	"docker-manager/internal/docker"
 	rpt "docker-manager/internal/report"
@@ -73,7 +74,7 @@ func NewInspectDiffCommand() *cobra.Command {
 		ValidArgsFunction: completion.LocalContainers,
 	}
 	cmd.Flags().BoolVar(&opts.RedactSecrets, "redact-secrets", false, "脱敏 env/label/cmd/entrypoint/healthcheck/log config 等字段中的疑似敏感信息，便于分享输出")
-	rpt.AddFormatFlag(cmd, &opts.Format)
+	commandflags.AddReportFormatFlag(cmd, &opts.Format)
 	return cmd
 }
 

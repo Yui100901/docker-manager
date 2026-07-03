@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"docker-manager/internal/commandflags"
 	"docker-manager/internal/completion"
 	"docker-manager/internal/docker"
 	rpt "docker-manager/internal/report"
@@ -148,7 +149,7 @@ func NewNetworkCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&opts.RunningOnly, "running", false, "只查看正在运行的容器")
 	cmd.Flags().StringArrayVarP(&opts.ContainerFilters, "filter", "f", nil, "筛选容器，支持 name:/id:/image:/state:/status:/label: 和 * ? 通配符，可重复指定")
 	_ = cmd.RegisterFlagCompletionFunc("filter", completion.LocalContainers)
-	rpt.AddFormatFlag(cmd, &opts.Format)
+	commandflags.AddReportFormatFlag(cmd, &opts.Format)
 	return cmd
 }
 

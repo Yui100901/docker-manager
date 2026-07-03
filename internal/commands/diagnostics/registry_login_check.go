@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"docker-manager/internal/commandflags"
 	"docker-manager/internal/docker"
 	"docker-manager/internal/registryauth"
 	rpt "docker-manager/internal/report"
@@ -101,7 +102,7 @@ func NewRegistryReportCommand() *cobra.Command {
 	cmd.Flags().DurationVar(&opts.Timeout, "timeout", opts.Timeout, "registry 连通性检查超时时间")
 	cmd.Flags().BoolVar(&opts.FailOnError, "fail-on-error", opts.FailOnError, "registry 检查出现 failed 状态时返回非零退出码")
 	cmd.Flags().BoolVar(&opts.FailOnWarning, "fail-on-warning", false, "registry 检查出现 warning 状态时也返回非零退出码")
-	rpt.AddFormatFlag(cmd, &opts.Format)
+	commandflags.AddReportFormatFlag(cmd, &opts.Format)
 	return cmd
 }
 

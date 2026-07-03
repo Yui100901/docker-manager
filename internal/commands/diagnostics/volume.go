@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"docker-manager/internal/commandflags"
 	"docker-manager/internal/completion"
 	"docker-manager/internal/docker"
 	rpt "docker-manager/internal/report"
@@ -148,7 +149,7 @@ func newVolumeListUnusedCommand() *cobra.Command {
 	cmd.Flags().StringVar(&opts.SizeImage, "size-image", volumeDefaultSizeImage, "docker-run/auto 大小探测使用的 helper 镜像，必须已存在于目标 Docker")
 	cmd.Flags().StringArrayVarP(&opts.Filters, "filter", "f", nil, "筛选 volume，支持名称/driver/mountpoint/label 和 * ? 通配符，可重复指定")
 	_ = cmd.RegisterFlagCompletionFunc("filter", completion.LocalVolumes)
-	rpt.AddFormatFlag(cmd, &opts.Format)
+	commandflags.AddReportFormatFlag(cmd, &opts.Format)
 	return cmd
 }
 

@@ -2,6 +2,7 @@ package pull
 
 import (
 	"context"
+	"docker-manager/internal/commandflags"
 	rpt "docker-manager/internal/report"
 	"errors"
 	"fmt"
@@ -148,7 +149,7 @@ func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command 
 	cmd.Flags().BoolVar(&batchOpts.Resume, "resume", false, "批量模式读取状态文件并跳过已经成功的镜像")
 	cmd.Flags().StringVar(&batchOpts.StateFile, "state-file", "", "批量模式状态文件路径，默认写入 <output-dir>/pull-state.json")
 	cmd.Flags().StringVar(&batchOpts.ReportFile, "report", "", "批量模式额外写入 JSON 汇总报告文件")
-	rpt.AddFormatFlag(cmd, &batchOpts.Format)
+	commandflags.AddReportFormatFlag(cmd, &batchOpts.Format)
 	_ = cmd.RegisterFlagCompletionFunc("os", completePullValues("linux", "windows"))
 	_ = cmd.RegisterFlagCompletionFunc("arch", completePullValues("amd64", "arm64", "arm", "386", "ppc64le", "s390x"))
 	return cmd

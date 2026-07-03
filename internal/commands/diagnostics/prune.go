@@ -2,6 +2,7 @@ package diagnostics
 
 import (
 	"context"
+	"docker-manager/internal/commandflags"
 	"docker-manager/internal/docker"
 	"fmt"
 	"io"
@@ -49,7 +50,7 @@ func NewPruneReportCommand() *cobra.Command {
 	cmd.Flags().StringArrayVarP(&opts.Filters, "filter", "f", nil, "清理筛选条件，支持 label=key、label=key=value、label!=key、until=<duration|timestamp>，可重复指定")
 	cmd.Flags().StringVar(&opts.Until, "until", "", "仅清理该时间之前创建的资源，例如 24h、168h 或 RFC3339 时间")
 	cmd.Flags().StringArrayVar(&opts.ProtectLabels, "protect-label", nil, "保护带有指定 label 的资源，例如 keep 或 env=prod，可重复指定")
-	rpt.AddFormatFlag(cmd, &opts.Format)
+	commandflags.AddReportFormatFlag(cmd, &opts.Format)
 	return cmd
 }
 

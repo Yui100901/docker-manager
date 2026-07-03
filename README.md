@@ -230,7 +230,7 @@ dm completion fish
 dm completion powershell
 ```
 
-资源参数会尽量从本机 Docker 补齐，例如容器、镜像和 volume。已支持的典型位置包括 `backup`、`reverse`、`report diff`、`report logs`、`report health`、`report network`、`image tree`、`report volumes`，以及 `image save --filter` 等筛选参数。
+资源参数会尽量从当前 Docker endpoint 补齐，例如容器、镜像和 volume。补全会读取 `DOCKER_HOST` 等 Docker 标准环境变量；也会读取 `DM_CONFIG` / `--config` 中的 `docker_host`、`docker_tls_verify`、`docker_cert_path`、`docker_api_version`，并允许 `--docker-host` 等全局参数覆盖配置。已支持的典型位置包括 `backup`、`reverse`、`report diff`、`report logs`、`report health`、`report network`、`image tree`、`report volumes`，以及 `image save --filter` 等筛选参数。
 
 安装脚本默认安装补全脚本。Linux/macOS 的 `scripts/install.sh` 默认生成 bash 补全；如果传入 `--completion`，则按传入列表生成，例如 `--completion bash --completion zsh --completion fish`；使用 `--no-completion` 可关闭。Windows 的 `scripts/install.ps1` 默认生成 PowerShell 补全并写入可卸载的 profile 片段，使用 `-NoCompletion` 可关闭。
 

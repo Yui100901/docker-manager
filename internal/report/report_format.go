@@ -4,10 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-
-	"docker-manager/internal/completion"
-
-	"github.com/spf13/cobra"
 )
 
 const (
@@ -19,11 +15,6 @@ const (
 
 type FormatOptions struct {
 	Format string
-}
-
-func AddFormatFlag(cmd *cobra.Command, format *string) {
-	cmd.Flags().StringVar(format, "format", FormatText, "业务报告输出格式: text | json | markdown | html")
-	_ = cmd.RegisterFlagCompletionFunc("format", completion.FixedValues(FormatText, FormatJSON, FormatMarkdown, "md", FormatHTML))
 }
 
 func Print(w io.Writer, format string, report interface{}, printText func(io.Writer)) error {

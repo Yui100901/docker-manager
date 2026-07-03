@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"time"
 
+	"docker-manager/internal/commandflags"
 	rpt "docker-manager/internal/report"
 
 	"github.com/spf13/cobra"
@@ -50,7 +51,7 @@ func NewDoctorCommandWithDefaults(defaults func() DoctorDefaults) *cobra.Command
 	cmd.Flags().DurationVar(&opts.Timeout, "timeout", opts.Timeout, "单项网络/Docker 检查超时时间")
 	cmd.Flags().BoolVar(&opts.CheckE2E, "check-e2e", opts.CheckE2E, "检查 scripts/e2e.sh、Go 和 vendor 前置条件")
 	cmd.Flags().Int64Var(&opts.MinDiskFreeMB, "min-disk-free-mb", opts.MinDiskFreeMB, "磁盘剩余空间告警阈值，单位 MB")
-	rpt.AddFormatFlag(cmd, &opts.Format)
+	commandflags.AddReportFormatFlag(cmd, &opts.Format)
 	return cmd
 }
 
