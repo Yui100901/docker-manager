@@ -188,7 +188,7 @@
 - README 精简为项目功能、构建、安装、配置和命令说明，不再展开测试报告。
 - 新增 `docs/TESTING.md`，集中维护本地检查、远程 Docker 验收、企业 registry 验收和历史测试结论。
 - 精简 `docs/RELEASE_CHECKLIST.md`，只保留发布操作核对项。
-- `docs/REMOTE_TESTING.md` 改为兼容旧链接的跳转说明，远程测试正文合并到 `docs/TESTING.md`。
+- 删除冗余的远程测试跳转文档，远程测试正文统一维护在 `docs/TESTING.md`。
 - 删除临时功能扩展清单 `OPTIMIZATION_AND_EXTENSIONS.md`，已完成项归档到本 changelog。
 
 ### 已知非阻断项
