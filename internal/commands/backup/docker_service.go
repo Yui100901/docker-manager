@@ -2,21 +2,35 @@ package backup
 
 import (
 	"context"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/api/types/volume"
-	"github.com/docker/docker/client"
 	"io"
 	"log"
 	"os"
+
+	cerrdefs "github.com/containerd/errdefs"
+	oldcontainer "github.com/docker/docker/api/types/container"
+	oldnetwork "github.com/docker/docker/api/types/network"
+	oldvolume "github.com/docker/docker/api/types/volume"
+	mobycontainer "github.com/moby/moby/api/types/container"
+	mobynetwork "github.com/moby/moby/api/types/network"
+	mobyclient "github.com/moby/moby/client"
+
+	"docker-manager/internal/docker"
 )
 
-func (s *dockerBackupService) ListContainers(ctx context.Context, all bool) ([]container.Summary, error) {
-	return s.cli.ContainerList(ctx, container.ListOptions{All: all})
+func (s *dockerBackupService) ListContainers(ctx context.Context, all bool) ([]oldcontainer.Summary, error) {
+	result, err := s.cli.ContainerList(ctx, mobyclient.ContainerListOptions{All: all})
+	if err != nil {
+		return nil, err
+	}
+	return docker.ConvertDockerType[[]oldcontainer.Summary](result.Items)
 }
 
-func (s *dockerBackupService) InspectContainer(ctx context.Context, name string) (container.InspectResponse, error) {
-	return s.cli.ContainerInspect(ctx, name)
+func (s *dockerBackupService) InspectContainer(ctx context.Context, name string) (oldcontainer.InspectResponse, error) {
+	result, err := s.cli.ContainerInspect(ctx, name, mobyclient.ContainerInspectOptions{})
+	if err != nil {
+		return oldcontainer.InspectResponse{}, err
+	}
+	return docker.ConvertDockerType[oldcontainer.InspectResponse](result.Container)
 }
 
 func (s *dockerBackupService) SaveImage(ctx context.Context, refs []string, outputFile string) error {
@@ -51,12 +65,12 @@ func (s *dockerBackupService) LoadImage(ctx context.Context, inputFile string, o
 	}
 	defer file.Close()
 
-	resp, err := s.cli.ImageLoad(ctx, file, client.ImageLoadWithQuiet(false))
+	resp, err := s.cli.ImageLoad(ctx, file, mobyclient.ImageLoadWithQuiet(false))
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
-	return backupCopyWithContext(ctx, output, resp.Body)
+	defer resp.Close()
+	return backupCopyWithContext(ctx, output, resp)
 }
 
 func backupCopyWithContext(ctx context.Context, dst io.Writer, src io.Reader) error {
@@ -83,28 +97,37 @@ func backupCopyWithContext(ctx context.Context, dst io.Writer, src io.Reader) er
 	}
 }
 
-func (s *dockerBackupService) InspectNetwork(ctx context.Context, name string) (network.Inspect, error) {
-	return s.cli.NetworkInspect(ctx, name, network.InspectOptions{})
+func (s *dockerBackupService) InspectNetwork(ctx context.Context, name string) (oldnetwork.Inspect, error) {
+	result, err := s.cli.NetworkInspect(ctx, name, mobyclient.NetworkInspectOptions{})
+	if err != nil {
+		return oldnetwork.Inspect{}, err
+	}
+	return docker.ConvertDockerType[oldnetwork.Inspect](result.Network)
 }
 
-func (s *dockerBackupService) CreateNetwork(ctx context.Context, inspect network.Inspect) error {
+func (s *dockerBackupService) CreateNetwork(ctx context.Context, inspect oldnetwork.Inspect) error {
 	if isBuiltinNetwork(inspect.Name) {
 		return nil
 	}
-	if _, err := s.cli.NetworkInspect(ctx, inspect.Name, network.InspectOptions{}); err == nil {
+	if _, err := s.cli.NetworkInspect(ctx, inspect.Name, mobyclient.NetworkInspectOptions{}); err == nil {
 		log.Printf("Skip existing network: %s", inspect.Name)
 		return nil
-	} else if !client.IsErrNotFound(err) {
+	} else if !cerrdefs.IsNotFound(err) {
+		return err
+	}
+
+	ipam, err := docker.ConvertDockerPointer[mobynetwork.IPAM](&inspect.IPAM)
+	if err != nil {
 		return err
 	}
 	enableIPv4 := inspect.EnableIPv4
 	enableIPv6 := inspect.EnableIPv6
-	createOptions := network.CreateOptions{
+	createOptions := mobyclient.NetworkCreateOptions{
 		Driver:     inspect.Driver,
 		Scope:      inspect.Scope,
 		EnableIPv4: &enableIPv4,
 		EnableIPv6: &enableIPv6,
-		IPAM:       &inspect.IPAM,
+		IPAM:       ipam,
 		Internal:   inspect.Internal,
 		Attachable: inspect.Attachable,
 		Ingress:    inspect.Ingress,
@@ -113,24 +136,29 @@ func (s *dockerBackupService) CreateNetwork(ctx context.Context, inspect network
 		Labels:     inspect.Labels,
 	}
 	if inspect.ConfigFrom.Network != "" {
-		createOptions.ConfigFrom = &inspect.ConfigFrom
+		createOptions.ConfigFrom = inspect.ConfigFrom.Network
 	}
-	_, err := s.cli.NetworkCreate(ctx, inspect.Name, createOptions)
+	_, err = s.cli.NetworkCreate(ctx, inspect.Name, createOptions)
 	return err
 }
 
-func (s *dockerBackupService) InspectVolume(ctx context.Context, name string) (volume.Volume, error) {
-	return s.cli.VolumeInspect(ctx, name)
+func (s *dockerBackupService) InspectVolume(ctx context.Context, name string) (oldvolume.Volume, error) {
+	result, err := s.cli.VolumeInspect(ctx, name, mobyclient.VolumeInspectOptions{})
+	if err != nil {
+		return oldvolume.Volume{}, err
+	}
+	return docker.ConvertDockerType[oldvolume.Volume](result.Volume)
 }
 
-func (s *dockerBackupService) CreateVolume(ctx context.Context, vol volume.Volume) error {
-	if _, err := s.cli.VolumeInspect(ctx, vol.Name); err == nil {
+func (s *dockerBackupService) CreateVolume(ctx context.Context, vol oldvolume.Volume) error {
+	if _, err := s.cli.VolumeInspect(ctx, vol.Name, mobyclient.VolumeInspectOptions{}); err == nil {
 		log.Printf("Skip existing volume: %s", vol.Name)
 		return nil
-	} else if !client.IsErrNotFound(err) {
+	} else if !cerrdefs.IsNotFound(err) {
 		return err
 	}
-	_, err := s.cli.VolumeCreate(ctx, volume.CreateOptions{
+
+	_, err := s.cli.VolumeCreate(ctx, mobyclient.VolumeCreateOptions{
 		Name:       vol.Name,
 		Driver:     vol.Driver,
 		DriverOpts: vol.Options,
@@ -140,23 +168,41 @@ func (s *dockerBackupService) CreateVolume(ctx context.Context, vol volume.Volum
 }
 
 func (s *dockerBackupService) ContainerExists(ctx context.Context, name string) (bool, error) {
-	_, err := s.cli.ContainerInspect(ctx, name)
+	_, err := s.cli.ContainerInspect(ctx, name, mobyclient.ContainerInspectOptions{})
 	if err == nil {
 		return true, nil
 	}
-	if client.IsErrNotFound(err) {
+	if cerrdefs.IsNotFound(err) {
 		return false, nil
 	}
 	return false, err
 }
 
 func (s *dockerBackupService) RemoveContainer(ctx context.Context, name string) error {
-	return s.cli.ContainerRemove(ctx, name, container.RemoveOptions{Force: true, RemoveVolumes: false})
+	_, err := s.cli.ContainerRemove(ctx, name, mobyclient.ContainerRemoveOptions{Force: true, RemoveVolumes: false})
+	return err
 }
 
-func (s *dockerBackupService) CreateContainer(ctx context.Context, inspect container.InspectResponse, name string) (string, error) {
+func (s *dockerBackupService) CreateContainer(ctx context.Context, inspect oldcontainer.InspectResponse, name string) (string, error) {
 	networkingConfig := restoreNetworkingConfig(inspect)
-	resp, err := s.cli.ContainerCreate(ctx, inspect.Config, inspect.HostConfig, networkingConfig, nil, name)
+	mobyConfig, err := docker.ConvertDockerPointer[mobycontainer.Config](inspect.Config)
+	if err != nil {
+		return "", err
+	}
+	mobyHostConfig, err := docker.ConvertDockerPointer[mobycontainer.HostConfig](inspect.HostConfig)
+	if err != nil {
+		return "", err
+	}
+	mobyNetworkingConfig, err := docker.ConvertDockerPointer[mobynetwork.NetworkingConfig](networkingConfig)
+	if err != nil {
+		return "", err
+	}
+	resp, err := s.cli.ContainerCreate(ctx, mobyclient.ContainerCreateOptions{
+		Config:           mobyConfig,
+		HostConfig:       mobyHostConfig,
+		NetworkingConfig: mobyNetworkingConfig,
+		Name:             name,
+	})
 	if err != nil {
 		return "", err
 	}
@@ -164,5 +210,6 @@ func (s *dockerBackupService) CreateContainer(ctx context.Context, inspect conta
 }
 
 func (s *dockerBackupService) StartContainer(ctx context.Context, id string) error {
-	return s.cli.ContainerStart(ctx, id, container.StartOptions{})
+	_, err := s.cli.ContainerStart(ctx, id, mobyclient.ContainerStartOptions{})
+	return err
 }

@@ -263,11 +263,13 @@ client.DiskUsageOptions
 
 ### 阶段 4: backup/restore
 
-- [ ] 迁移 backup/restore 相关 Docker API 类型
-- [ ] 验证 image save/load
-- [ ] 验证 network/volume metadata restore
-- [ ] 验证 container recreate
-- [ ] 验证 checksum、bundle、dry-run、replace、no-start 行为
+- [x] 迁移 backup/restore 相关 Docker API 调用路径
+- [x] 验证 image save/load
+- [x] 验证 network/volume metadata restore
+- [x] 验证 container recreate
+- [x] 验证 checksum、bundle、dry-run、replace、no-start 行为
+
+阶段 4 状态: 已完成过渡式迁移。`internal/commands/backup` 的真实 Docker API 调用已改为 `docker.NewMobyClient` 和 `github.com/moby/moby/client` options/result；为控制迁移边界，backup manifest、archive、restore 编排和测试仍保留旧 `github.com/docker/docker/api/types/...` 类型，由 service 层负责转换。后续阶段完成 reverse、completion、resourcefilter 等模块迁移后，再统一移除旧 SDK 类型。
 
 ### 阶段 5: reverse/rerun、completion、filter
 
@@ -279,13 +281,13 @@ client.DiskUsageOptions
 
 ### 阶段 6: 测试和验收
 
-- [ ] `go test ./...`
+- [x] `go test ./...`
 - [ ] `go vet ./...`
 - [ ] `scripts/check.ps1` 或 `scripts/check.sh`
 - [ ] 本地无 Docker 环境 smoke test
 - [ ] 本地 Docker 环境 smoke test
 - [ ] 远程 Docker endpoint 测试
-- [ ] backup/restore 小容器迁移测试
+- [x] backup/restore 小容器迁移测试
 - [ ] prune dry-run / apply 安全边界测试
 - [ ] completion 读取远程 Docker 资源测试
 

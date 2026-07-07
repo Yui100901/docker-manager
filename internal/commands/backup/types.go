@@ -7,7 +7,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/volume"
-	"github.com/docker/docker/client"
+	mobyclient "github.com/moby/moby/client"
 	"io"
 )
 
@@ -37,7 +37,7 @@ type backupDockerService interface {
 }
 
 var newBackupDockerService = func() (backupDockerService, error) {
-	cli, err := docker.NewClient()
+	cli, err := docker.NewMobyClient()
 	if err != nil {
 		return nil, err
 	}
@@ -45,7 +45,7 @@ var newBackupDockerService = func() (backupDockerService, error) {
 }
 
 type dockerBackupService struct {
-	cli *client.Client
+	cli *mobyclient.Client
 }
 
 type BackupOptions struct {
