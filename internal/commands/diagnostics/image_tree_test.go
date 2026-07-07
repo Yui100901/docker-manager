@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"strings"
+	"sync"
 	"testing"
 
 	containerapi "github.com/moby/moby/api/types/container"
@@ -11,6 +12,7 @@ import (
 )
 
 type fakeImageTreeDockerService struct {
+	mu                sync.Mutex
 	inspect           imageapi.InspectResponse
 	history           []imageapi.HistoryResponseItem
 	images            []imageapi.Summary
@@ -20,26 +22,36 @@ type fakeImageTreeDockerService struct {
 }
 
 func (f *fakeImageTreeDockerService) ImageInspect(ctx context.Context, imageRef string) (imageapi.InspectResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, "inspect:"+imageRef)
 	return f.inspect, nil
 }
 
 func (f *fakeImageTreeDockerService) ImageHistory(ctx context.Context, imageRef string) ([]imageapi.HistoryResponseItem, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, "history:"+imageRef)
 	return f.history, nil
 }
 
 func (f *fakeImageTreeDockerService) ImageList(ctx context.Context) ([]imageapi.Summary, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, "list-images")
 	return f.images, nil
 }
 
 func (f *fakeImageTreeDockerService) ListContainers(ctx context.Context, all bool) ([]containerapi.Summary, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, "list-containers")
 	return f.containers, nil
 }
 
 func (f *fakeImageTreeDockerService) InspectContainer(ctx context.Context, id string) (containerapi.InspectResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, "inspect-container:"+id)
 	if inspect, ok := f.containerInspects[id]; ok {
 		return inspect, nil

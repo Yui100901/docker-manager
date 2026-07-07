@@ -3,7 +3,9 @@ package diagnostics
 import (
 	"bytes"
 	"context"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/moby/moby/api/types/container"
@@ -11,11 +13,14 @@ import (
 )
 
 type fakeInspectDiffDockerService struct {
+	mu       sync.Mutex
 	inspects map[string]container.InspectResponse
 	calls    []string
 }
 
 func (f *fakeInspectDiffDockerService) InspectContainer(ctx context.Context, name string) (container.InspectResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, name)
 	return f.inspects[name], nil
 }
@@ -132,7 +137,9 @@ func TestRunInspectDiffInspectsBothContainers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runInspectDiff() error = %v", err)
 	}
-	if strings.Join(fake.calls, ",") != "a,b" {
+	calls := append([]string(nil), fake.calls...)
+	sort.Strings(calls)
+	if strings.Join(calls, ",") != "a,b" {
 		t.Fatalf("calls = %#v, want a,b", fake.calls)
 	}
 	if report.LeftName != "a" || report.RightName != "b" {

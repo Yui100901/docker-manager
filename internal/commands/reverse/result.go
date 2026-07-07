@@ -422,51 +422,114 @@ func reverseWithOptions(names []string, options ReverseOptions) (*ReverseResult,
 	if err := ensureContainerManager(); err != nil {
 		return nil, err
 	}
-	var results []ParsedResult
-	volumeMeta := map[string]volume.Volume{}
-	networkMeta := map[string]network.Inspect{}
-
-	for _, name := range names {
-		info, err := containerManager.Inspect(name)
+	inspectResults := make([]reverseInspectResult, len(names))
+	runReverseParallel(len(names), reverseInspectConcurrency, func(i int) {
+		info, err := containerManager.Inspect(names[i])
 		if err != nil {
-			log.Printf("容器 %s 解析失败: %v", name, err)
+			inspectResults[i].err = err
+			return
+		}
+		parser := NewParser(info, options)
+		inspectResults[i] = reverseInspectResult{
+			info:   info,
+			parsed: parser.ToResult(),
+			ok:     true,
+		}
+	})
+
+	results := make([]ParsedResult, 0, len(names))
+	volumeNames := map[string]bool{}
+	networkNames := map[string]bool{}
+	for i, item := range inspectResults {
+		if item.err != nil {
+			log.Printf("容器 %s 解析失败: %v", names[i], item.err)
 			continue
 		}
-
-		parser := NewParser(info, options)
-		results = append(results, parser.ToResult())
-		collectReverseResourceMetadata(info, volumeMeta, networkMeta)
+		if !item.ok {
+			continue
+		}
+		results = append(results, item.parsed)
+		collectReverseResourceNames(item.info, volumeNames, networkNames)
 	}
 
 	result := NewReverseResult(results, options)
-	result.VolumeMeta = volumeMeta
-	result.NetworkMeta = networkMeta
+	result.VolumeMeta = inspectReverseVolumeMetadata(sortedBoolMapKeys(volumeNames))
+	result.NetworkMeta = inspectReverseNetworkMetadata(sortedBoolMapKeys(networkNames))
 	return result, nil
 }
 
-func collectReverseResourceMetadata(info container.InspectResponse, volumeMeta map[string]volume.Volume, networkMeta map[string]network.Inspect) {
+type reverseInspectResult struct {
+	info   container.InspectResponse
+	parsed ParsedResult
+	err    error
+	ok     bool
+}
+
+func collectReverseResourceNames(info container.InspectResponse, volumeNames, networkNames map[string]bool) {
 	for _, name := range reverseNamedVolumeNames(info) {
-		if _, ok := volumeMeta[name]; ok {
-			continue
-		}
-		meta, err := containerManager.InspectVolume(name)
-		if err != nil {
-			log.Printf("volume %s inspect failed: %v", name, err)
-			continue
-		}
-		volumeMeta[name] = meta
+		volumeNames[name] = true
 	}
 	for _, name := range reverseNetworkNames(info) {
-		if _, ok := networkMeta[name]; ok {
-			continue
-		}
-		meta, err := containerManager.InspectNetwork(name)
-		if err != nil {
-			log.Printf("network %s inspect failed: %v", name, err)
-			continue
-		}
-		networkMeta[name] = meta
+		networkNames[name] = true
 	}
+}
+
+func inspectReverseVolumeMetadata(names []string) map[string]volume.Volume {
+	meta := map[string]volume.Volume{}
+	if len(names) == 0 {
+		return meta
+	}
+	results := make([]volume.Volume, len(names))
+	errs := make([]error, len(names))
+	ok := make([]bool, len(names))
+	runReverseParallel(len(names), reverseInspectConcurrency, func(i int) {
+		result, err := containerManager.InspectVolume(names[i])
+		if err != nil {
+			errs[i] = err
+			return
+		}
+		results[i] = result
+		ok[i] = true
+	})
+	for i, name := range names {
+		if errs[i] != nil {
+			log.Printf("volume %s inspect failed: %v", name, errs[i])
+			continue
+		}
+		if ok[i] {
+			meta[name] = results[i]
+		}
+	}
+	return meta
+}
+
+func inspectReverseNetworkMetadata(names []string) map[string]network.Inspect {
+	meta := map[string]network.Inspect{}
+	if len(names) == 0 {
+		return meta
+	}
+	results := make([]network.Inspect, len(names))
+	errs := make([]error, len(names))
+	ok := make([]bool, len(names))
+	runReverseParallel(len(names), reverseInspectConcurrency, func(i int) {
+		result, err := containerManager.InspectNetwork(names[i])
+		if err != nil {
+			errs[i] = err
+			return
+		}
+		results[i] = result
+		ok[i] = true
+	})
+	for i, name := range names {
+		if errs[i] != nil {
+			log.Printf("network %s inspect failed: %v", name, errs[i])
+			continue
+		}
+		if ok[i] {
+			meta[name] = results[i]
+		}
+	}
+	return meta
 }
 
 func reverseNamedVolumeNames(info container.InspectResponse) []string {

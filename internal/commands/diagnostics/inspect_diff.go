@@ -84,15 +84,26 @@ func runInspectDiff(ctx context.Context, leftName, rightName string, opts Inspec
 	if err != nil {
 		return InspectDiffReport{}, err
 	}
-	left, err := svc.InspectContainer(ctx, leftName)
-	if err != nil {
-		return InspectDiffReport{}, fmt.Errorf("inspect %s: %w", leftName, err)
+	names := []string{leftName, rightName}
+	inspects := make([]container.InspectResponse, len(names))
+	errs := make([]error, len(names))
+	runDiagnosticsParallel(ctx, len(names), len(names), func(ctx context.Context, i int) {
+		inspect, err := svc.InspectContainer(ctx, names[i])
+		if err != nil {
+			errs[i] = err
+			return
+		}
+		inspects[i] = inspect
+	})
+	if err := ctx.Err(); err != nil {
+		return InspectDiffReport{}, err
 	}
-	right, err := svc.InspectContainer(ctx, rightName)
-	if err != nil {
-		return InspectDiffReport{}, fmt.Errorf("inspect %s: %w", rightName, err)
+	for i, err := range errs {
+		if err != nil {
+			return InspectDiffReport{}, fmt.Errorf("inspect %s: %w", names[i], err)
+		}
 	}
-	return buildInspectDiffReport(leftName, rightName, left, right, opts), nil
+	return buildInspectDiffReport(leftName, rightName, inspects[0], inspects[1], opts), nil
 }
 
 func buildInspectDiffReport(leftName, rightName string, left, right container.InspectResponse, opts InspectDiffOptions) InspectDiffReport {

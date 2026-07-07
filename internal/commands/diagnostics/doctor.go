@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"runtime"
+	"sync"
 	"time"
 
 	"docker-manager/internal/commandflags"
@@ -72,29 +73,70 @@ func runDoctor(ctx context.Context, opts DoctorOptions) DoctorReport {
 		GeneratedAt: time.Now().Format(time.RFC3339),
 		Platform:    runtime.GOOS + "/" + runtime.GOARCH,
 	}
-	report.Checks = append(report.Checks, checkDoctorDocker(ctx, opts.Timeout)...)
 	cfg, configChecks := checkDoctorConfig(opts.ConfigPath)
-	report.Checks = append(report.Checks, configChecks...)
-	report.Checks = append(report.Checks, checkDoctorProxy(cfg)...)
-	report.Checks = append(report.Checks, checkDoctorCA(cfg)...)
-	report.Checks = append(report.Checks, checkDoctorDaemonConfig()...)
-	report.Checks = append(report.Checks, checkDoctorDisk(opts.OutputDir, opts.MinDiskFreeMB))
-	report.Checks = append(report.Checks, checkDoctorDockerConfig(ctx, opts)...)
+	groups := []doctorCheckGroup{
+		{index: 0, check: func() []DoctorCheck { return checkDoctorDocker(ctx, opts.Timeout) }},
+		{index: 1, check: func() []DoctorCheck { return configChecks }},
+		{index: 2, check: func() []DoctorCheck { return checkDoctorProxy(cfg) }},
+		{index: 3, check: func() []DoctorCheck { return checkDoctorCA(cfg) }},
+		{index: 4, check: checkDoctorDaemonConfig},
+		{index: 5, check: func() []DoctorCheck { return []DoctorCheck{checkDoctorDisk(opts.OutputDir, opts.MinDiskFreeMB)} }},
+		{index: 6, check: func() []DoctorCheck { return checkDoctorDockerConfig(ctx, opts) }},
+	}
+	nextIndex := 7
 	for _, registry := range opts.Registries {
-		report.Checks = append(report.Checks, checkDoctorRegistry(ctx, registry, opts)...)
+		registry := registry
+		groups = append(groups, doctorCheckGroup{
+			index: nextIndex,
+			check: func() []DoctorCheck { return checkDoctorRegistry(ctx, registry, opts) },
+		})
+		nextIndex++
 	}
 	if len(opts.Registries) == 0 {
-		report.Checks = append(report.Checks, DoctorCheck{
-			Name:        "registry",
-			Status:      "skipped",
-			Message:     "未指定 --registry，跳过 registry 连通性检查",
-			Recommended: "需要验证推送目标时执行 dm doctor --registry <registry>，内网 HTTP registry 可加 --plain-http",
+		groups = append(groups, doctorCheckGroup{
+			index: nextIndex,
+			check: func() []DoctorCheck {
+				return []DoctorCheck{{
+					Name:        "registry",
+					Status:      "skipped",
+					Message:     "未指定 --registry，跳过 registry 连通性检查",
+					Recommended: "需要验证推送目标时执行 dm doctor --registry <registry>，内网 HTTP registry 可加 --plain-http",
+				}}
+			},
 		})
+		nextIndex++
 	}
 	if opts.CheckE2E {
-		report.Checks = append(report.Checks, checkDoctorToolchain()...)
+		groups = append(groups, doctorCheckGroup{
+			index: nextIndex,
+			check: checkDoctorToolchain,
+		})
+		nextIndex++
+	}
+	for _, checks := range runDoctorCheckGroups(nextIndex, groups) {
+		report.Checks = append(report.Checks, checks...)
 	}
 	report.OverallStatus = doctorOverallStatus(report.Checks)
 	report.Recommendations = doctorRecommendations(report.Checks)
 	return report
+}
+
+type doctorCheckGroup struct {
+	index int
+	check func() []DoctorCheck
+}
+
+func runDoctorCheckGroups(total int, groups []doctorCheckGroup) [][]DoctorCheck {
+	results := make([][]DoctorCheck, total)
+	var wg sync.WaitGroup
+	wg.Add(len(groups))
+	for _, group := range groups {
+		group := group
+		go func() {
+			defer wg.Done()
+			results[group.index] = group.check()
+		}()
+	}
+	wg.Wait()
+	return results
 }

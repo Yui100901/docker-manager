@@ -145,27 +145,44 @@ func runImageTree(ctx context.Context, imageRef string, opts ImageTreeOptions) (
 	if err != nil {
 		return ImageTreeReport{}, fmt.Errorf("list containers: %w", err)
 	}
-	containerInspects := make(map[string]containerapi.InspectResponse, len(containers))
-	for _, c := range containers {
-		if err := ctx.Err(); err != nil {
-			return ImageTreeReport{}, err
-		}
+	containerInspects, err := inspectImageTreeContainers(ctx, svc, containers)
+	if err != nil {
+		return ImageTreeReport{}, err
+	}
+	report := buildImageTreeReport(imageRef, inspect, history, opts)
+	enrichImageTreeUsage(&report, images, containers, containerInspects)
+	return report, nil
+}
+
+func inspectImageTreeContainers(ctx context.Context, svc imageTreeDockerService, containers []containerapi.Summary) (map[string]containerapi.InspectResponse, error) {
+	results := make([]containerapi.InspectResponse, len(containers))
+	ok := make([]bool, len(containers))
+	runDiagnosticsParallel(ctx, len(containers), diagnosticsInspectConcurrency, func(ctx context.Context, i int) {
+		c := containers[i]
 		ref := c.ID
 		if ref == "" {
 			ref = firstContainerName(c.Names)
 		}
 		if ref == "" {
-			continue
+			return
 		}
 		inspect, err := svc.InspectContainer(ctx, ref)
 		if err != nil {
-			continue
+			return
 		}
-		containerInspects[c.ID] = inspect
+		results[i] = inspect
+		ok[i] = true
+	})
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	report := buildImageTreeReport(imageRef, inspect, history, opts)
-	enrichImageTreeUsage(&report, images, containers, containerInspects)
-	return report, nil
+	containerInspects := make(map[string]containerapi.InspectResponse, len(containers))
+	for i, inspect := range results {
+		if ok[i] {
+			containerInspects[containers[i].ID] = inspect
+		}
+	}
+	return containerInspects, nil
 }
 
 func buildImageTreeReport(imageRef string, inspect imageapi.InspectResponse, history []imageapi.HistoryResponseItem, opts ImageTreeOptions) ImageTreeReport {
