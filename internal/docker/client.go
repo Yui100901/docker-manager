@@ -6,11 +6,13 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/docker/docker/client"
+	dockerclient "github.com/docker/docker/client"
+	mobyclient "github.com/moby/moby/client"
 )
 
 var (
-	dockerClient   *client.Client
+	legacyClient   *dockerclient.Client
+	mobyClient     *mobyclient.Client
 	dockerClientMu sync.Mutex
 	clientOptions  Options
 )
@@ -25,9 +27,15 @@ type Options struct {
 	APIVersion string
 }
 
-// NewClient returns the shared Docker API client used by docker-manager.
-func NewClient() (*client.Client, error) {
-	return initDockerClient()
+// NewClient returns the shared legacy Docker API client used by commands that
+// have not yet migrated to github.com/moby/moby/client.
+func NewClient() (*dockerclient.Client, error) {
+	return initLegacyClient()
+}
+
+// NewMobyClient returns the shared Moby API client for migrated code paths.
+func NewMobyClient() (*mobyclient.Client, error) {
+	return initMobyClient()
 }
 
 // Configure sets the Docker API endpoint used by future clients. It is normally
@@ -39,9 +47,13 @@ func Configure(opts Options) {
 	if sameOptions(clientOptions, opts) {
 		return
 	}
-	if dockerClient != nil {
-		_ = dockerClient.Close()
-		dockerClient = nil
+	if legacyClient != nil {
+		_ = legacyClient.Close()
+		legacyClient = nil
+	}
+	if mobyClient != nil {
+		_ = mobyClient.Close()
+		mobyClient = nil
 	}
 	clientOptions = opts
 }
@@ -79,11 +91,11 @@ func EffectiveOptions() Options {
 	defer dockerClientMu.Unlock()
 
 	opts := Options{
-		Host:       os.Getenv(client.EnvOverrideHost),
-		CertPath:   os.Getenv(client.EnvOverrideCertPath),
-		APIVersion: os.Getenv(client.EnvOverrideAPIVersion),
+		Host:       os.Getenv(mobyclient.EnvOverrideHost),
+		CertPath:   os.Getenv(mobyclient.EnvOverrideCertPath),
+		APIVersion: os.Getenv(mobyclient.EnvOverrideAPIVersion),
 	}
-	if os.Getenv(client.EnvTLSVerify) != "" {
+	if os.Getenv(mobyclient.EnvTLSVerify) != "" {
 		value := true
 		opts.TLSVerify = &value
 	}
@@ -124,29 +136,50 @@ func sameOptions(a, b Options) bool {
 	}
 }
 
-func initDockerClient() (*client.Client, error) {
+func initLegacyClient() (*dockerclient.Client, error) {
 	dockerClientMu.Lock()
 	defer dockerClientMu.Unlock()
 
-	if dockerClient == nil {
+	if legacyClient == nil {
 		restore := applyDockerEnvForClient(clientOptions)
 		defer restore()
 
-		cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+		cli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
 		if err != nil {
 			return nil, err
 		}
-		dockerClient = cli
+		legacyClient = cli
 	}
-	return dockerClient, nil
+	return legacyClient, nil
+}
+
+func initDockerClient() (*dockerclient.Client, error) {
+	return initLegacyClient()
+}
+
+func initMobyClient() (*mobyclient.Client, error) {
+	dockerClientMu.Lock()
+	defer dockerClientMu.Unlock()
+
+	if mobyClient == nil {
+		restore := applyDockerEnvForClient(clientOptions)
+		defer restore()
+
+		cli, err := mobyclient.NewClientWithOpts(mobyclient.FromEnv, mobyclient.WithAPIVersionNegotiation())
+		if err != nil {
+			return nil, err
+		}
+		mobyClient = cli
+	}
+	return mobyClient, nil
 }
 
 func applyDockerEnvForClient(opts Options) func() {
 	keys := []string{
-		client.EnvOverrideHost,
-		client.EnvOverrideAPIVersion,
-		client.EnvOverrideCertPath,
-		client.EnvTLSVerify,
+		mobyclient.EnvOverrideHost,
+		mobyclient.EnvOverrideAPIVersion,
+		mobyclient.EnvOverrideCertPath,
+		mobyclient.EnvTLSVerify,
 	}
 	previous := make(map[string]*string, len(keys))
 	for _, key := range keys {
@@ -159,19 +192,19 @@ func applyDockerEnvForClient(opts Options) func() {
 	}
 
 	if opts.Host != "" {
-		_ = os.Setenv(client.EnvOverrideHost, opts.Host)
+		_ = os.Setenv(mobyclient.EnvOverrideHost, opts.Host)
 	}
 	if opts.APIVersion != "" {
-		_ = os.Setenv(client.EnvOverrideAPIVersion, opts.APIVersion)
+		_ = os.Setenv(mobyclient.EnvOverrideAPIVersion, opts.APIVersion)
 	}
 	if opts.CertPath != "" {
-		_ = os.Setenv(client.EnvOverrideCertPath, opts.CertPath)
+		_ = os.Setenv(mobyclient.EnvOverrideCertPath, opts.CertPath)
 	}
 	if opts.TLSVerify != nil {
 		if *opts.TLSVerify {
-			_ = os.Setenv(client.EnvTLSVerify, "1")
+			_ = os.Setenv(mobyclient.EnvTLSVerify, "1")
 		} else {
-			_ = os.Unsetenv(client.EnvTLSVerify)
+			_ = os.Unsetenv(mobyclient.EnvTLSVerify)
 		}
 	}
 

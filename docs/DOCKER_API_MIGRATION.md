@@ -21,6 +21,8 @@ github.com/moby/moby/api v1.55.0
 
 `github.com/moby/moby/client` 是新拆分出的 Docker/Moby client 模块，配套 API types 来自 `github.com/moby/moby/api`。这不是简单的 patch 升级，而是一次 Docker SDK 依赖体系迁移。
 
+过渡阶段说明: 当前 `main` 仍需要旧 `github.com/docker/docker` SDK 参与编译，`github.com/moby/moby/client v0.5.0` 会拉高 `github.com/docker/go-connections` 到 `v0.7.0`，导致旧 SDK 编译失败。因此第一阶段先固定 `github.com/moby/moby/client v0.4.0` 与旧 SDK 共存；待业务命令完全迁移并移除旧 SDK 后，再升级到 `v0.5.0`。
+
 ## 当前扫描结果
 
 当前工程中直接引用 `github.com/docker/docker` 的范围:
@@ -230,12 +232,15 @@ client.DiskUsageOptions
 
 ### 阶段 1: 依赖和核心 client
 
-- [ ] 新增 `github.com/moby/moby/client v0.5.0`
-- [ ] 新增 `github.com/moby/moby/api v1.55.0`
+- [x] 新增过渡期 `github.com/moby/moby/client v0.4.0`
+- [x] 新增 `github.com/moby/moby/api v1.55.0`
 - [ ] 移除直接依赖 `github.com/docker/docker`
-- [ ] 迁移 `internal/docker/client.go`
-- [ ] 确认 `DOCKER_HOST`、`DOCKER_TLS_VERIFY`、`DOCKER_CERT_PATH`、`DOCKER_API_VERSION` 仍兼容
-- [ ] 确认 `client.WithAPIVersionNegotiation()` 行为仍符合预期
+- [x] 迁移 `internal/docker/client.go`，新增 `NewMobyClient`
+- [x] 保留旧 `NewClient` 兼容入口，避免业务命令在同一阶段被迫整体迁移
+- [x] 确认 `DOCKER_HOST`、`DOCKER_TLS_VERIFY`、`DOCKER_CERT_PATH`、`DOCKER_API_VERSION` 仍兼容
+- [x] 确认 `client.WithAPIVersionNegotiation()` 行为仍符合预期
+
+阶段 1 状态: 已完成可编译的过渡式迁移。旧 `NewClient` 仍返回 `github.com/docker/docker/client.Client`，新 `NewMobyClient` 返回 `github.com/moby/moby/client.Client`。后续阶段按模块迁移业务命令，最后再移除旧 SDK 并升级到 `github.com/moby/moby/client v0.5.0`。
 
 ### 阶段 2: 项目 Docker 封装层
 
