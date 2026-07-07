@@ -285,13 +285,15 @@ client.DiskUsageOptions
 
 - [x] `go test ./...`
 - [x] `go vet ./...`
-- [ ] `scripts/check.ps1` 或 `scripts/check.sh`
-- [ ] 本地无 Docker 环境 smoke test
-- [ ] 本地 Docker 环境 smoke test
-- [ ] 远程 Docker endpoint 测试
+- [x] `scripts/check.ps1` 或 `scripts/check.sh`
+- [x] 本地无 Docker 环境 smoke test
+- [x] 本地 Docker 环境 smoke test
+- [x] 远程 Docker endpoint 测试
 - [x] backup/restore 小容器迁移测试
-- [ ] prune dry-run / apply 安全边界测试
+- [x] prune dry-run / apply 安全边界测试
 - [x] completion 读取远程 Docker 资源测试
+
+阶段 6 状态: 已完成。Windows 本地 `scripts/check.ps1` 已通过；VM `192.168.31.57` 使用不可达 `DOCKER_HOST` 完成 smoke 9 PASS / 5 XFAIL；同一 VM 在 Docker 29.1.3 上完成 destructive/full 48 PASS / 12 XFAIL，覆盖本地 registry、pull/save/load、reverse/rerun、backup/restore、report 和 prune apply 安全边界；Windows 侧通过 `--docker-host tcp://192.168.31.57:2375` 验证远程 doctor、reverse、health、logs、prune dry-run 以及容器/镜像 completion。
 
 ## 风险评估
 
@@ -316,9 +318,9 @@ client.DiskUsageOptions
 
 - [ ] 全项目无 `github.com/docker/docker` import。
 - [ ] `go.mod` 不再直接 require `github.com/docker/docker`。
-- [ ] `go test ./...` 通过。
-- [ ] `dm doctor` 能显示 Docker daemon API 信息。
-- [ ] `dm health`、`dm network`、`dm volumes`、`dm prune` 能正常输出报告。
-- [ ] `dm backup` / `dm restore` 能完成小容器端到端恢复。
-- [ ] `dm completion` 能读取当前 Docker endpoint 的资源。
-- [ ] 远程 Docker endpoint 行为与迁移前一致。
+- [x] `go test ./...` 通过。
+- [x] `dm doctor` 能显示 Docker daemon API 信息。
+- [x] `dm health`、`dm network`、`dm volumes`、`dm prune` 能正常输出报告。
+- [x] `dm backup` / `dm restore` 能完成小容器端到端恢复。
+- [x] `dm completion` 能读取当前 Docker endpoint 的资源。
+- [x] 远程 Docker endpoint 行为与迁移前一致。

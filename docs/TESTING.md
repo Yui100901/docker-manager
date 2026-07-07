@@ -165,6 +165,7 @@ OIDC/Keycloak 如受网络影响，可先做降级验收: 大镜像能进入 man
 - 本地静态检查: `go test ./...`、`go vet ./...`、`go test -race ./...`、`scripts/check.ps1 -Race`、`git diff --check` 已通过。
 - Windows 本地 smoke: 覆盖帮助、版本、completion、配置加载、安装卸载和 Docker 不可用错误路径。
 - 发布打包: Windows PowerShell 打包脚本可生成 linux/amd64、linux/arm64、windows/amd64、darwin/amd64、darwin/arm64 归档、checksum、manifest 和 summary。
+- 2026-07-07 Docker API 迁移阶段 6: `scripts/check.ps1` 通过；VM smoke 9 PASS / 5 XFAIL / 0 FAIL；VM destructive/full 48 PASS / 12 XFAIL / 0 FAIL；Windows 侧通过 `--docker-host tcp://192.168.31.57:2375` 验证远程 doctor、reverse、health、logs、prune dry-run 和容器/镜像 completion。
 - 干净 Ubuntu 24.04 / Docker 29.1.3 VM: install 14 PASS / 5 XFAIL / 0 FAIL；destructive/full 48 PASS / 12 XFAIL / 0 FAIL；测试后无 `dm_e2e_*` 残留资源。
 - 2026-07-01 远程复测: smoke 9 PASS / 5 XFAIL / 0 FAIL；install 14 PASS / 5 XFAIL / 0 FAIL；destructive/full 48 PASS / 12 XFAIL / 0 FAIL；企业 registry 模拟 11 PASS / 3 XFAIL / 0 FAIL。
 - Harbor v2.14.4 HTTP/insecure registry: 14 PASS / 1 XFAIL / 0 FAIL，覆盖部署、Docker login、项目创建、push、`dm registry`、`dm pull`、`--load`、`--to`、批量 report、`--skip-existing` 和私有项目无凭据拒绝。
