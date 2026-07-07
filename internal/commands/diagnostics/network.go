@@ -296,41 +296,63 @@ func buildNetworkReportDetailed(containers []container.Summary, inspectByID map[
 
 func inspectNetworkContainers(ctx context.Context, svc networkDockerService, containers []container.Summary) (map[string]container.InspectResponse, []string) {
 	inspects := make(map[string]container.InspectResponse, len(containers))
-	var warnings []string
-	for _, c := range containers {
-		if err := ctx.Err(); err != nil {
-			warnings = append(warnings, fmt.Sprintf("容器 inspect 已取消: %v", err))
-			break
-		}
+	warningsByIndex := make([]string, len(containers))
+	inspectsByIndex := make([]container.InspectResponse, len(containers))
+	okByIndex := make([]bool, len(containers))
+	runDiagnosticsParallel(ctx, len(containers), diagnosticsInspectConcurrency, func(ctx context.Context, i int) {
+		c := containers[i]
 		ref := c.ID
 		if ref == "" {
 			ref = networkContainerName(c)
 		}
 		inspect, err := svc.InspectContainer(ctx, ref)
 		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("inspect 容器 %s 失败，已回退到列表摘要: %v", networkContainerName(c), err))
-			continue
+			if ctx.Err() == nil {
+				warningsByIndex[i] = fmt.Sprintf("inspect ?? %s ???????????: %v", networkContainerName(c), err)
+			}
+			return
 		}
-		inspects[c.ID] = inspect
+		inspectsByIndex[i] = inspect
+		okByIndex[i] = true
+	})
+	var warnings []string
+	if err := ctx.Err(); err != nil {
+		warnings = append(warnings, fmt.Sprintf("?? inspect ???: %v", err))
+	}
+	for i, c := range containers {
+		if warningsByIndex[i] != "" {
+			warnings = append(warnings, warningsByIndex[i])
+		}
+		if okByIndex[i] {
+			inspects[c.ID] = inspectsByIndex[i]
+		}
 	}
 	return inspects, warnings
 }
 
 func inspectNetworks(ctx context.Context, svc networkDockerService, networks []network.Summary) ([]network.Inspect, []string) {
-	inspects := make([]network.Inspect, 0, len(networks))
-	var warnings []string
-	for _, net := range networks {
-		if err := ctx.Err(); err != nil {
-			warnings = append(warnings, fmt.Sprintf("network inspect 已取消: %v", err))
-			break
-		}
+	inspects := make([]network.Inspect, len(networks))
+	warningsByIndex := make([]string, len(networks))
+	runDiagnosticsParallel(ctx, len(networks), diagnosticsInspectConcurrency, func(ctx context.Context, i int) {
+		net := networks[i]
 		inspect, err := svc.InspectNetwork(ctx, net.Name)
 		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("inspect network %s 失败，已回退到列表摘要: %v", net.Name, err))
-			inspects = append(inspects, network.Inspect{Network: net.Network})
-			continue
+			if ctx.Err() == nil {
+				warningsByIndex[i] = fmt.Sprintf("inspect network %s ???????????: %v", net.Name, err)
+			}
+			inspects[i] = network.Inspect{Network: net.Network}
+			return
 		}
-		inspects = append(inspects, inspect)
+		inspects[i] = inspect
+	})
+	var warnings []string
+	if err := ctx.Err(); err != nil {
+		warnings = append(warnings, fmt.Sprintf("network inspect ???: %v", err))
+	}
+	for _, warning := range warningsByIndex {
+		if warning != "" {
+			warnings = append(warnings, warning)
+		}
 	}
 	return inspects, warnings
 }

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/netip"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/moby/moby/api/types/container"
@@ -16,6 +17,7 @@ import (
 )
 
 type fakeHealthDockerService struct {
+	mu         sync.Mutex
 	containers []container.Summary
 	inspects   map[string]container.InspectResponse
 	logs       map[string]string
@@ -24,6 +26,8 @@ type fakeHealthDockerService struct {
 }
 
 func (f *fakeHealthDockerService) ListContainers(ctx context.Context, all bool) ([]container.Summary, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.allFlag = all
 	return f.containers, nil
 }
@@ -36,8 +40,11 @@ func (f *fakeHealthDockerService) InspectContainer(ctx context.Context, id strin
 }
 
 func (f *fakeHealthDockerService) ContainerLogs(ctx context.Context, id string, options mobyclient.ContainerLogsOptions) (io.ReadCloser, error) {
+	f.mu.Lock()
 	f.logOptions = append(f.logOptions, options)
-	return io.NopCloser(strings.NewReader(f.logs[id])), nil
+	logText := f.logs[id]
+	f.mu.Unlock()
+	return io.NopCloser(strings.NewReader(logText)), nil
 }
 
 func TestBuildHealthReportDetectsContainerIssues(t *testing.T) {

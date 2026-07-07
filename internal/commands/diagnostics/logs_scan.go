@@ -184,6 +184,12 @@ func logsScanTargets(ctx context.Context, svc logsScanDockerService, opts LogsSc
 	return containers, nil
 }
 
+type logsScanBuildResult struct {
+	item    LogsScanContainer
+	summary LogsScanSummary
+	err     error
+}
+
 func buildLogsScanReport(ctx context.Context, svc logsScanDockerService, targets []container.Summary, opts LogsScanOptions) (LogsScanReport, error) {
 	keywords := normalizeKeywords(opts.Keywords)
 	report := LogsScanReport{
@@ -191,83 +197,103 @@ func buildLogsScanReport(ctx context.Context, svc logsScanDockerService, targets
 		DockerEndpoint: docker.Endpoint(),
 		Keywords:       keywords,
 	}
-	for _, target := range targets {
-		if err := ctx.Err(); err != nil {
-			return report, err
+	results := make([]logsScanBuildResult, len(targets))
+	runDiagnosticsParallel(ctx, len(targets), diagnosticsInspectConcurrency, func(ctx context.Context, i int) {
+		results[i] = buildLogsScanContainerResult(ctx, svc, targets[i], opts, keywords)
+	})
+	for _, result := range results {
+		if result.err != nil {
+			return report, result.err
 		}
-		item := LogsScanContainer{
-			ID:    shortID(target.ID),
-			Name:  firstContainerName(target.Names),
-			Image: target.Image,
-			State: string(target.State),
-		}
-		ref := target.ID
-		if ref == "" {
-			ref = item.Name
-		}
-		if item.Name == "" {
-			item.Name = ref
-		}
-		report.Summary.ScannedContainers++
-
-		inspect, err := svc.InspectContainer(ctx, ref)
-		if err != nil {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return report, ctxErr
-			}
-			if errors.Is(err, context.Canceled) {
-				return report, err
-			}
-			item.Error = fmt.Sprintf("inspect 失败: %v", err)
-			report.Summary.Errors++
-			report.Containers = append(report.Containers, item)
+		if result.item.Name == "" && result.item.ID == "" {
 			continue
 		}
-		if err := ctx.Err(); err != nil {
-			return report, err
-		}
-		applyLogsScanInspect(&item, inspect)
-		availability := containerLogDriverAvailability(inspect)
-		applyLogsScanAvailability(&item, availability)
-		if !availability.Readable {
-			item.Error = availability.Reason
-			report.Summary.Errors++
-			report.Summary.LogsUnavailable++
-			report.Containers = append(report.Containers, item)
-			continue
-		}
-
-		text, err := readContainerLogText(ctx, svc, ref, inspect, opts)
-		if err != nil {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return report, ctxErr
-			}
-			if errors.Is(err, context.Canceled) {
-				return report, err
-			}
-			item.Error = fmt.Sprintf("读取日志失败: %v", err)
-			report.Summary.Errors++
-			report.Containers = append(report.Containers, item)
-			continue
-		}
-		item.Matches, err = findLogScanMatchesWithContext(ctx, text, keywords, opts.Context)
-		if err != nil {
-			return report, err
-		}
-		if opts.RedactSecrets {
-			redactLogScanMatches(item.Matches)
-		}
-		if len(item.Matches) > 0 {
-			report.Summary.ContainersMatched++
-			report.Summary.TotalMatches += len(item.Matches)
-		}
-		report.Containers = append(report.Containers, item)
+		report.Summary.ScannedContainers += result.summary.ScannedContainers
+		report.Summary.ContainersMatched += result.summary.ContainersMatched
+		report.Summary.TotalMatches += result.summary.TotalMatches
+		report.Summary.Errors += result.summary.Errors
+		report.Summary.LogsUnavailable += result.summary.LogsUnavailable
+		report.Containers = append(report.Containers, result.item)
 	}
 	if err := ctx.Err(); err != nil {
 		return report, err
 	}
 	sortLogsScanReport(&report)
 	return report, nil
+}
+
+func buildLogsScanContainerResult(ctx context.Context, svc logsScanDockerService, target container.Summary, opts LogsScanOptions, keywords []string) logsScanBuildResult {
+	item := LogsScanContainer{
+		ID:    shortID(target.ID),
+		Name:  firstContainerName(target.Names),
+		Image: target.Image,
+		State: string(target.State),
+	}
+	ref := target.ID
+	if ref == "" {
+		ref = item.Name
+	}
+	if item.Name == "" {
+		item.Name = ref
+	}
+	result := logsScanBuildResult{item: item}
+	result.summary.ScannedContainers++
+
+	inspect, err := svc.InspectContainer(ctx, ref)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			result.err = ctxErr
+			return result
+		}
+		if errors.Is(err, context.Canceled) {
+			result.err = err
+			return result
+		}
+		result.item.Error = fmt.Sprintf("inspect ??: %v", err)
+		result.summary.Errors++
+		return result
+	}
+	if err := ctx.Err(); err != nil {
+		result.err = err
+		return result
+	}
+	applyLogsScanInspect(&result.item, inspect)
+	availability := containerLogDriverAvailability(inspect)
+	applyLogsScanAvailability(&result.item, availability)
+	if !availability.Readable {
+		result.item.Error = availability.Reason
+		result.summary.Errors++
+		result.summary.LogsUnavailable++
+		return result
+	}
+
+	text, err := readContainerLogText(ctx, svc, ref, inspect, opts)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			result.err = ctxErr
+			return result
+		}
+		if errors.Is(err, context.Canceled) {
+			result.err = err
+			return result
+		}
+		result.item.Error = fmt.Sprintf("??????: %v", err)
+		result.summary.Errors++
+		return result
+	}
+	result.item.Matches, err = findLogScanMatchesWithContext(ctx, text, keywords, opts.Context)
+	if err != nil {
+		result.err = err
+		return result
+	}
+	if opts.RedactSecrets {
+		redactLogScanMatches(result.item.Matches)
+	}
+	if len(result.item.Matches) > 0 {
+		result.summary.ContainersMatched++
+		result.summary.TotalMatches += len(result.item.Matches)
+	}
+	return result
 }
 
 func applyLogsScanInspect(item *LogsScanContainer, inspect container.InspectResponse) {

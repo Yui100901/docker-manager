@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/moby/moby/api/types/container"
@@ -13,6 +14,7 @@ import (
 )
 
 type fakeLogsScanDockerService struct {
+	mu         sync.Mutex
 	containers []container.Summary
 	inspects   map[string]container.InspectResponse
 	logs       map[string]string
@@ -21,6 +23,8 @@ type fakeLogsScanDockerService struct {
 }
 
 func (f *fakeLogsScanDockerService) ListContainers(ctx context.Context, all bool) ([]container.Summary, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.allFlag = all
 	return f.containers, nil
 }
@@ -36,8 +40,11 @@ func (f *fakeLogsScanDockerService) InspectContainer(ctx context.Context, id str
 }
 
 func (f *fakeLogsScanDockerService) ContainerLogs(ctx context.Context, id string, options mobyclient.ContainerLogsOptions) (io.ReadCloser, error) {
+	f.mu.Lock()
 	f.logOptions = append(f.logOptions, options)
-	return io.NopCloser(strings.NewReader(f.logs[id])), nil
+	logText := f.logs[id]
+	f.mu.Unlock()
+	return io.NopCloser(strings.NewReader(logText)), nil
 }
 
 func TestFindLogScanMatchesIncludesContext(t *testing.T) {

@@ -187,88 +187,120 @@ func runHealthReport(ctx context.Context, opts HealthOptions) (HealthReport, err
 	return report, nil
 }
 
+type healthContainerBuildResult struct {
+	item    HealthContainer
+	summary HealthSummary
+	issues  []HealthIssue
+}
+
 func buildHealthReport(ctx context.Context, svc healthDockerService, containers []container.Summary, opts HealthOptions) HealthReport {
 	report := HealthReport{GeneratedAt: time.Now().Format(time.RFC3339), DockerEndpoint: docker.Endpoint()}
 	keywords := normalizeKeywords(opts.Keywords)
+	results := make([]healthContainerBuildResult, len(containers))
+	runDiagnosticsParallel(ctx, len(containers), diagnosticsInspectConcurrency, func(ctx context.Context, i int) {
+		results[i] = buildHealthContainerResult(ctx, svc, containers[i], opts, keywords)
+	})
+	for _, result := range results {
+		if result.item.Name == "" && result.item.ID == "" {
+			continue
+		}
+		report.Summary.Total += result.summary.Total
+		report.Summary.Running += result.summary.Running
+		report.Summary.Stopped += result.summary.Stopped
+		report.Summary.Restarting += result.summary.Restarting
+		report.Summary.Unhealthy += result.summary.Unhealthy
+		report.Summary.RestartWarnings += result.summary.RestartWarnings
+		report.Summary.LogWarnings += result.summary.LogWarnings
+		report.Summary.LogsUnavailable += result.summary.LogsUnavailable
+		report.Summary.PublicBindings += result.summary.PublicBindings
+		report.Issues = append(report.Issues, result.issues...)
+		report.Containers = append(report.Containers, result.item)
+	}
+	sortHealthReport(&report)
+	return report
+}
 
-	for _, summary := range containers {
-		name := firstContainerName(summary.Names)
-		if name == "" {
-			name = shortID(summary.ID)
-		}
-		ref := summary.ID
-		if ref == "" {
-			ref = name
-		}
-		item := HealthContainer{
+func buildHealthContainerResult(ctx context.Context, svc healthDockerService, summary container.Summary, opts HealthOptions, keywords []string) healthContainerBuildResult {
+	name := firstContainerName(summary.Names)
+	if name == "" {
+		name = shortID(summary.ID)
+	}
+	ref := summary.ID
+	if ref == "" {
+		ref = name
+	}
+	result := healthContainerBuildResult{
+		item: HealthContainer{
 			ID:     shortID(summary.ID),
 			Name:   name,
 			Image:  summary.Image,
 			State:  string(summary.State),
 			Status: summary.Status,
-		}
-		report.Summary.Total++
-		switch summary.State {
-		case "running":
-			report.Summary.Running++
-		case "restarting":
-			report.Summary.Restarting++
-		default:
-			report.Summary.Stopped++
-		}
-
-		inspect, err := svc.InspectContainer(ctx, ref)
-		if err != nil {
-			report.Issues = append(report.Issues, HealthIssue{
-				Severity:  "error",
-				Container: name,
-				Type:      "inspect-failed",
-				Message:   fmt.Sprintf("inspect 失败: %v", err),
-			})
-			applyHealthPorts(&item, summary, container.InspectResponse{}, false)
-			report.Containers = append(report.Containers, item)
-			continue
-		}
-		applyInspectHealth(&item, inspect)
-		applyHealthPorts(&item, summary, inspect, true)
-		addStateIssues(&report, item, inspect, opts)
-		addLogDriverIssue(&report, item)
-
-		for _, port := range item.PublicPorts {
-			report.Summary.PublicBindings++
-			report.Issues = append(report.Issues, HealthIssue{
-				Severity:  "warn",
-				Container: item.Name,
-				Type:      "public-port",
-				Message:   fmt.Sprintf("public port binding: %s", port),
-			})
-		}
-
-		if !opts.NoLogs && item.LogReadability != "disabled" && item.LogReadability != "unsupported" && opts.LogTail != 0 && len(keywords) > 0 {
-			matches, err := scanHealthLogs(ctx, svc, ref, inspect, opts.LogTail, keywords, opts.RedactSecrets)
-			if err != nil {
-				report.Issues = append(report.Issues, HealthIssue{
-					Severity:  "warn",
-					Container: item.Name,
-					Type:      "logs-unavailable",
-					Message:   fmt.Sprintf("扫描日志失败: %v", err),
-				})
-			} else if len(matches) > 0 {
-				item.LogMatches = matches
-				report.Summary.LogWarnings += len(matches)
-				report.Issues = append(report.Issues, HealthIssue{
-					Severity:  "warn",
-					Container: item.Name,
-					Type:      "log-keyword",
-					Message:   fmt.Sprintf("matched %d recent log lines", len(matches)),
-				})
-			}
-		}
-
-		report.Containers = append(report.Containers, item)
+		},
 	}
-	sortHealthReport(&report)
-	return report
+	result.summary.Total++
+	switch summary.State {
+	case "running":
+		result.summary.Running++
+	case "restarting":
+		result.summary.Restarting++
+	default:
+		result.summary.Stopped++
+	}
+
+	inspect, err := svc.InspectContainer(ctx, ref)
+	if err != nil {
+		result.issues = append(result.issues, HealthIssue{
+			Severity:  "error",
+			Container: name,
+			Type:      "inspect-failed",
+			Message:   fmt.Sprintf("inspect ??: %v", err),
+		})
+		applyHealthPorts(&result.item, summary, container.InspectResponse{}, false)
+		return result
+	}
+	applyInspectHealth(&result.item, inspect)
+	applyHealthPorts(&result.item, summary, inspect, true)
+
+	localReport := HealthReport{}
+	addStateIssues(&localReport, result.item, inspect, opts)
+	addLogDriverIssue(&localReport, result.item)
+	result.summary.Unhealthy += localReport.Summary.Unhealthy
+	result.summary.RestartWarnings += localReport.Summary.RestartWarnings
+	result.summary.LogsUnavailable += localReport.Summary.LogsUnavailable
+	result.issues = append(result.issues, localReport.Issues...)
+
+	for _, port := range result.item.PublicPorts {
+		result.summary.PublicBindings++
+		result.issues = append(result.issues, HealthIssue{
+			Severity:  "warn",
+			Container: result.item.Name,
+			Type:      "public-port",
+			Message:   fmt.Sprintf("public port binding: %s", port),
+		})
+	}
+
+	if !opts.NoLogs && result.item.LogReadability != "disabled" && result.item.LogReadability != "unsupported" && opts.LogTail != 0 && len(keywords) > 0 {
+		matches, err := scanHealthLogs(ctx, svc, ref, inspect, opts.LogTail, keywords, opts.RedactSecrets)
+		if err != nil {
+			result.issues = append(result.issues, HealthIssue{
+				Severity:  "warn",
+				Container: result.item.Name,
+				Type:      "logs-unavailable",
+				Message:   fmt.Sprintf("??????: %v", err),
+			})
+		} else if len(matches) > 0 {
+			result.item.LogMatches = matches
+			result.summary.LogWarnings += len(matches)
+			result.issues = append(result.issues, HealthIssue{
+				Severity:  "warn",
+				Container: result.item.Name,
+				Type:      "log-keyword",
+				Message:   fmt.Sprintf("matched %d recent log lines", len(matches)),
+			})
+		}
+	}
+	return result
 }
 
 func applyInspectHealth(item *HealthContainer, inspect container.InspectResponse) {

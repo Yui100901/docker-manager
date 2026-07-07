@@ -249,28 +249,45 @@ func buildVolumeReportWithRefs(volumes volume.ListResponse, refsByVolume map[str
 }
 
 func probeVolumeSizes(ctx context.Context, svc volumeDockerService, report *VolumeReport, opts VolumeOptions) {
-	for i := range report.Volumes {
-		if err := ctx.Err(); err != nil {
-			report.Warnings = append(report.Warnings, fmt.Sprintf("volume 大小探测已取消: %v", err))
+	type sizeResult struct {
+		index  int
+		size   int64
+		source string
+		err    error
+	}
+	results := make([]sizeResult, len(report.Volumes))
+	for i := range results {
+		results[i].index = i
+	}
+	runDiagnosticsParallel(ctx, len(report.Volumes), diagnosticsProbeConcurrency, func(ctx context.Context, i int) {
+		vol := &report.Volumes[i]
+		if vol.Size >= 0 || vol.Driver != "local" {
 			return
 		}
-		vol := &report.Volumes[i]
+		size, source, err := measureVolumeSize(ctx, svc, vol, opts)
+		results[i] = sizeResult{index: i, size: size, source: source, err: err}
+	})
+	if err := ctx.Err(); err != nil {
+		report.Warnings = append(report.Warnings, fmt.Sprintf("volume ???????: %v", err))
+		return
+	}
+	for _, result := range results {
+		vol := &report.Volumes[result.index]
 		if vol.Size >= 0 || vol.Driver != "local" {
 			continue
 		}
-		size, source, err := measureVolumeSize(ctx, svc, vol, opts)
-		if err != nil {
-			vol.SizeError = err.Error()
-			report.Warnings = append(report.Warnings, fmt.Sprintf("volume %s 大小探测失败: %v", vol.Name, err))
+		if result.err != nil {
+			vol.SizeError = result.err.Error()
+			report.Warnings = append(report.Warnings, fmt.Sprintf("volume %s ??????: %v", vol.Name, result.err))
 			continue
 		}
-		vol.Size = size
-		vol.SizeSource = source
+		vol.Size = result.size
+		vol.SizeSource = result.source
 		if report.Summary.UnknownSize > 0 {
 			report.Summary.UnknownSize--
 		}
 		if vol.Status == "unused" || vol.Status == "suspected-unused" {
-			report.Summary.ReclaimableSize += size
+			report.Summary.ReclaimableSize += result.size
 		}
 	}
 }
@@ -341,19 +358,34 @@ func measureLocalVolumeSizeWithGo(ctx context.Context, vol *VolumeRef) (int64, e
 
 func inspectVolumeContainerRefs(ctx context.Context, svc containerInspectService, containers []container.Summary) (map[string][]VolumeContainerRef, []string) {
 	refs := make(map[string][]VolumeContainerRef)
-	var warnings []string
-	for _, c := range containers {
-		if err := ctx.Err(); err != nil {
-			warnings = append(warnings, fmt.Sprintf("容器 inspect 已取消: %v", err))
-			break
-		}
+	refsByIndex := make([]map[string][]VolumeContainerRef, len(containers))
+	warningsByIndex := make([]string, len(containers))
+	runDiagnosticsParallel(ctx, len(containers), diagnosticsInspectConcurrency, func(ctx context.Context, i int) {
+		c := containers[i]
+		localRefs := make(map[string][]VolumeContainerRef)
 		inspect, err := svc.InspectContainer(ctx, c.ID)
 		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("inspect 容器 %s 失败，已回退到列表挂载摘要: %v", containerDisplayName(c), err))
-			appendSummaryVolumeRefs(refs, c)
-			continue
+			if ctx.Err() == nil {
+				warningsByIndex[i] = fmt.Sprintf("inspect ?? %s ?????????????: %v", containerDisplayName(c), err)
+			}
+			appendSummaryVolumeRefs(localRefs, c)
+			refsByIndex[i] = localRefs
+			return
 		}
-		appendInspectVolumeRefs(refs, c, inspect)
+		appendInspectVolumeRefs(localRefs, c, inspect)
+		refsByIndex[i] = localRefs
+	})
+	var warnings []string
+	if err := ctx.Err(); err != nil {
+		warnings = append(warnings, fmt.Sprintf("?? inspect ???: %v", err))
+	}
+	for i := range containers {
+		if warningsByIndex[i] != "" {
+			warnings = append(warnings, warningsByIndex[i])
+		}
+		for volumeName, volumeRefs := range refsByIndex[i] {
+			refs[volumeName] = append(refs[volumeName], volumeRefs...)
+		}
 	}
 	sortVolumeContainerRefs(refs)
 	return refs, warnings
