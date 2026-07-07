@@ -5,13 +5,14 @@ import (
 	"context"
 	"docker-manager/internal/docker"
 	"io"
+	"net/netip"
 	"strings"
 	"testing"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/mount"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/go-connections/nat"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/api/types/network"
+	mobyclient "github.com/moby/moby/client"
 )
 
 type fakeHealthDockerService struct {
@@ -19,7 +20,7 @@ type fakeHealthDockerService struct {
 	inspects   map[string]container.InspectResponse
 	logs       map[string]string
 	allFlag    bool
-	logOptions []container.LogsOptions
+	logOptions []mobyclient.ContainerLogsOptions
 }
 
 func (f *fakeHealthDockerService) ListContainers(ctx context.Context, all bool) ([]container.Summary, error) {
@@ -34,7 +35,7 @@ func (f *fakeHealthDockerService) InspectContainer(ctx context.Context, id strin
 	return container.InspectResponse{}, nil
 }
 
-func (f *fakeHealthDockerService) ContainerLogs(ctx context.Context, id string, options container.LogsOptions) (io.ReadCloser, error) {
+func (f *fakeHealthDockerService) ContainerLogs(ctx context.Context, id string, options mobyclient.ContainerLogsOptions) (io.ReadCloser, error) {
 	f.logOptions = append(f.logOptions, options)
 	return io.NopCloser(strings.NewReader(f.logs[id])), nil
 }
@@ -48,8 +49,8 @@ func TestBuildHealthReportDetectsContainerIssues(t *testing.T) {
 				Image:  "demo/api:latest",
 				State:  "running",
 				Status: "Up",
-				Ports: []container.Port{
-					{IP: "0.0.0.0", PublicPort: 8080, PrivatePort: 80, Type: "tcp"},
+				Ports: []container.PortSummary{
+					{IP: netip.MustParseAddr("0.0.0.0"), PublicPort: 8080, PrivatePort: 80, Type: "tcp"},
 				},
 			},
 			{
@@ -62,29 +63,25 @@ func TestBuildHealthReportDetectsContainerIssues(t *testing.T) {
 		},
 		inspects: map[string]container.InspectResponse{
 			"api-container": {
-				ContainerJSONBase: &container.ContainerJSONBase{
-					ID:           "api-container",
-					Name:         "/api",
-					RestartCount: 5,
-					State: &container.State{
-						Status: "running",
-						Health: &container.Health{
-							Status:        "unhealthy",
-							FailingStreak: 2,
-						},
+				ID:           "api-container",
+				Name:         "/api",
+				RestartCount: 5,
+				State: &container.State{
+					Status: "running",
+					Health: &container.Health{
+						Status:        "unhealthy",
+						FailingStreak: 2,
 					},
 				},
 				Config: &container.Config{Image: "demo/api:latest", Tty: true},
 			},
 			"worker-container": {
-				ContainerJSONBase: &container.ContainerJSONBase{
-					ID:   "worker-container",
-					Name: "/worker",
-					State: &container.State{
-						Status:    "exited",
-						ExitCode:  137,
-						OOMKilled: true,
-					},
+				ID:   "worker-container",
+				Name: "/worker",
+				State: &container.State{
+					Status:    "exited",
+					ExitCode:  137,
+					OOMKilled: true,
 				},
 				Config: &container.Config{Image: "demo/worker:latest", Tty: true},
 			},
@@ -144,7 +141,7 @@ func TestRunHealthReportFiltersContainersByWildcard(t *testing.T) {
 			{ID: "db-id", Names: []string{"/db-1"}, Image: "demo/db:latest", State: "running"},
 		},
 		inspects: map[string]container.InspectResponse{
-			"api-id": {ContainerJSONBase: &container.ContainerJSONBase{Name: "/api-1", State: &container.State{Status: "running"}}},
+			"api-id": {Name: "/api-1", State: &container.State{Status: "running"}},
 		},
 		logs: map[string]string{"api-id": "ok\n"},
 	}
@@ -173,40 +170,36 @@ func TestBuildHealthReportIncludesResourceDependenciesFromInspect(t *testing.T) 
 		}},
 		inspects: map[string]container.InspectResponse{
 			"api-id": {
-				ContainerJSONBase: &container.ContainerJSONBase{
-					ID:           "api-id",
-					Name:         "/api",
-					Image:        "sha256:image-id",
-					RestartCount: 1,
-					HostConfig: &container.HostConfig{
-						NetworkMode: "app_net",
-						RestartPolicy: container.RestartPolicy{
-							Name:              "on-failure",
-							MaximumRetryCount: 5,
-						},
-						LogConfig: container.LogConfig{
-							Type:   "json-file",
-							Config: map[string]string{"max-size": "10m"},
-						},
+				ID:           "api-id",
+				Name:         "/api",
+				Image:        "sha256:image-id",
+				RestartCount: 1,
+				HostConfig: &container.HostConfig{
+					NetworkMode: "app_net",
+					RestartPolicy: container.RestartPolicy{
+						Name:              "on-failure",
+						MaximumRetryCount: 5,
 					},
-					State: &container.State{Status: container.StateRunning},
+					LogConfig: container.LogConfig{
+						Type:   "json-file",
+						Config: map[string]string{"max-size": "10m"},
+					},
 				},
+				State: &container.State{Status: container.StateRunning},
 				Config: &container.Config{
 					Image:        "demo/api:latest",
-					ExposedPorts: nat.PortSet{"443/tcp": struct{}{}},
+					ExposedPorts: network.PortSet{network.MustParsePort("443/tcp"): struct{}{}},
 				},
 				NetworkSettings: &container.NetworkSettings{
-					NetworkSettingsBase: container.NetworkSettingsBase{
-						Ports: nat.PortMap{
-							"80/tcp": []nat.PortBinding{{HostIP: "0.0.0.0", HostPort: "8080"}},
-						},
+					Ports: network.PortMap{
+						network.MustParsePort("80/tcp"): []network.PortBinding{{HostIP: netip.MustParseAddr("0.0.0.0"), HostPort: "8080"}},
 					},
 					Networks: map[string]*network.EndpointSettings{
 						"app_net": {
 							NetworkID:  "network-id",
 							EndpointID: "endpoint-id",
-							IPAddress:  "172.20.0.2",
-							Gateway:    "172.20.0.1",
+							IPAddress:  netip.MustParseAddr("172.20.0.2"),
+							Gateway:    netip.MustParseAddr("172.20.0.1"),
 							Aliases:    []string{"api"},
 						},
 					},
@@ -259,13 +252,11 @@ func TestBuildHealthReportReportsUnsupportedLogDriver(t *testing.T) {
 		}},
 		inspects: map[string]container.InspectResponse{
 			"api-id": {
-				ContainerJSONBase: &container.ContainerJSONBase{
-					Name: "/api",
-					HostConfig: &container.HostConfig{
-						LogConfig: container.LogConfig{Type: "awslogs"},
-					},
-					State: &container.State{Status: container.StateRunning},
+				Name: "/api",
+				HostConfig: &container.HostConfig{
+					LogConfig: container.LogConfig{Type: "awslogs"},
 				},
+				State:  &container.State{Status: container.StateRunning},
 				Config: &container.Config{Image: "demo/api"},
 			},
 		},
@@ -298,7 +289,7 @@ func TestRunHealthReportIncludesDockerEndpoint(t *testing.T) {
 	fake := &fakeHealthDockerService{
 		containers: []container.Summary{{ID: "api-id", Names: []string{"/api"}, State: "running"}},
 		inspects: map[string]container.InspectResponse{
-			"api-id": {ContainerJSONBase: &container.ContainerJSONBase{Name: "/api", State: &container.State{Status: "running"}}},
+			"api-id": {Name: "/api", State: &container.State{Status: "running"}},
 		},
 	}
 	restore := replaceHealthServiceFactory(fake)
@@ -327,10 +318,8 @@ func TestBuildHealthReportRedactsLogSecretsWhenRequested(t *testing.T) {
 		}},
 		inspects: map[string]container.InspectResponse{
 			"api": {
-				ContainerJSONBase: &container.ContainerJSONBase{
-					Name:  "/api",
-					State: &container.State{Status: "running"},
-				},
+				Name:   "/api",
+				State:  &container.State{Status: "running"},
 				Config: &container.Config{Image: "demo/api", Tty: true},
 			},
 		},

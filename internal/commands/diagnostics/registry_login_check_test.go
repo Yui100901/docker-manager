@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/docker/docker/api/types/registry"
+	"github.com/moby/moby/api/types/registry"
 )
 
 type fakeRegistryLoginDockerService struct {
@@ -20,12 +20,12 @@ type fakeRegistryLoginDockerService struct {
 	err  error
 }
 
-func (f *fakeRegistryLoginDockerService) RegistryLogin(ctx context.Context, auth registry.AuthConfig) (registry.AuthenticateOKBody, error) {
+func (f *fakeRegistryLoginDockerService) RegistryLogin(ctx context.Context, auth registry.AuthConfig) (registry.AuthResponse, error) {
 	f.auth = auth
 	if f.err != nil {
-		return registry.AuthenticateOKBody{}, f.err
+		return registry.AuthResponse{}, f.err
 	}
-	return registry.AuthenticateOKBody{Status: "Login Succeeded"}, nil
+	return registry.AuthResponse{Status: "Login Succeeded"}, nil
 }
 
 func TestCredentialFromAuthEntryDecodesAuth(t *testing.T) {

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/docker/docker/api/types/container"
+	"github.com/moby/moby/api/types/container"
 )
 
 type logDriverAvailability struct {
@@ -15,7 +15,7 @@ type logDriverAvailability struct {
 }
 
 func inspectLogDriver(inspect container.InspectResponse) string {
-	if inspect.ContainerJSONBase == nil || inspect.HostConfig == nil {
+	if inspect.HostConfig == nil {
 		return ""
 	}
 	return strings.TrimSpace(inspect.HostConfig.LogConfig.Type)

@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/volume"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/volume"
 )
 
 func TestFilterContainerSummariesSupportsKeyedFilters(t *testing.T) {
@@ -86,7 +86,7 @@ func TestPrintTargetSelection(t *testing.T) {
 }
 
 func TestFilterVolumesByPatternsSupportsKeyedFilters(t *testing.T) {
-	volumes := []*volume.Volume{
+	volumes := []volume.Volume{
 		{Name: "app_data", Driver: "local", Mountpoint: "/var/lib/docker/volumes/app_data/_data", Labels: map[string]string{"app": "demo"}},
 		{Name: "cache", Driver: "nfs", Mountpoint: "/mnt/cache", Labels: map[string]string{"app": "cache"}},
 	}

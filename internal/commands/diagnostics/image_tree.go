@@ -13,8 +13,8 @@ import (
 	"docker-manager/internal/docker"
 	rpt "docker-manager/internal/report"
 
-	containerapi "github.com/docker/docker/api/types/container"
-	imageapi "github.com/docker/docker/api/types/image"
+	containerapi "github.com/moby/moby/api/types/container"
+	imageapi "github.com/moby/moby/api/types/image"
 	mobyclient "github.com/moby/moby/client"
 	"github.com/spf13/cobra"
 )
@@ -304,7 +304,7 @@ func imageUsedByContainers(targetID string, containers []containerapi.Summary, i
 	seen := map[string]bool{}
 	for _, c := range containers {
 		imageID := normalizeImageID(c.ImageID)
-		if inspect, ok := inspects[c.ID]; ok && inspect.ContainerJSONBase != nil && inspect.Image != "" {
+		if inspect, ok := inspects[c.ID]; ok && inspect.Image != "" {
 			imageID = normalizeImageID(inspect.Image)
 		}
 		if imageID != targetID {

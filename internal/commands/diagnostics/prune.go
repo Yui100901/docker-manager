@@ -12,9 +12,8 @@ import (
 
 	rpt "docker-manager/internal/report"
 
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/image"
+	"github.com/moby/moby/api/types/image"
+	mobyclient "github.com/moby/moby/client"
 	"github.com/spf13/cobra"
 )
 
@@ -152,10 +151,10 @@ func (s PruneScope) includesBuildCache() bool {
 }
 
 func (s PruneScope) dockerFilters() pruneDockerFilters {
-	containerFilters := filters.NewArgs()
-	imageFilters := filters.NewArgs()
-	volumeFilters := filters.NewArgs()
-	buildFilters := filters.NewArgs()
+	containerFilters := make(mobyclient.Filters)
+	imageFilters := make(mobyclient.Filters)
+	volumeFilters := make(mobyclient.Filters)
+	buildFilters := make(mobyclient.Filters)
 
 	imageFilters.Add("dangling", "true")
 	volumeFilters.Add("all", "true")
@@ -399,16 +398,16 @@ func runPruneReport(ctx context.Context, opts PruneReportOptions) (PruneReport, 
 	return report, nil
 }
 
-func buildPruneReport(usage types.DiskUsage, scope PruneScope) PruneReport {
+func buildPruneReport(usage pruneDiskUsage, scope PruneScope) PruneReport {
 	report, _ := buildPruneReportWithContext(context.Background(), usage, scope)
 	return report
 }
 
-func buildPruneReportWithContext(ctx context.Context, usage types.DiskUsage, scope PruneScope) (PruneReport, error) {
+func buildPruneReportWithContext(ctx context.Context, usage pruneDiskUsage, scope PruneScope) (PruneReport, error) {
 	return buildPruneReportWithVolumeRefs(ctx, usage, scope, nil, nil)
 }
 
-func buildPruneReportWithVolumeRefs(ctx context.Context, usage types.DiskUsage, scope PruneScope, volumeRefs map[string][]VolumeContainerRef, warnings []string) (PruneReport, error) {
+func buildPruneReportWithVolumeRefs(ctx context.Context, usage pruneDiskUsage, scope PruneScope, volumeRefs map[string][]VolumeContainerRef, warnings []string) (PruneReport, error) {
 	report := PruneReport{
 		GeneratedAt:    time.Now().Format(time.RFC3339),
 		DockerEndpoint: docker.Endpoint(),

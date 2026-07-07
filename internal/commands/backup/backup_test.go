@@ -7,16 +7,16 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/mount"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/api/types/volume"
-	"github.com/docker/go-connections/nat"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/api/types/volume"
 )
 
 type fakeBackupDockerService struct {
@@ -107,14 +107,12 @@ func TestBackupContainerWritesBundle(t *testing.T) {
 
 	fake := &fakeBackupDockerService{
 		inspect: container.InspectResponse{
-			ContainerJSONBase: &container.ContainerJSONBase{
-				Name: "/demo",
-				HostConfig: &container.HostConfig{
-					Tmpfs: map[string]string{"/cache": "rw,noexec"},
-					Resources: container.Resources{
-						Devices: []container.DeviceMapping{
-							{PathOnHost: devicePath, PathInContainer: "/dev/demo", CgroupPermissions: "rwm"},
-						},
+			Name: "/demo",
+			HostConfig: &container.HostConfig{
+				Tmpfs: map[string]string{"/cache": "rw,noexec"},
+				Resources: container.Resources{
+					Devices: []container.DeviceMapping{
+						{PathOnHost: devicePath, PathInContainer: "/dev/demo", CgroupPermissions: "rwm"},
 					},
 				},
 			},
@@ -129,7 +127,7 @@ func TestBackupContainerWritesBundle(t *testing.T) {
 				},
 			},
 		},
-		network: network.Inspect{Name: "demo_net", Driver: "bridge"},
+		network: network.Inspect{Network: network.Network{Name: "demo_net", Driver: "bridge"}},
 		volume:  volume.Volume{Name: "demo_data", Driver: "local"},
 	}
 	restoreFactory := replaceBackupServiceFactory(fake)
@@ -263,11 +261,9 @@ func TestBackupContainerReturnsCanceledContext(t *testing.T) {
 func TestBackupContainerWritesOfflineBundleArtifacts(t *testing.T) {
 	fake := &fakeBackupDockerService{
 		inspect: container.InspectResponse{
-			ContainerJSONBase: &container.ContainerJSONBase{
-				Name:       "/demo",
-				HostConfig: &container.HostConfig{},
-			},
-			Config: &container.Config{Image: "busybox:latest"},
+			Name:       "/demo",
+			HostConfig: &container.HostConfig{},
+			Config:     &container.Config{Image: "busybox:latest"},
 		},
 	}
 	restoreFactory := replaceBackupServiceFactory(fake)
@@ -342,8 +338,9 @@ func TestBackupCommandBundleOutputFlagWritesArchive(t *testing.T) {
 			{ID: "demo-id", Names: []string{"/demo"}, Image: "busybox:latest"},
 		},
 		inspect: container.InspectResponse{
-			ContainerJSONBase: &container.ContainerJSONBase{Name: "/demo", HostConfig: &container.HostConfig{}},
-			Config:            &container.Config{Image: "busybox:latest"},
+			Name:       "/demo",
+			HostConfig: &container.HostConfig{},
+			Config:     &container.Config{Image: "busybox:latest"},
 		},
 	}
 	restoreFactory := replaceBackupServiceFactory(fake)
@@ -384,11 +381,9 @@ func TestBackupCommandDoesNotExposeContainerSubcommand(t *testing.T) {
 func TestBackupContainerDryRunPrintsPlanWithoutWritingFiles(t *testing.T) {
 	fake := &fakeBackupDockerService{
 		inspect: container.InspectResponse{
-			ContainerJSONBase: &container.ContainerJSONBase{
-				Name:       "/demo",
-				HostConfig: &container.HostConfig{},
-			},
-			Config: &container.Config{Image: "busybox:latest"},
+			Name:       "/demo",
+			HostConfig: &container.HostConfig{},
+			Config:     &container.Config{Image: "busybox:latest"},
 			Mounts: []container.MountPoint{
 				{Type: mount.TypeVolume, Name: "demo_data", Destination: "/data"},
 			},
@@ -396,7 +391,7 @@ func TestBackupContainerDryRunPrintsPlanWithoutWritingFiles(t *testing.T) {
 				Networks: map[string]*network.EndpointSettings{"demo_net": {}},
 			},
 		},
-		network: network.Inspect{Name: "demo_net", Driver: "bridge"},
+		network: network.Inspect{Network: network.Network{Name: "demo_net", Driver: "bridge"}},
 		volume:  volume.Volume{Name: "demo_data", Driver: "local"},
 	}
 	restoreFactory := replaceBackupServiceFactory(fake)
@@ -444,12 +439,14 @@ func TestBackupContainersSeparateByDefault(t *testing.T) {
 		},
 		inspects: map[string]container.InspectResponse{
 			"api-1": {
-				ContainerJSONBase: &container.ContainerJSONBase{Name: "/api-1", HostConfig: &container.HostConfig{}},
-				Config:            &container.Config{Image: "demo/api:latest"},
+				Name:       "/api-1",
+				HostConfig: &container.HostConfig{},
+				Config:     &container.Config{Image: "demo/api:latest"},
 			},
 			"worker": {
-				ContainerJSONBase: &container.ContainerJSONBase{Name: "/worker", HostConfig: &container.HostConfig{}},
-				Config:            &container.Config{Image: "demo/worker:latest"},
+				Name:       "/worker",
+				HostConfig: &container.HostConfig{},
+				Config:     &container.Config{Image: "demo/worker:latest"},
 			},
 		},
 	}
@@ -483,8 +480,9 @@ func TestBackupCommandNoImageDisablesImageExport(t *testing.T) {
 			{ID: "demo-id", Names: []string{"/demo"}, Image: "busybox:latest"},
 		},
 		inspect: container.InspectResponse{
-			ContainerJSONBase: &container.ContainerJSONBase{Name: "/demo", HostConfig: &container.HostConfig{}},
-			Config:            &container.Config{Image: "busybox:latest"},
+			Name:       "/demo",
+			HostConfig: &container.HostConfig{},
+			Config:     &container.Config{Image: "busybox:latest"},
 		},
 	}
 	restoreFactory := replaceBackupServiceFactory(fake)
@@ -509,12 +507,14 @@ func TestBackupContainersMergeWritesBatchBundle(t *testing.T) {
 		},
 		inspects: map[string]container.InspectResponse{
 			"api": {
-				ContainerJSONBase: &container.ContainerJSONBase{Name: "/api", HostConfig: &container.HostConfig{}},
-				Config:            &container.Config{Image: "demo/api:latest"},
+				Name:       "/api",
+				HostConfig: &container.HostConfig{},
+				Config:     &container.Config{Image: "demo/api:latest"},
 			},
 			"worker": {
-				ContainerJSONBase: &container.ContainerJSONBase{Name: "/worker", HostConfig: &container.HostConfig{}},
-				Config:            &container.Config{Image: "demo/worker:latest"},
+				Name:       "/worker",
+				HostConfig: &container.HostConfig{},
+				Config:     &container.Config{Image: "demo/worker:latest"},
 			},
 		},
 	}
@@ -574,11 +574,9 @@ func TestRestoreBackupRejectsExistingContainerWithoutReplace(t *testing.T) {
 		ComposeFile:   backupComposeName,
 	})
 	writeTestJSON(t, filepath.Join(dir, backupInspectName), container.InspectResponse{
-		ContainerJSONBase: &container.ContainerJSONBase{
-			Name:       "/demo",
-			HostConfig: &container.HostConfig{},
-		},
-		Config: &container.Config{Image: "busybox:latest"},
+		Name:       "/demo",
+		HostConfig: &container.HostConfig{},
+		Config:     &container.Config{Image: "busybox:latest"},
 	})
 
 	fake := &fakeBackupDockerService{containerExists: true}
@@ -634,11 +632,9 @@ func TestRestoreBackupSupportsTarGzArchive(t *testing.T) {
 		ComposeFile:   backupComposeName,
 	})
 	writeTestJSON(t, filepath.Join(dir, backupInspectName), container.InspectResponse{
-		ContainerJSONBase: &container.ContainerJSONBase{
-			Name:       "/demo",
-			HostConfig: &container.HostConfig{},
-		},
-		Config: &container.Config{Image: "busybox:latest"},
+		Name:       "/demo",
+		HostConfig: &container.HostConfig{},
+		Config:     &container.Config{Image: "busybox:latest"},
 	})
 	archive := filepath.Join(root, "bundle.tar.gz")
 	if err := createBackupArchive(dir, archive); err != nil {
@@ -681,11 +677,9 @@ func TestRestoreBackupSupportsBatchManifest(t *testing.T) {
 			ComposeFile:   backupComposeName,
 		})
 		writeTestJSON(t, filepath.Join(dir, backupInspectName), container.InspectResponse{
-			ContainerJSONBase: &container.ContainerJSONBase{
-				Name:       "/" + name,
-				HostConfig: &container.HostConfig{},
-			},
-			Config: &container.Config{Image: "busybox:latest"},
+			Name:       "/" + name,
+			HostConfig: &container.HostConfig{},
+			Config:     &container.Config{Image: "busybox:latest"},
 		})
 	}
 	if err := writeChecksums(root); err != nil {
@@ -757,11 +751,9 @@ func TestRestoreBackupVerifiesChecksumsBeforeDockerActions(t *testing.T) {
 		ComposeFile:   backupComposeName,
 	})
 	writeTestJSON(t, filepath.Join(dir, backupInspectName), container.InspectResponse{
-		ContainerJSONBase: &container.ContainerJSONBase{
-			Name:       "/demo",
-			HostConfig: &container.HostConfig{},
-		},
-		Config: &container.Config{Image: "busybox:latest"},
+		Name:       "/demo",
+		HostConfig: &container.HostConfig{},
+		Config:     &container.Config{Image: "busybox:latest"},
 	})
 	if err := writeChecksums(dir); err != nil {
 		t.Fatalf("writeChecksums() error = %v", err)
@@ -795,11 +787,9 @@ func TestRestoreBackupCanSkipChecksumVerification(t *testing.T) {
 		ComposeFile:   backupComposeName,
 	})
 	writeTestJSON(t, filepath.Join(dir, backupInspectName), container.InspectResponse{
-		ContainerJSONBase: &container.ContainerJSONBase{
-			Name:       "/demo",
-			HostConfig: &container.HostConfig{},
-		},
-		Config: &container.Config{Image: "busybox:latest"},
+		Name:       "/demo",
+		HostConfig: &container.HostConfig{},
+		Config:     &container.Config{Image: "busybox:latest"},
 	})
 	if err := writeChecksums(dir); err != nil {
 		t.Fatalf("writeChecksums() error = %v", err)
@@ -836,17 +826,15 @@ func TestRestoreBackupDryRunPrintsPlanWithoutDockerMutations(t *testing.T) {
 		Volumes:       []BackupResourceRef{{Name: "demo_data", File: volumeFile}},
 	})
 	writeTestJSON(t, filepath.Join(dir, backupInspectName), container.InspectResponse{
-		ContainerJSONBase: &container.ContainerJSONBase{
-			Name: "/demo",
-			HostConfig: &container.HostConfig{
-				PortBindings: nat.PortMap{
-					"80/tcp": []nat.PortBinding{{HostIP: "0.0.0.0", HostPort: "8080"}},
-				},
+		Name: "/demo",
+		HostConfig: &container.HostConfig{
+			PortBindings: network.PortMap{
+				network.MustParsePort("80/tcp"): []network.PortBinding{{HostIP: netip.MustParseAddr("0.0.0.0"), HostPort: "8080"}},
 			},
 		},
 		Config: &container.Config{Image: "busybox:latest"},
 	})
-	writeTestJSON(t, filepath.Join(dir, filepath.FromSlash(networkFile)), network.Inspect{Name: "demo_net"})
+	writeTestJSON(t, filepath.Join(dir, filepath.FromSlash(networkFile)), network.Inspect{Network: network.Network{Name: "demo_net"}})
 	writeTestJSON(t, filepath.Join(dir, filepath.FromSlash(volumeFile)), volume.Volume{Name: "demo_data"})
 	if err := os.MkdirAll(filepath.Join(dir, "images"), 0755); err != nil {
 		t.Fatal(err)
@@ -897,13 +885,11 @@ func TestRestoreBackupReplaceCreatesAndStartsContainer(t *testing.T) {
 		Volumes:       []BackupResourceRef{{Name: "demo_data", File: volumeFile}},
 	})
 	writeTestJSON(t, filepath.Join(dir, backupInspectName), container.InspectResponse{
-		ContainerJSONBase: &container.ContainerJSONBase{
-			Name:       "/demo",
-			HostConfig: &container.HostConfig{},
-		},
-		Config: &container.Config{Image: "busybox:latest"},
+		Name:       "/demo",
+		HostConfig: &container.HostConfig{},
+		Config:     &container.Config{Image: "busybox:latest"},
 	})
-	writeTestJSON(t, filepath.Join(dir, filepath.FromSlash(networkFile)), network.Inspect{Name: "demo_net"})
+	writeTestJSON(t, filepath.Join(dir, filepath.FromSlash(networkFile)), network.Inspect{Network: network.Network{Name: "demo_net"}})
 	writeTestJSON(t, filepath.Join(dir, filepath.FromSlash(volumeFile)), volume.Volume{Name: "demo_data"})
 	if err := os.MkdirAll(filepath.Join(dir, "images"), 0755); err != nil {
 		t.Fatal(err)

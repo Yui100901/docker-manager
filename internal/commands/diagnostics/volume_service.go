@@ -10,11 +10,11 @@ import (
 
 	"docker-manager/internal/docker"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/volume"
 	"github.com/moby/moby/api/pkg/stdcopy"
+	"github.com/moby/moby/api/types/container"
 	mobycontainer "github.com/moby/moby/api/types/container"
 	mobymount "github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/api/types/volume"
 	mobyclient "github.com/moby/moby/client"
 )
 
@@ -23,11 +23,7 @@ func (s *dockerVolumeService) ListVolumes(ctx context.Context) (volume.ListRespo
 	if err != nil {
 		return volume.ListResponse{}, err
 	}
-	volumes, err := docker.ConvertDockerType[[]*volume.Volume](result.Items)
-	if err != nil {
-		return volume.ListResponse{}, err
-	}
-	return volume.ListResponse{Volumes: volumes, Warnings: result.Warnings}, nil
+	return volume.ListResponse{Volumes: result.Items, Warnings: result.Warnings}, nil
 }
 
 func (s *dockerVolumeService) ListContainers(ctx context.Context, all bool) ([]container.Summary, error) {

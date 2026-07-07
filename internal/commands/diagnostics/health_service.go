@@ -6,7 +6,7 @@ import (
 
 	"docker-manager/internal/docker"
 
-	"github.com/docker/docker/api/types/container"
+	"github.com/moby/moby/api/types/container"
 	mobyclient "github.com/moby/moby/client"
 )
 
@@ -26,15 +26,6 @@ func (s *dockerHealthService) InspectContainer(ctx context.Context, id string) (
 	return docker.ConvertDockerType[container.InspectResponse](result.Container)
 }
 
-func (s *dockerHealthService) ContainerLogs(ctx context.Context, id string, options container.LogsOptions) (io.ReadCloser, error) {
-	return s.cli.ContainerLogs(ctx, id, mobyclient.ContainerLogsOptions{
-		ShowStdout: options.ShowStdout,
-		ShowStderr: options.ShowStderr,
-		Since:      options.Since,
-		Until:      options.Until,
-		Timestamps: options.Timestamps,
-		Follow:     options.Follow,
-		Tail:       options.Tail,
-		Details:    options.Details,
-	})
+func (s *dockerHealthService) ContainerLogs(ctx context.Context, id string, options mobyclient.ContainerLogsOptions) (io.ReadCloser, error) {
+	return s.cli.ContainerLogs(ctx, id, options)
 }

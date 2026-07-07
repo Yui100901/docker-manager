@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/strslice"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/strslice"
 )
 
 type fakeInspectDiffDockerService struct {
@@ -162,11 +162,9 @@ func TestPrintInspectDiffReportIncludesSummaryAndChangedFields(t *testing.T) {
 
 func inspectDiffFixture(image string, env []string, capAdd []string) container.InspectResponse {
 	return container.InspectResponse{
-		ContainerJSONBase: &container.ContainerJSONBase{
-			Name: "/demo",
-			HostConfig: &container.HostConfig{
-				CapAdd: capAdd,
-			},
+		Name: "/demo",
+		HostConfig: &container.HostConfig{
+			CapAdd: capAdd,
 		},
 		Config: &container.Config{
 			Image:  image,

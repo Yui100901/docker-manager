@@ -10,8 +10,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
 )
 
 func restoreBackup(ctx context.Context, backupDir string, opts RestoreOptions) error {
@@ -299,20 +299,24 @@ func restorePortBindings(inspect container.InspectResponse) []string {
 	}
 	var ports []string
 	for port, bindings := range inspect.HostConfig.PortBindings {
+		portText := port.String()
 		if len(bindings) == 0 {
-			ports = append(ports, string(port))
+			ports = append(ports, portText)
 			continue
 		}
 		for _, binding := range bindings {
-			host := binding.HostIP
+			host := "0.0.0.0"
+			if binding.HostIP.IsValid() {
+				host = binding.HostIP.String()
+			}
 			if host == "" {
 				host = "0.0.0.0"
 			}
 			if binding.HostPort == "" {
-				ports = append(ports, fmt.Sprintf("%s->%s", host, port))
+				ports = append(ports, fmt.Sprintf("%s->%s", host, portText))
 				continue
 			}
-			ports = append(ports, fmt.Sprintf("%s:%s->%s", host, binding.HostPort, port))
+			ports = append(ports, fmt.Sprintf("%s:%s->%s", host, binding.HostPort, portText))
 		}
 	}
 	sort.Strings(ports)

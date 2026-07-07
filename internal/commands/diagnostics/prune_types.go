@@ -3,7 +3,11 @@ package diagnostics
 import (
 	"docker-manager/internal/commandflags"
 
-	"github.com/docker/docker/api/types/filters"
+	"github.com/moby/moby/api/types/build"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/image"
+	"github.com/moby/moby/api/types/volume"
+	mobyclient "github.com/moby/moby/client"
 )
 
 type PruneReportOptions struct {
@@ -35,6 +39,14 @@ type PruneScope struct {
 	Filters       []string `json:"filters,omitempty"`
 	Until         string   `json:"until,omitempty"`
 	ProtectLabels []string `json:"protect_labels,omitempty"`
+}
+
+type pruneDiskUsage struct {
+	LayersSize int64
+	Images     []*image.Summary
+	Containers []*container.Summary
+	Volumes    []*volume.Volume
+	BuildCache []*build.CacheRecord
 }
 
 type PruneContainerRef struct {
@@ -79,8 +91,8 @@ type pruneFilter struct {
 }
 
 type pruneDockerFilters struct {
-	Containers  filters.Args
-	Images      filters.Args
-	Volumes     filters.Args
-	BuildCaches filters.Args
+	Containers  mobyclient.Filters
+	Images      mobyclient.Filters
+	Volumes     mobyclient.Filters
+	BuildCaches mobyclient.Filters
 }

@@ -1,5 +1,14 @@
 # Docker API 依赖迁移清单
 
+## Status update 2026-07-07
+
+- Direct `github.com/docker/docker` usage has been removed from Go source, `go.mod`, and `go.sum`.
+- Docker API calls now use `github.com/moby/moby/client`; API structs use `github.com/moby/moby/api/types/...`.
+- `docker.NewClient` and the legacy shared Docker client cache were removed; migrated code should call `docker.NewMobyClient`.
+- `github.com/docker/go-connections` and `github.com/docker/go-units` still appear in the module graph only as transitive Moby dependencies.
+- Validation completed locally with `go test ./...`.
+
+
 本文档记录从旧 Docker Go SDK 迁移到新 Moby 拆分模块时的影响面和执行清单。目标是先明确会导致哪些代码调整，再按阶段实施迁移。
 
 ## 背景
@@ -234,13 +243,13 @@ client.DiskUsageOptions
 
 - [x] 新增过渡期 `github.com/moby/moby/client v0.4.0`
 - [x] 新增 `github.com/moby/moby/api v1.55.0`
-- [ ] 移除直接依赖 `github.com/docker/docker`
+- [x] 移除直接依赖 `github.com/docker/docker`
 - [x] 迁移 `internal/docker/client.go`，新增 `NewMobyClient`
-- [x] 保留旧 `NewClient` 兼容入口，避免业务命令在同一阶段被迫整体迁移
+- [x] 移除旧 `NewClient` 兼容入口，统一使用 `NewMobyClient`
 - [x] 确认 `DOCKER_HOST`、`DOCKER_TLS_VERIFY`、`DOCKER_CERT_PATH`、`DOCKER_API_VERSION` 仍兼容
 - [x] 确认 `client.WithAPIVersionNegotiation()` 行为仍符合预期
 
-阶段 1 状态: 已完成可编译的过渡式迁移。旧 `NewClient` 仍返回 `github.com/docker/docker/client.Client`，新 `NewMobyClient` 返回 `github.com/moby/moby/client.Client`。后续阶段按模块迁移业务命令，最后再移除旧 SDK 并升级到 `github.com/moby/moby/client v0.5.0`。
+阶段 1 状态: 已完成。旧 `NewClient` 和 `github.com/docker/docker` 直接依赖已移除，当前统一通过 `NewMobyClient` 返回 `github.com/moby/moby/client.Client`。
 
 ### 阶段 2: 项目 Docker 封装层
 
@@ -249,7 +258,7 @@ client.DiskUsageOptions
 - [x] 对 `ContainerList`、`ImageList`、`NetworkList`、`ContainerInspect`、`NetworkInspect`、`VolumeInspect` 等 result 包装做内部适配
 - [x] 优先让上层业务尽量少感知 SDK 差异
 
-阶段 2 状态: 已完成。`ContainerManager` 和 `ImageManager` 内部改用 `NewMobyClient`，但公开方法仍返回旧 `github.com/docker/docker/api/types/...` 类型，避免 `images`、`reverse` 和 `pull mirror` 在同一阶段被迫迁移。当前通过 `internal/docker/compat.go` 做 JSON 结构转换；后续阶段完成上层模块迁移后，可移除这些兼容转换。
+阶段 2 状态: 已完成。`ContainerManager` 和 `ImageManager` 已改用 `NewMobyClient`，公开方法和上层调用已迁移到 `github.com/moby/moby/api/types/...`。
 
 ### 阶段 3: diagnostics
 
@@ -259,7 +268,7 @@ client.DiskUsageOptions
 - [x] 迁移 volume/network/image tree/report 相关 Docker API 调用
 - [x] 更新并验证 fake service 和单元测试
 
-阶段 3 状态: 已完成 Docker API 调用路径迁移。`internal/commands/diagnostics` 不再直接创建旧 `github.com/docker/docker/client.Client`，统一通过 `docker.NewMobyClient` 调用 Docker daemon。为控制迁移边界，报告结构和单元测试仍保留旧 `github.com/docker/docker/api/types/...` 类型，service 层负责将 Moby result/options 转换为当前报告逻辑使用的结构。
+阶段 3 状态: 已完成。`internal/commands/diagnostics` 统一通过 `docker.NewMobyClient` 调用 Docker daemon，service、报告构建和单元测试均已迁移到 Moby API 类型。
 
 ### 阶段 4: backup/restore
 
@@ -269,7 +278,7 @@ client.DiskUsageOptions
 - [x] 验证 container recreate
 - [x] 验证 checksum、bundle、dry-run、replace、no-start 行为
 
-阶段 4 状态: 已完成过渡式迁移。`internal/commands/backup` 的真实 Docker API 调用已改为 `docker.NewMobyClient` 和 `github.com/moby/moby/client` options/result；为控制迁移边界，backup manifest、archive、restore 编排和测试仍保留旧 `github.com/docker/docker/api/types/...` 类型，由 service 层负责转换。后续阶段完成 reverse、completion、resourcefilter 等模块迁移后，再统一移除旧 SDK 类型。
+阶段 4 状态: 已完成。`internal/commands/backup` 的 Docker API 调用、manifest、archive、restore 编排和测试均已迁移到 Moby API 类型。
 
 ### 阶段 5: reverse/rerun、completion、filter
 
@@ -279,7 +288,7 @@ client.DiskUsageOptions
 - [x] 迁移 resourcefilter 的 container/image/volume summary 类型
 - [x] 确认筛选和通配符行为不变
 
-阶段 5 状态: 已完成。`internal/docker.ContainerManager`、`ImageManager`、`reverse/rerun`、`runconfig`、`completion`、`resourcefilter` 和 `images save` 的本地资源处理已切到 `github.com/moby/moby/api` / `github.com/moby/moby/client` 类型。由于 backup 与 diagnostics 的报告结构仍处在旧 SDK 类型边界，当前在调用 `runconfig` / `resourcefilter` 前保留轻量转换；后续迁移这些报告结构后可删除桥接。
+阶段 5 状态: 已完成。`internal/docker.ContainerManager`、`ImageManager`、`reverse/rerun`、`runconfig`、`completion`、`resourcefilter` 和 `images save` 的本地资源处理已切到 `github.com/moby/moby/api` / `github.com/moby/moby/client` 类型。
 
 ### 阶段 6: 测试和验收
 
@@ -316,8 +325,8 @@ client.DiskUsageOptions
 
 满足以下条件后，可认为 Docker API 依赖迁移完成:
 
-- [ ] 全项目无 `github.com/docker/docker` import。
-- [ ] `go.mod` 不再直接 require `github.com/docker/docker`。
+- [x] 全项目无 `github.com/docker/docker` import。
+- [x] `go.mod` 不再直接 require `github.com/docker/docker`。
 - [x] `go test ./...` 通过。
 - [x] `dm doctor` 能显示 Docker daemon API 信息。
 - [x] `dm health`、`dm network`、`dm volumes`、`dm prune` 能正常输出报告。

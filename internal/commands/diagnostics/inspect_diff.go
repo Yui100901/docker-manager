@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/netip"
 	"sort"
 	"strings"
 
@@ -14,8 +15,8 @@ import (
 	"docker-manager/internal/docker"
 	rpt "docker-manager/internal/report"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
 	mobyclient "github.com/moby/moby/client"
 	"github.com/spf13/cobra"
 )
@@ -159,7 +160,7 @@ func inspectComparableFields(info container.InspectResponse, opts InspectDiffOpt
 		add("host.publish_all_ports", host.PublishAllPorts)
 		add("host.port_bindings", host.PortBindings)
 		add("host.binds", sortedStrings(host.Binds))
-		add("host.dns", sortedStrings(host.DNS))
+		add("host.dns", sortedNetIPAddrs(host.DNS))
 		add("host.dns_search", sortedStrings(host.DNSSearch))
 		add("host.extra_hosts", sortedStrings(host.ExtraHosts))
 		add("host.cap_add", sortedStrings([]string(host.CapAdd)))
@@ -322,6 +323,20 @@ func sortedStrings(items []string) []string {
 		return nil
 	}
 	result := append([]string(nil), items...)
+	sort.Strings(result)
+	return result
+}
+
+func sortedNetIPAddrs(items []netip.Addr) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	result := make([]string, 0, len(items))
+	for _, item := range items {
+		if item.IsValid() {
+			result = append(result, item.String())
+		}
+	}
 	sort.Strings(result)
 	return result
 }

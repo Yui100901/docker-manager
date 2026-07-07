@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	containerapi "github.com/docker/docker/api/types/container"
-	imageapi "github.com/docker/docker/api/types/image"
+	containerapi "github.com/moby/moby/api/types/container"
+	imageapi "github.com/moby/moby/api/types/image"
 )
 
 type fakeImageTreeDockerService struct {
@@ -119,11 +119,9 @@ func TestRunImageTreeIncludesLocalRefsAndUsedByContainers(t *testing.T) {
 		},
 		containerInspects: map[string]containerapi.InspectResponse{
 			"api-container-id": {
-				ContainerJSONBase: &containerapi.ContainerJSONBase{
-					ID:    "api-container-id",
-					Name:  "/api",
-					Image: imageID,
-				},
+				ID:    "api-container-id",
+				Name:  "/api",
+				Image: imageID,
 			},
 		},
 	}

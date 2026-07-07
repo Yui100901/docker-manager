@@ -6,7 +6,7 @@ import (
 	"docker-manager/internal/runconfig"
 	"encoding/json"
 	"fmt"
-	"github.com/docker/docker/api/types/container"
+	"github.com/moby/moby/api/types/container"
 	mobycontainer "github.com/moby/moby/api/types/container"
 	"os"
 	"path/filepath"

@@ -15,7 +15,7 @@ import (
 	"docker-manager/internal/resourcefilter"
 	"docker-manager/internal/version"
 
-	"github.com/docker/docker/api/types/container"
+	"github.com/moby/moby/api/types/container"
 	mobycontainer "github.com/moby/moby/api/types/container"
 )
 
@@ -498,9 +498,6 @@ func backupMountRefs(inspect container.InspectResponse) []BackupMountRef {
 }
 
 func backupHostConfig(inspect container.InspectResponse) *container.HostConfig {
-	if inspect.ContainerJSONBase == nil {
-		return nil
-	}
 	return inspect.HostConfig
 }
 

@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	units "github.com/docker/go-units"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/api/types/volume"
@@ -210,7 +209,7 @@ func TestParserToSpecIncludesDeviceUlimitAndLoggingFields(t *testing.T) {
 						CgroupPermissions: "rwm",
 					},
 				},
-				Ulimits: []*units.Ulimit{
+				Ulimits: []*container.Ulimit{
 					{Name: "nofile", Soft: 1024, Hard: 2048},
 				},
 			},

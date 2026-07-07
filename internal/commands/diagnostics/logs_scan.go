@@ -15,7 +15,7 @@ import (
 	"docker-manager/internal/docker"
 	rpt "docker-manager/internal/report"
 
-	"github.com/docker/docker/api/types/container"
+	"github.com/moby/moby/api/types/container"
 	mobyclient "github.com/moby/moby/client"
 	"github.com/spf13/cobra"
 )
@@ -23,7 +23,7 @@ import (
 type logsScanDockerService interface {
 	ListContainers(ctx context.Context, all bool) ([]container.Summary, error)
 	InspectContainer(ctx context.Context, id string) (container.InspectResponse, error)
-	ContainerLogs(ctx context.Context, id string, options container.LogsOptions) (io.ReadCloser, error)
+	ContainerLogs(ctx context.Context, id string, options mobyclient.ContainerLogsOptions) (io.ReadCloser, error)
 }
 
 var newLogsScanDockerService = func() (logsScanDockerService, error) {
@@ -271,13 +271,11 @@ func buildLogsScanReport(ctx context.Context, svc logsScanDockerService, targets
 }
 
 func applyLogsScanInspect(item *LogsScanContainer, inspect container.InspectResponse) {
-	if inspect.ContainerJSONBase != nil {
-		if item.ID == "" {
-			item.ID = shortID(inspect.ID)
-		}
-		if name := normalizeContainerName(inspect.Name); name != "" {
-			item.Name = name
-		}
+	if item.ID == "" {
+		item.ID = shortID(inspect.ID)
+	}
+	if name := normalizeContainerName(inspect.Name); name != "" {
+		item.Name = name
 	}
 	if inspect.Config != nil && item.Image == "" {
 		item.Image = inspect.Config.Image
@@ -301,7 +299,7 @@ func readContainerLogText(ctx context.Context, svc logsScanDockerService, id str
 	if opts.Tail < 0 {
 		tailValue = "all"
 	}
-	options := container.LogsOptions{
+	options := mobyclient.ContainerLogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
 		Tail:       tailValue,
@@ -448,15 +446,6 @@ func (s *dockerLogsScanService) InspectContainer(ctx context.Context, id string)
 	return docker.ConvertDockerType[container.InspectResponse](result.Container)
 }
 
-func (s *dockerLogsScanService) ContainerLogs(ctx context.Context, id string, options container.LogsOptions) (io.ReadCloser, error) {
-	return s.cli.ContainerLogs(ctx, id, mobyclient.ContainerLogsOptions{
-		ShowStdout: options.ShowStdout,
-		ShowStderr: options.ShowStderr,
-		Since:      options.Since,
-		Until:      options.Until,
-		Timestamps: options.Timestamps,
-		Follow:     options.Follow,
-		Tail:       options.Tail,
-		Details:    options.Details,
-	})
+func (s *dockerLogsScanService) ContainerLogs(ctx context.Context, id string, options mobyclient.ContainerLogsOptions) (io.ReadCloser, error) {
+	return s.cli.ContainerLogs(ctx, id, options)
 }

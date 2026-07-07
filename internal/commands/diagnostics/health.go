@@ -15,8 +15,8 @@ import (
 	"docker-manager/internal/docker"
 	rpt "docker-manager/internal/report"
 
-	"github.com/docker/docker/api/types/container"
 	"github.com/moby/moby/api/pkg/stdcopy"
+	"github.com/moby/moby/api/types/container"
 	mobyclient "github.com/moby/moby/client"
 	"github.com/spf13/cobra"
 )
@@ -24,7 +24,7 @@ import (
 type healthDockerService interface {
 	ListContainers(ctx context.Context, all bool) ([]container.Summary, error)
 	InspectContainer(ctx context.Context, id string) (container.InspectResponse, error)
-	ContainerLogs(ctx context.Context, id string, options container.LogsOptions) (io.ReadCloser, error)
+	ContainerLogs(ctx context.Context, id string, options mobyclient.ContainerLogsOptions) (io.ReadCloser, error)
 }
 
 var newHealthDockerService = func() (healthDockerService, error) {
@@ -272,17 +272,15 @@ func buildHealthReport(ctx context.Context, svc healthDockerService, containers 
 }
 
 func applyInspectHealth(item *HealthContainer, inspect container.InspectResponse) {
-	if inspect.ContainerJSONBase != nil {
-		if item.ID == "" {
-			item.ID = shortID(inspect.ID)
-		}
-		if item.Name == "" {
-			item.Name = normalizeContainerName(inspect.Name)
-		}
-		item.RestartCount = inspect.RestartCount
-		if inspect.Image != "" {
-			item.ImageID = shortID(inspect.Image)
-		}
+	if item.ID == "" {
+		item.ID = shortID(inspect.ID)
+	}
+	if item.Name == "" {
+		item.Name = normalizeContainerName(inspect.Name)
+	}
+	item.RestartCount = inspect.RestartCount
+	if inspect.Image != "" {
+		item.ImageID = shortID(inspect.Image)
 	}
 	if inspect.Config != nil {
 		if item.Image == "" {
@@ -319,9 +317,6 @@ func applyInspectHealth(item *HealthContainer, inspect container.InspectResponse
 }
 
 func healthHostConfig(inspect container.InspectResponse) *container.HostConfig {
-	if inspect.ContainerJSONBase == nil {
-		return nil
-	}
 	return inspect.HostConfig
 }
 
@@ -374,9 +369,9 @@ func healthNetworks(inspect container.InspectResponse) []HealthNetworkRef {
 		if endpoint != nil {
 			ref.NetworkID = shortID(endpoint.NetworkID)
 			ref.EndpointID = endpoint.EndpointID
-			ref.IPAddress = endpoint.IPAddress
-			ref.IPv6Address = endpoint.GlobalIPv6Address
-			ref.Gateway = endpoint.Gateway
+			ref.IPAddress = formatNetworkValue(endpoint.IPAddress)
+			ref.IPv6Address = formatNetworkValue(endpoint.GlobalIPv6Address)
+			ref.Gateway = formatNetworkValue(endpoint.Gateway)
 			ref.Aliases = sortedStrings(endpoint.Aliases)
 		}
 		networks = append(networks, ref)
@@ -481,7 +476,7 @@ func scanHealthLogs(ctx context.Context, svc healthDockerService, id string, ins
 	if tail < 0 {
 		tailValue = "all"
 	}
-	reader, err := svc.ContainerLogs(ctx, id, container.LogsOptions{
+	reader, err := svc.ContainerLogs(ctx, id, mobyclient.ContainerLogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
 		Tail:       tailValue,
@@ -569,7 +564,7 @@ func findLogMatches(text string, keywords []string) []LogMatch {
 	return matches
 }
 
-func publicPortBindings(ports []container.Port) []string {
+func publicPortBindings(ports []container.PortSummary) []string {
 	var result []string
 	for _, port := range ports {
 		if port.PublicPort == 0 {

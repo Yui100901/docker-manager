@@ -8,7 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/docker/docker/api/types/container"
+	"github.com/moby/moby/api/types/container"
+	mobyclient "github.com/moby/moby/client"
 )
 
 type fakeLogsScanDockerService struct {
@@ -16,7 +17,7 @@ type fakeLogsScanDockerService struct {
 	inspects   map[string]container.InspectResponse
 	logs       map[string]string
 	allFlag    bool
-	logOptions []container.LogsOptions
+	logOptions []mobyclient.ContainerLogsOptions
 }
 
 func (f *fakeLogsScanDockerService) ListContainers(ctx context.Context, all bool) ([]container.Summary, error) {
@@ -29,12 +30,12 @@ func (f *fakeLogsScanDockerService) InspectContainer(ctx context.Context, id str
 		return inspect, nil
 	}
 	return container.InspectResponse{
-		ContainerJSONBase: &container.ContainerJSONBase{Name: "/" + id},
-		Config:            &container.Config{Image: "busybox", Tty: true},
+		Name:   "/" + id,
+		Config: &container.Config{Image: "busybox", Tty: true},
 	}, nil
 }
 
-func (f *fakeLogsScanDockerService) ContainerLogs(ctx context.Context, id string, options container.LogsOptions) (io.ReadCloser, error) {
+func (f *fakeLogsScanDockerService) ContainerLogs(ctx context.Context, id string, options mobyclient.ContainerLogsOptions) (io.ReadCloser, error) {
 	f.logOptions = append(f.logOptions, options)
 	return io.NopCloser(strings.NewReader(f.logs[id])), nil
 }
@@ -59,11 +60,9 @@ func TestBuildLogsScanReportScansExplicitContainers(t *testing.T) {
 	fake := &fakeLogsScanDockerService{
 		inspects: map[string]container.InspectResponse{
 			"api": {
-				ContainerJSONBase: &container.ContainerJSONBase{
-					Name:  "/api",
-					ID:    "api-id",
-					State: &container.State{Status: "running"},
-				},
+				Name:   "/api",
+				ID:     "api-id",
+				State:  &container.State{Status: "running"},
 				Config: &container.Config{Image: "demo/api", Tty: true},
 			},
 		},
@@ -93,11 +92,9 @@ func TestBuildLogsScanReportSkipsUnsupportedLogDriver(t *testing.T) {
 	fake := &fakeLogsScanDockerService{
 		inspects: map[string]container.InspectResponse{
 			"api": {
-				ContainerJSONBase: &container.ContainerJSONBase{
-					Name: "/api",
-					HostConfig: &container.HostConfig{
-						LogConfig: container.LogConfig{Type: "syslog"},
-					},
+				Name: "/api",
+				HostConfig: &container.HostConfig{
+					LogConfig: container.LogConfig{Type: "syslog"},
 				},
 				Config: &container.Config{Image: "demo/api"},
 			},

@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net/netip"
 	"strings"
 	"testing"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/go-connections/nat"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
 )
 
 type fakeNetworkDockerService struct {
@@ -48,7 +48,7 @@ func (f *fakeNetworkDockerService) InspectNetwork(ctx context.Context, name stri
 	if f.netInspects == nil {
 		for _, net := range f.networks {
 			if net.Name == name {
-				return net, nil
+				return network.Inspect{Network: net.Network}, nil
 			}
 		}
 		return network.Inspect{}, errors.New("missing fake network inspect")
@@ -60,6 +60,14 @@ func (f *fakeNetworkDockerService) InspectNetwork(ctx context.Context, name stri
 	return inspect, nil
 }
 
+func mustHardwareAddr(value string) network.HardwareAddr {
+	var addr network.HardwareAddr
+	if err := addr.UnmarshalText([]byte(value)); err != nil {
+		panic(err)
+	}
+	return addr
+}
+
 func TestBuildNetworkReportCombinesNetworksPortsAndRisks(t *testing.T) {
 	report := buildNetworkReport([]container.Summary{
 		{
@@ -67,12 +75,12 @@ func TestBuildNetworkReportCombinesNetworksPortsAndRisks(t *testing.T) {
 			Names: []string{"/api"},
 			Image: "nginx:latest",
 			State: "running",
-			Ports: []container.Port{
-				{IP: "0.0.0.0", PublicPort: 8080, PrivatePort: 80, Type: "tcp"},
+			Ports: []container.PortSummary{
+				{IP: netip.MustParseAddr("0.0.0.0"), PublicPort: 8080, PrivatePort: 80, Type: "tcp"},
 			},
 			NetworkSettings: &container.NetworkSettingsSummary{
 				Networks: map[string]*network.EndpointSettings{
-					"app_net": {IPAddress: "172.20.0.2", Aliases: []string{"api"}},
+					"app_net": {IPAddress: netip.MustParseAddr("172.20.0.2"), Aliases: []string{"api"}},
 				},
 			},
 		},
@@ -81,18 +89,18 @@ func TestBuildNetworkReportCombinesNetworksPortsAndRisks(t *testing.T) {
 			Names: []string{"/web"},
 			Image: "nginx:latest",
 			State: "exited",
-			Ports: []container.Port{
-				{IP: "0.0.0.0", PublicPort: 8080, PrivatePort: 8080, Type: "tcp"},
-				{IP: "127.0.0.1", PublicPort: 9090, PrivatePort: 90, Type: "tcp"},
+			Ports: []container.PortSummary{
+				{IP: netip.MustParseAddr("0.0.0.0"), PublicPort: 8080, PrivatePort: 8080, Type: "tcp"},
+				{IP: netip.MustParseAddr("127.0.0.1"), PublicPort: 9090, PrivatePort: 90, Type: "tcp"},
 			},
 			NetworkSettings: &container.NetworkSettingsSummary{
 				Networks: map[string]*network.EndpointSettings{
-					"app_net": {IPAddress: "172.20.0.3"},
+					"app_net": {IPAddress: netip.MustParseAddr("172.20.0.3")},
 				},
 			},
 		},
 	}, []network.Summary{
-		{Name: "app_net", Driver: "bridge", Scope: "local"},
+		{Network: network.Network{Name: "app_net", Driver: "bridge", Scope: "local"}},
 	})
 
 	if len(report.Networks) != 1 || report.Networks[0].Name != "app_net" || len(report.Networks[0].Containers) != 2 {
@@ -117,34 +125,30 @@ func TestRunNetworkReportUsesInspectForNetworkMetadataAndPorts(t *testing.T) {
 			Image: "summary-image",
 			State: "running",
 		}},
-		networks: []network.Summary{{Name: "app_net", Driver: "bridge"}},
+		networks: []network.Summary{{Network: network.Network{Name: "app_net", Driver: "bridge"}}},
 		inspects: map[string]container.InspectResponse{
 			"container-api": {
-				ContainerJSONBase: &container.ContainerJSONBase{
-					ID:         "container-api",
-					Name:       "/api",
-					HostConfig: &container.HostConfig{NetworkMode: "app_net"},
-					State: &container.State{
-						Status: container.StateRunning,
-					},
+				ID:         "container-api",
+				Name:       "/api",
+				HostConfig: &container.HostConfig{NetworkMode: "app_net"},
+				State: &container.State{
+					Status: container.StateRunning,
 				},
 				Config: &container.Config{
 					Image:        "nginx:latest",
-					ExposedPorts: nat.PortSet{"443/tcp": struct{}{}},
+					ExposedPorts: network.PortSet{network.MustParsePort("443/tcp"): struct{}{}},
 				},
 				NetworkSettings: &container.NetworkSettings{
-					NetworkSettingsBase: container.NetworkSettingsBase{
-						Ports: nat.PortMap{
-							"80/tcp": []nat.PortBinding{{HostIP: "0.0.0.0", HostPort: "8080"}},
-						},
+					Ports: network.PortMap{
+						network.MustParsePort("80/tcp"): []network.PortBinding{{HostIP: netip.MustParseAddr("0.0.0.0"), HostPort: "8080"}},
 					},
 					Networks: map[string]*network.EndpointSettings{
 						"app_net": {
 							NetworkID:  "network-id",
 							EndpointID: "endpoint-id",
-							IPAddress:  "172.20.0.2",
-							Gateway:    "172.20.0.1",
-							MacAddress: "02:42:ac:14:00:02",
+							IPAddress:  netip.MustParseAddr("172.20.0.2"),
+							Gateway:    netip.MustParseAddr("172.20.0.1"),
+							MacAddress: mustHardwareAddr("02:42:ac:14:00:02"),
 							Aliases:    []string{"api"},
 							DNSNames:   []string{"api", "container-api"},
 							DriverOpts: map[string]string{"foo": "bar"},
@@ -155,17 +159,19 @@ func TestRunNetworkReportUsesInspectForNetworkMetadataAndPorts(t *testing.T) {
 		},
 		netInspects: map[string]network.Inspect{
 			"app_net": {
-				Name:       "app_net",
-				ID:         "network-id",
-				Driver:     "bridge",
-				Scope:      "local",
-				EnableIPv4: true,
-				IPAM: network.IPAM{Driver: "default", Config: []network.IPAMConfig{{
-					Subnet:  "172.20.0.0/16",
-					Gateway: "172.20.0.1",
-				}}},
+				Network: network.Network{
+					Name:       "app_net",
+					ID:         "network-id",
+					Driver:     "bridge",
+					Scope:      "local",
+					EnableIPv4: true,
+					IPAM: network.IPAM{Driver: "default", Config: []network.IPAMConfig{{
+						Subnet:  netip.MustParsePrefix("172.20.0.0/16"),
+						Gateway: netip.MustParseAddr("172.20.0.1"),
+					}}},
+				},
 				Containers: map[string]network.EndpointResource{
-					"container-api": {Name: "api", EndpointID: "endpoint-id", IPv4Address: "172.20.0.2/16"},
+					"container-api": {Name: "api", EndpointID: "endpoint-id", IPv4Address: netip.MustParsePrefix("172.20.0.2/16")},
 				},
 			},
 		},
@@ -199,10 +205,10 @@ func TestRunNetworkReportFallsBackToSummariesWhenInspectFails(t *testing.T) {
 			Image: "nginx:latest",
 			State: "running",
 			NetworkSettings: &container.NetworkSettingsSummary{
-				Networks: map[string]*network.EndpointSettings{"app_net": {IPAddress: "172.20.0.2"}},
+				Networks: map[string]*network.EndpointSettings{"app_net": {IPAddress: netip.MustParseAddr("172.20.0.2")}},
 			},
 		}},
-		networks:   []network.Summary{{Name: "app_net", Driver: "bridge"}},
+		networks:   []network.Summary{{Network: network.Network{Name: "app_net", Driver: "bridge"}}},
 		inspectErr: errors.New("inspect denied"),
 	}
 	restore := replaceNetworkServiceFactory(fake)
@@ -252,7 +258,7 @@ func TestRunNetworkReportFiltersContainersAndRelatedNetworks(t *testing.T) {
 				Image: "demo/api",
 				State: "running",
 				NetworkSettings: &container.NetworkSettingsSummary{
-					Networks: map[string]*network.EndpointSettings{"app_net": {IPAddress: "172.20.0.2"}},
+					Networks: map[string]*network.EndpointSettings{"app_net": {IPAddress: netip.MustParseAddr("172.20.0.2")}},
 				},
 			},
 			{
@@ -261,13 +267,13 @@ func TestRunNetworkReportFiltersContainersAndRelatedNetworks(t *testing.T) {
 				Image: "demo/db",
 				State: "running",
 				NetworkSettings: &container.NetworkSettingsSummary{
-					Networks: map[string]*network.EndpointSettings{"db_net": {IPAddress: "172.21.0.2"}},
+					Networks: map[string]*network.EndpointSettings{"db_net": {IPAddress: netip.MustParseAddr("172.21.0.2")}},
 				},
 			},
 		},
 		networks: []network.Summary{
-			{Name: "app_net", Driver: "bridge"},
-			{Name: "db_net", Driver: "bridge"},
+			{Network: network.Network{Name: "app_net", Driver: "bridge"}},
+			{Network: network.Network{Name: "db_net", Driver: "bridge"}},
 		},
 	}
 	restore := replaceNetworkServiceFactory(fake)

@@ -13,13 +13,13 @@ import (
 	"docker-manager/internal/registryauth"
 	rpt "docker-manager/internal/report"
 
-	"github.com/docker/docker/api/types/registry"
+	"github.com/moby/moby/api/types/registry"
 	mobyclient "github.com/moby/moby/client"
 	"github.com/spf13/cobra"
 )
 
 type registryLoginDockerService interface {
-	RegistryLogin(ctx context.Context, auth registry.AuthConfig) (registry.AuthenticateOKBody, error)
+	RegistryLogin(ctx context.Context, auth registry.AuthConfig) (registry.AuthResponse, error)
 }
 
 var newRegistryLoginDockerService = func() (registryLoginDockerService, error) {
@@ -361,7 +361,7 @@ func uniqueStrings(values []string) []string {
 	return registryauth.UniqueStrings(values)
 }
 
-func (s *dockerRegistryLoginService) RegistryLogin(ctx context.Context, auth registry.AuthConfig) (registry.AuthenticateOKBody, error) {
+func (s *dockerRegistryLoginService) RegistryLogin(ctx context.Context, auth registry.AuthConfig) (registry.AuthResponse, error) {
 	result, err := s.cli.RegistryLogin(ctx, mobyclient.RegistryLoginOptions{
 		Username:      auth.Username,
 		Password:      auth.Password,
@@ -370,7 +370,7 @@ func (s *dockerRegistryLoginService) RegistryLogin(ctx context.Context, auth reg
 		RegistryToken: auth.RegistryToken,
 	})
 	if err != nil {
-		return registry.AuthenticateOKBody{}, err
+		return registry.AuthResponse{}, err
 	}
-	return docker.ConvertDockerType[registry.AuthenticateOKBody](result.Auth)
+	return result.Auth, nil
 }

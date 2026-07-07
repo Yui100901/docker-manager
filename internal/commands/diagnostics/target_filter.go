@@ -9,9 +9,9 @@ import (
 	"docker-manager/internal/docker"
 	"docker-manager/internal/resourcefilter"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/volume"
+	"github.com/moby/moby/api/types/container"
 	mobycontainer "github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/volume"
 	mobyvolume "github.com/moby/moby/api/types/volume"
 )
 
@@ -75,16 +75,13 @@ func filterContainerSummaries(containers []container.Summary, filters []string) 
 	return filtered
 }
 
-func filterVolumesByPatterns(volumes []*volume.Volume, filters []string) []*volume.Volume {
+func filterVolumesByPatterns(volumes []volume.Volume, filters []string) []volume.Volume {
 	if len(filters) == 0 {
 		return volumes
 	}
-	var filtered []*volume.Volume
+	var filtered []volume.Volume
 	for _, vol := range volumes {
-		if vol == nil {
-			continue
-		}
-		converted, err := docker.ConvertDockerType[mobyvolume.Volume](*vol)
+		converted, err := docker.ConvertDockerType[mobyvolume.Volume](vol)
 		if err != nil {
 			continue
 		}

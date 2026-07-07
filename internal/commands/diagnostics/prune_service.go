@@ -5,23 +5,21 @@ import (
 
 	"docker-manager/internal/docker"
 
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/build"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/api/types/volume"
+	"github.com/moby/moby/api/types/build"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/image"
+	"github.com/moby/moby/api/types/volume"
 	mobyclient "github.com/moby/moby/client"
 )
 
 type pruneDockerService interface {
-	DiskUsage(ctx context.Context) (types.DiskUsage, error)
+	DiskUsage(ctx context.Context) (pruneDiskUsage, error)
 	ListContainers(ctx context.Context, all bool) ([]container.Summary, error)
 	InspectContainer(ctx context.Context, id string) (container.InspectResponse, error)
-	PruneContainers(ctx context.Context, pruneFilters filters.Args) (container.PruneReport, error)
-	PruneImages(ctx context.Context, pruneFilters filters.Args) (image.PruneReport, error)
-	PruneVolumes(ctx context.Context, pruneFilters filters.Args) (volume.PruneReport, error)
-	PruneBuildCache(ctx context.Context, pruneFilters filters.Args) (*build.CachePruneReport, error)
+	PruneContainers(ctx context.Context, pruneFilters mobyclient.Filters) (container.PruneReport, error)
+	PruneImages(ctx context.Context, pruneFilters mobyclient.Filters) (image.PruneReport, error)
+	PruneVolumes(ctx context.Context, pruneFilters mobyclient.Filters) (volume.PruneReport, error)
+	PruneBuildCache(ctx context.Context, pruneFilters mobyclient.Filters) (*build.CachePruneReport, error)
 }
 
 var newPruneDockerService = func() (pruneDockerService, error) {
@@ -36,33 +34,17 @@ type dockerPruneService struct {
 	cli *mobyclient.Client
 }
 
-func (s *dockerPruneService) DiskUsage(ctx context.Context) (types.DiskUsage, error) {
+func (s *dockerPruneService) DiskUsage(ctx context.Context) (pruneDiskUsage, error) {
 	result, err := s.cli.DiskUsage(ctx, mobyclient.DiskUsageOptions{})
 	if err != nil {
-		return types.DiskUsage{}, err
+		return pruneDiskUsage{}, err
 	}
-	images, err := docker.ConvertDockerType[[]image.Summary](result.Images.Items)
-	if err != nil {
-		return types.DiskUsage{}, err
-	}
-	containers, err := docker.ConvertDockerType[[]container.Summary](result.Containers.Items)
-	if err != nil {
-		return types.DiskUsage{}, err
-	}
-	volumes, err := docker.ConvertDockerType[[]volume.Volume](result.Volumes.Items)
-	if err != nil {
-		return types.DiskUsage{}, err
-	}
-	buildCache, err := docker.ConvertDockerType[[]build.CacheRecord](result.BuildCache.Items)
-	if err != nil {
-		return types.DiskUsage{}, err
-	}
-	return types.DiskUsage{
+	return pruneDiskUsage{
 		LayersSize: result.Images.TotalSize,
-		Images:     toPointerSlice(images),
-		Containers: toPointerSlice(containers),
-		Volumes:    toPointerSlice(volumes),
-		BuildCache: toPointerSlice(buildCache),
+		Images:     toPointerSlice(result.Images.Items),
+		Containers: toPointerSlice(result.Containers.Items),
+		Volumes:    toPointerSlice(result.Volumes.Items),
+		BuildCache: toPointerSlice(result.BuildCache.Items),
 	}, nil
 }
 
@@ -71,7 +53,7 @@ func (s *dockerPruneService) ListContainers(ctx context.Context, all bool) ([]co
 	if err != nil {
 		return nil, err
 	}
-	return docker.ConvertDockerType[[]container.Summary](result.Items)
+	return result.Items, nil
 }
 
 func (s *dockerPruneService) InspectContainer(ctx context.Context, id string) (container.InspectResponse, error) {
@@ -79,51 +61,39 @@ func (s *dockerPruneService) InspectContainer(ctx context.Context, id string) (c
 	if err != nil {
 		return container.InspectResponse{}, err
 	}
-	return docker.ConvertDockerType[container.InspectResponse](result.Container)
+	return result.Container, nil
 }
 
-func (s *dockerPruneService) PruneContainers(ctx context.Context, pruneFilters filters.Args) (container.PruneReport, error) {
-	result, err := s.cli.ContainerPrune(ctx, mobyclient.ContainerPruneOptions{Filters: convertPruneFilters(pruneFilters)})
+func (s *dockerPruneService) PruneContainers(ctx context.Context, pruneFilters mobyclient.Filters) (container.PruneReport, error) {
+	result, err := s.cli.ContainerPrune(ctx, mobyclient.ContainerPruneOptions{Filters: pruneFilters})
 	if err != nil {
 		return container.PruneReport{}, err
 	}
-	return docker.ConvertDockerType[container.PruneReport](result.Report)
+	return result.Report, nil
 }
 
-func (s *dockerPruneService) PruneImages(ctx context.Context, pruneFilters filters.Args) (image.PruneReport, error) {
-	result, err := s.cli.ImagePrune(ctx, mobyclient.ImagePruneOptions{Filters: convertPruneFilters(pruneFilters)})
+func (s *dockerPruneService) PruneImages(ctx context.Context, pruneFilters mobyclient.Filters) (image.PruneReport, error) {
+	result, err := s.cli.ImagePrune(ctx, mobyclient.ImagePruneOptions{Filters: pruneFilters})
 	if err != nil {
 		return image.PruneReport{}, err
 	}
-	return docker.ConvertDockerType[image.PruneReport](result.Report)
+	return result.Report, nil
 }
 
-func (s *dockerPruneService) PruneVolumes(ctx context.Context, pruneFilters filters.Args) (volume.PruneReport, error) {
-	result, err := s.cli.VolumePrune(ctx, mobyclient.VolumePruneOptions{Filters: convertPruneFilters(pruneFilters)})
+func (s *dockerPruneService) PruneVolumes(ctx context.Context, pruneFilters mobyclient.Filters) (volume.PruneReport, error) {
+	result, err := s.cli.VolumePrune(ctx, mobyclient.VolumePruneOptions{Filters: pruneFilters})
 	if err != nil {
 		return volume.PruneReport{}, err
 	}
-	return docker.ConvertDockerType[volume.PruneReport](result.Report)
+	return result.Report, nil
 }
 
-func (s *dockerPruneService) PruneBuildCache(ctx context.Context, pruneFilters filters.Args) (*build.CachePruneReport, error) {
-	result, err := s.cli.BuildCachePrune(ctx, mobyclient.BuildCachePruneOptions{All: true, Filters: convertPruneFilters(pruneFilters)})
+func (s *dockerPruneService) PruneBuildCache(ctx context.Context, pruneFilters mobyclient.Filters) (*build.CachePruneReport, error) {
+	result, err := s.cli.BuildCachePrune(ctx, mobyclient.BuildCachePruneOptions{All: true, Filters: pruneFilters})
 	if err != nil {
 		return nil, err
 	}
-	report, err := docker.ConvertDockerType[build.CachePruneReport](result.Report)
-	if err != nil {
-		return nil, err
-	}
-	return &report, nil
-}
-
-func convertPruneFilters(args filters.Args) mobyclient.Filters {
-	out := mobyclient.Filters{}
-	for _, key := range args.Keys() {
-		out.Add(key, args.Get(key)...)
-	}
-	return out
+	return &result.Report, nil
 }
 
 func toPointerSlice[T any](items []T) []*T {

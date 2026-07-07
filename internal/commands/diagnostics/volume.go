@@ -16,9 +16,9 @@ import (
 	"docker-manager/internal/docker"
 	rpt "docker-manager/internal/report"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/mount"
-	"github.com/docker/docker/api/types/volume"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/api/types/volume"
 	mobyclient "github.com/moby/moby/client"
 	"github.com/spf13/cobra"
 )
@@ -197,9 +197,6 @@ func buildVolumeReportWithRefs(volumes volume.ListResponse, refsByVolume map[str
 	report.Warnings = append(report.Warnings, warnings...)
 
 	for _, vol := range filterVolumesByPatterns(volumes.Volumes, opts.Filters) {
-		if vol == nil {
-			continue
-		}
 		ref := VolumeRef{
 			Name:       vol.Name,
 			Driver:     vol.Driver,

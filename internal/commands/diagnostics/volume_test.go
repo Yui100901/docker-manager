@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/mount"
-	"github.com/docker/docker/api/types/volume"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/api/types/volume"
 )
 
 type fakeVolumeDockerService struct {
@@ -53,7 +53,7 @@ func (f *fakeVolumeDockerService) MeasureVolumeSize(ctx context.Context, volumeN
 
 func TestBuildVolumeReportClassifiesUnusedSuspectedAndUsedVolumes(t *testing.T) {
 	report := buildVolumeReport(volume.ListResponse{
-		Volumes: []*volume.Volume{
+		Volumes: []volume.Volume{
 			{Name: "unused", Driver: "local", Mountpoint: "/var/lib/docker/volumes/unused/_data", UsageData: &volume.UsageData{RefCount: 0, Size: 1024}},
 			{Name: "unknown", Driver: "local", Mountpoint: "/var/lib/docker/volumes/unknown/_data"},
 			{Name: "used", Driver: "local", Mountpoint: "/var/lib/docker/volumes/used/_data", UsageData: &volume.UsageData{RefCount: 1, Size: 2048}},
@@ -88,7 +88,7 @@ func TestBuildVolumeReportClassifiesUnusedSuspectedAndUsedVolumes(t *testing.T) 
 
 func TestBuildVolumeReportAllIncludesUsedVolumeContainers(t *testing.T) {
 	report := buildVolumeReport(volume.ListResponse{
-		Volumes: []*volume.Volume{
+		Volumes: []volume.Volume{
 			{Name: "used", Driver: "local", UsageData: &volume.UsageData{RefCount: 1, Size: 2048}},
 		},
 	}, []container.Summary{
@@ -113,7 +113,7 @@ func TestBuildVolumeReportAllIncludesUsedVolumeContainers(t *testing.T) {
 
 func TestRunVolumeReportUsesInspectMountsForVolumeRefs(t *testing.T) {
 	fake := &fakeVolumeDockerService{
-		volumes: volume.ListResponse{Volumes: []*volume.Volume{
+		volumes: volume.ListResponse{Volumes: []volume.Volume{
 			{Name: "db_data", Driver: "local"},
 		}},
 		containers: []container.Summary{{
@@ -124,12 +124,10 @@ func TestRunVolumeReportUsesInspectMountsForVolumeRefs(t *testing.T) {
 		}},
 		inspects: map[string]container.InspectResponse{
 			"container-db": {
-				ContainerJSONBase: &container.ContainerJSONBase{
-					ID:   "container-db",
-					Name: "/db",
-					State: &container.State{
-						Status: container.StateRunning,
-					},
+				ID:   "container-db",
+				Name: "/db",
+				State: &container.State{
+					Status: container.StateRunning,
 				},
 				Config: &container.Config{Image: "postgres:16"},
 				Mounts: []container.MountPoint{
@@ -156,7 +154,7 @@ func TestRunVolumeReportUsesInspectMountsForVolumeRefs(t *testing.T) {
 
 func TestRunVolumeReportFallsBackToSummaryMountsWhenInspectFails(t *testing.T) {
 	fake := &fakeVolumeDockerService{
-		volumes: volume.ListResponse{Volumes: []*volume.Volume{
+		volumes: volume.ListResponse{Volumes: []volume.Volume{
 			{Name: "db_data", Driver: "local"},
 		}},
 		containers: []container.Summary{{
@@ -186,7 +184,7 @@ func TestRunVolumeReportFallsBackToSummaryMountsWhenInspectFails(t *testing.T) {
 
 func TestRunVolumeReportDockerRunSizeModeMeasuresUnknownLocalVolumes(t *testing.T) {
 	fake := &fakeVolumeDockerService{
-		volumes: volume.ListResponse{Volumes: []*volume.Volume{
+		volumes: volume.ListResponse{Volumes: []volume.Volume{
 			{Name: "unused", Driver: "local"},
 		}},
 		measuredSizes: map[string]int64{"unused": 4096},
@@ -208,7 +206,7 @@ func TestRunVolumeReportDockerRunSizeModeMeasuresUnknownLocalVolumes(t *testing.
 
 func TestRunVolumeReportLocalGoSizeModeMeasuresUnknownLocalVolumes(t *testing.T) {
 	fake := &fakeVolumeDockerService{
-		volumes: volume.ListResponse{Volumes: []*volume.Volume{
+		volumes: volume.ListResponse{Volumes: []volume.Volume{
 			{Name: "unused", Driver: "local", Mountpoint: "/var/lib/docker/volumes/unused/_data"},
 		}},
 	}
@@ -236,7 +234,7 @@ func TestRunVolumeReportLocalGoSizeModeMeasuresUnknownLocalVolumes(t *testing.T)
 
 func TestRunVolumeReportAutoSizeModeFallsBackToDockerRun(t *testing.T) {
 	fake := &fakeVolumeDockerService{
-		volumes: volume.ListResponse{Volumes: []*volume.Volume{
+		volumes: volume.ListResponse{Volumes: []volume.Volume{
 			{Name: "unused", Driver: "local", Mountpoint: "/var/lib/docker/volumes/unused/_data"},
 		}},
 		measuredSizes: map[string]int64{"unused": 16384},
@@ -275,7 +273,7 @@ func TestNormalizeVolumeOptionsAcceptsNewSizeModes(t *testing.T) {
 
 func TestBuildVolumeReportFiltersVolumesByWildcard(t *testing.T) {
 	report := buildVolumeReport(volume.ListResponse{
-		Volumes: []*volume.Volume{
+		Volumes: []volume.Volume{
 			{Name: "app_data", Driver: "local", UsageData: &volume.UsageData{RefCount: 0, Size: 1024}},
 			{Name: "db_data", Driver: "local", UsageData: &volume.UsageData{RefCount: 0, Size: 2048}},
 		},

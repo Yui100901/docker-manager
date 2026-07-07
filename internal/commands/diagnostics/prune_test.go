@@ -9,17 +9,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/build"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/api/types/mount"
-	"github.com/docker/docker/api/types/volume"
+	"github.com/moby/moby/api/types/build"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/image"
+	"github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/api/types/volume"
+	mobyclient "github.com/moby/moby/client"
 )
 
 type fakePruneDockerService struct {
-	usage           types.DiskUsage
+	usage           pruneDiskUsage
 	containerReport container.PruneReport
 	imageReport     image.PruneReport
 	volumeReport    volume.PruneReport
@@ -29,10 +28,10 @@ type fakePruneDockerService struct {
 	calls           []string
 }
 
-func (f *fakePruneDockerService) DiskUsage(ctx context.Context) (types.DiskUsage, error) {
+func (f *fakePruneDockerService) DiskUsage(ctx context.Context) (pruneDiskUsage, error) {
 	f.calls = append(f.calls, "disk-usage")
 	if err := ctx.Err(); err != nil {
-		return types.DiskUsage{}, err
+		return pruneDiskUsage{}, err
 	}
 	return f.usage, nil
 }
@@ -50,28 +49,28 @@ func (f *fakePruneDockerService) InspectContainer(ctx context.Context, id string
 	return f.inspects[id], nil
 }
 
-func (f *fakePruneDockerService) PruneContainers(ctx context.Context, pruneFilters filters.Args) (container.PruneReport, error) {
+func (f *fakePruneDockerService) PruneContainers(ctx context.Context, pruneFilters mobyclient.Filters) (container.PruneReport, error) {
 	f.calls = append(f.calls, "prune-containers")
 	return f.containerReport, nil
 }
 
-func (f *fakePruneDockerService) PruneImages(ctx context.Context, pruneFilters filters.Args) (image.PruneReport, error) {
+func (f *fakePruneDockerService) PruneImages(ctx context.Context, pruneFilters mobyclient.Filters) (image.PruneReport, error) {
 	f.calls = append(f.calls, "prune-images")
 	return f.imageReport, nil
 }
 
-func (f *fakePruneDockerService) PruneVolumes(ctx context.Context, pruneFilters filters.Args) (volume.PruneReport, error) {
+func (f *fakePruneDockerService) PruneVolumes(ctx context.Context, pruneFilters mobyclient.Filters) (volume.PruneReport, error) {
 	f.calls = append(f.calls, "prune-volumes")
 	return f.volumeReport, nil
 }
 
-func (f *fakePruneDockerService) PruneBuildCache(ctx context.Context, pruneFilters filters.Args) (*build.CachePruneReport, error) {
+func (f *fakePruneDockerService) PruneBuildCache(ctx context.Context, pruneFilters mobyclient.Filters) (*build.CachePruneReport, error) {
 	f.calls = append(f.calls, "prune-build-cache")
 	return f.cacheReport, nil
 }
 
 func TestBuildPruneReportIncludesOnlyReclaimableResources(t *testing.T) {
-	report := buildPruneReport(types.DiskUsage{
+	report := buildPruneReport(pruneDiskUsage{
 		Containers: []*container.Summary{
 			{ID: "running-container", Names: []string{"/api"}, State: "running", SizeRw: 100},
 			{ID: "stopped-container", Names: []string{"/old"}, State: "exited", Image: "busybox", Status: "Exited", SizeRw: 200},
@@ -109,7 +108,7 @@ func TestBuildPruneReportIncludesOnlyReclaimableResources(t *testing.T) {
 
 func TestRunPruneReportSkipsVolumeReferencedByInspect(t *testing.T) {
 	fake := &fakePruneDockerService{
-		usage: types.DiskUsage{
+		usage: pruneDiskUsage{
 			Volumes: []*volume.Volume{
 				{Name: "data", Driver: "local", UsageData: &volume.UsageData{RefCount: 0, Size: 500}},
 			},
@@ -117,7 +116,8 @@ func TestRunPruneReportSkipsVolumeReferencedByInspect(t *testing.T) {
 		containers: []container.Summary{{ID: "container-db", Names: []string{"/db"}, State: "running"}},
 		inspects: map[string]container.InspectResponse{
 			"container-db": {
-				ContainerJSONBase: &container.ContainerJSONBase{ID: "container-db", Name: "/db"},
+				ID:   "container-db",
+				Name: "/db",
 				Mounts: []container.MountPoint{
 					{Type: mount.TypeVolume, Name: "data", Destination: "/var/lib/postgresql/data", RW: true},
 				},
@@ -147,7 +147,8 @@ func TestEnsurePruneVolumeCandidatesStillUnreferencedRejectsReferencedVolume(t *
 		containers: []container.Summary{{ID: "container-db", Names: []string{"/db"}}},
 		inspects: map[string]container.InspectResponse{
 			"container-db": {
-				ContainerJSONBase: &container.ContainerJSONBase{ID: "container-db", Name: "/db"},
+				ID:   "container-db",
+				Name: "/db",
 				Mounts: []container.MountPoint{
 					{Type: mount.TypeVolume, Name: "data", Destination: "/data", RW: true},
 				},
@@ -196,7 +197,7 @@ func TestRunPruneReportReturnsCanceledContext(t *testing.T) {
 func TestBuildPruneReportReturnsCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := buildPruneReportWithContext(ctx, types.DiskUsage{
+	_, err := buildPruneReportWithContext(ctx, pruneDiskUsage{
 		Containers: []*container.Summary{{ID: "old", State: "exited"}},
 	}, PruneScope{})
 	if !errors.Is(err, context.Canceled) {
@@ -206,7 +207,7 @@ func TestBuildPruneReportReturnsCanceledContext(t *testing.T) {
 
 func TestRunPruneReportApplyRunsAllPruneOperations(t *testing.T) {
 	fake := &fakePruneDockerService{
-		usage: types.DiskUsage{},
+		usage: pruneDiskUsage{},
 		containerReport: container.PruneReport{
 			ContainersDeleted: []string{"old"},
 			SpaceReclaimed:    100,
@@ -294,7 +295,7 @@ func TestBuildPruneReportAppliesLabelProtectionAndOnlyScope(t *testing.T) {
 		t.Fatalf("buildPruneScope() error = %v", err)
 	}
 
-	report := buildPruneReport(types.DiskUsage{
+	report := buildPruneReport(pruneDiskUsage{
 		Containers: []*container.Summary{
 			{ID: "keep", Names: []string{"/keep"}, State: "exited", Labels: map[string]string{"env": "test", "keep": "true"}, SizeRw: 100},
 			{ID: "old", Names: []string{"/old"}, State: "exited", Labels: map[string]string{"env": "test"}, SizeRw: 200},

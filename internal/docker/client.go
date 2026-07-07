@@ -6,12 +6,10 @@ import (
 	"strings"
 	"sync"
 
-	dockerclient "github.com/docker/docker/client"
 	mobyclient "github.com/moby/moby/client"
 )
 
 var (
-	legacyClient   *dockerclient.Client
 	mobyClient     *mobyclient.Client
 	dockerClientMu sync.Mutex
 	clientOptions  Options
@@ -27,12 +25,6 @@ type Options struct {
 	APIVersion string
 }
 
-// NewClient returns the shared legacy Docker API client used by commands that
-// have not yet migrated to github.com/moby/moby/client.
-func NewClient() (*dockerclient.Client, error) {
-	return initLegacyClient()
-}
-
 // NewMobyClient returns the shared Moby API client for migrated code paths.
 func NewMobyClient() (*mobyclient.Client, error) {
 	return initMobyClient()
@@ -46,10 +38,6 @@ func Configure(opts Options) {
 
 	if sameOptions(clientOptions, opts) {
 		return
-	}
-	if legacyClient != nil {
-		_ = legacyClient.Close()
-		legacyClient = nil
 	}
 	if mobyClient != nil {
 		_ = mobyClient.Close()
@@ -134,27 +122,6 @@ func sameOptions(a, b Options) bool {
 	default:
 		return false
 	}
-}
-
-func initLegacyClient() (*dockerclient.Client, error) {
-	dockerClientMu.Lock()
-	defer dockerClientMu.Unlock()
-
-	if legacyClient == nil {
-		restore := applyDockerEnvForClient(clientOptions)
-		defer restore()
-
-		cli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
-		if err != nil {
-			return nil, err
-		}
-		legacyClient = cli
-	}
-	return legacyClient, nil
-}
-
-func initDockerClient() (*dockerclient.Client, error) {
-	return initLegacyClient()
 }
 
 func initMobyClient() (*mobyclient.Client, error) {

@@ -5,8 +5,8 @@ import (
 
 	"docker-manager/internal/docker"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
 	mobyclient "github.com/moby/moby/client"
 )
 

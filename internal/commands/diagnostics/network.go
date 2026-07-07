@@ -14,8 +14,8 @@ import (
 	"docker-manager/internal/docker"
 	rpt "docker-manager/internal/report"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
 	mobyclient "github.com/moby/moby/client"
 	"github.com/spf13/cobra"
 )
@@ -226,7 +226,15 @@ func filterNetworksForContainersWithInspect(networks []network.Summary, containe
 }
 
 func buildNetworkReport(containers []container.Summary, networks []network.Summary) NetworkReport {
-	return buildNetworkReportDetailed(containers, nil, networks)
+	return buildNetworkReportDetailed(containers, nil, networkInspectsFromSummaries(networks))
+}
+
+func networkInspectsFromSummaries(networks []network.Summary) []network.Inspect {
+	inspects := make([]network.Inspect, 0, len(networks))
+	for _, net := range networks {
+		inspects = append(inspects, network.Inspect{Network: net.Network})
+	}
+	return inspects
 }
 
 func buildNetworkReportDetailed(containers []container.Summary, inspectByID map[string]container.InspectResponse, networks []network.Inspect) NetworkReport {
@@ -318,7 +326,7 @@ func inspectNetworks(ctx context.Context, svc networkDockerService, networks []n
 		inspect, err := svc.InspectNetwork(ctx, net.Name)
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("inspect network %s 失败，已回退到列表摘要: %v", net.Name, err))
-			inspects = append(inspects, net)
+			inspects = append(inspects, network.Inspect{Network: net.Network})
 			continue
 		}
 		inspects = append(inspects, inspect)
@@ -376,9 +384,9 @@ func networkRefFromInspect(net network.Inspect, selected map[string]bool) Networ
 			Container:   endpoint.Name,
 			ID:          shortID(containerID),
 			EndpointID:  endpoint.EndpointID,
-			MacAddress:  endpoint.MacAddress,
-			IPv4Address: endpoint.IPv4Address,
-			IPv6Address: endpoint.IPv6Address,
+			MacAddress:  formatNetworkValue(endpoint.MacAddress),
+			IPv4Address: formatNetworkValue(endpoint.IPv4Address),
+			IPv6Address: formatNetworkValue(endpoint.IPv6Address),
 		}
 		if ep.Container == "" {
 			ep.Container = shortID(containerID)
@@ -405,10 +413,10 @@ func networkIPAMRef(ipam network.IPAM) NetworkIPAMRef {
 	}
 	for _, cfg := range ipam.Config {
 		ref.Config = append(ref.Config, NetworkIPAMConfigRef{
-			Subnet:     cfg.Subnet,
-			IPRange:    cfg.IPRange,
-			Gateway:    cfg.Gateway,
-			AuxAddress: cloneStringMap(cfg.AuxAddress),
+			Subnet:     formatNetworkValue(cfg.Subnet),
+			IPRange:    formatNetworkValue(cfg.IPRange),
+			Gateway:    formatNetworkValue(cfg.Gateway),
+			AuxAddress: cloneNetworkValueMap(cfg.AuxAddress),
 		})
 	}
 	return ref
@@ -432,16 +440,14 @@ func networkContainerRefFromSummary(c container.Summary, name string) NetworkCon
 }
 
 func applyNetworkContainerInspect(ref *NetworkContainerRef, inspect container.InspectResponse) {
-	if inspect.ContainerJSONBase != nil {
-		if inspect.ID != "" {
-			ref.ID = shortID(inspect.ID)
-		}
-		if name := normalizeContainerName(inspect.Name); name != "" {
-			ref.Name = name
-		}
-		if inspect.State != nil && inspect.State.Status != "" {
-			ref.State = string(inspect.State.Status)
-		}
+	if inspect.ID != "" {
+		ref.ID = shortID(inspect.ID)
+	}
+	if name := normalizeContainerName(inspect.Name); name != "" {
+		ref.Name = name
+	}
+	if inspect.State != nil && inspect.State.Status != "" {
+		ref.State = string(inspect.State.Status)
 	}
 	if inspect.Config != nil && inspect.Config.Image != "" {
 		ref.Image = inspect.Config.Image
@@ -458,12 +464,12 @@ func endpointRefFromSettings(containerName, containerID string, endpoint *networ
 	}
 	ep.EndpointID = endpoint.EndpointID
 	ep.NetworkID = endpoint.NetworkID
-	ep.IPAddress = endpoint.IPAddress
-	ep.IPv4Address = endpoint.IPAddress
-	ep.IPv6Address = endpoint.GlobalIPv6Address
-	ep.Gateway = endpoint.Gateway
-	ep.IPv6Gateway = endpoint.IPv6Gateway
-	ep.MacAddress = endpoint.MacAddress
+	ep.IPAddress = formatNetworkValue(endpoint.IPAddress)
+	ep.IPv4Address = formatNetworkValue(endpoint.IPAddress)
+	ep.IPv6Address = formatNetworkValue(endpoint.GlobalIPv6Address)
+	ep.Gateway = formatNetworkValue(endpoint.Gateway)
+	ep.IPv6Gateway = formatNetworkValue(endpoint.IPv6Gateway)
+	ep.MacAddress = formatNetworkValue(endpoint.MacAddress)
 	ep.Aliases = sortedStrings(endpoint.Aliases)
 	ep.Links = sortedStrings(endpoint.Links)
 	ep.DNSNames = sortedStrings(endpoint.DNSNames)
@@ -566,13 +572,13 @@ func networkPortMappings(summary container.Summary, inspect container.InspectRes
 					continue
 				}
 				if len(bindings) == 0 {
-					add(PortMappingRef{Container: containerName, ContainerPort: containerPort, Protocol: port.Proto(), Published: false, Source: "network-settings"})
+					add(PortMappingRef{Container: containerName, ContainerPort: containerPort, Protocol: string(port.Proto()), Published: false, Source: "network-settings"})
 					continue
 				}
 				for _, binding := range bindings {
 					hostPort, ok := parseNetworkPort(binding.HostPort)
 					if !ok {
-						add(PortMappingRef{Container: containerName, ContainerPort: containerPort, Protocol: port.Proto(), Published: false, Source: "network-settings"})
+						add(PortMappingRef{Container: containerName, ContainerPort: containerPort, Protocol: string(port.Proto()), Published: false, Source: "network-settings"})
 						continue
 					}
 					add(PortMappingRef{
@@ -580,7 +586,7 @@ func networkPortMappings(summary container.Summary, inspect container.InspectRes
 						HostIP:        normalizeHostIP(binding.HostIP),
 						HostPort:      hostPort,
 						ContainerPort: containerPort,
-						Protocol:      port.Proto(),
+						Protocol:      string(port.Proto()),
 						Published:     true,
 						Source:        "network-settings",
 					})
@@ -603,7 +609,7 @@ func networkPortMappings(summary container.Summary, inspect container.InspectRes
 						HostIP:        normalizeHostIP(binding.HostIP),
 						HostPort:      hostPort,
 						ContainerPort: containerPort,
-						Protocol:      port.Proto(),
+						Protocol:      string(port.Proto()),
 						Published:     true,
 						Source:        "host-config",
 					})
@@ -616,7 +622,7 @@ func networkPortMappings(summary container.Summary, inspect container.InspectRes
 				if !ok {
 					continue
 				}
-				add(PortMappingRef{Container: containerName, ContainerPort: containerPort, Protocol: port.Proto(), Published: false, Source: "exposed-ports"})
+				add(PortMappingRef{Container: containerName, ContainerPort: containerPort, Protocol: string(port.Proto()), Published: false, Source: "exposed-ports"})
 			}
 		}
 		return mappings
@@ -756,13 +762,35 @@ func sortNetworkReport(report *NetworkReport) {
 	})
 }
 
-func normalizeHostIP(ip string) string {
-	switch strings.TrimSpace(ip) {
-	case "", "0.0.0.0", "::", "[::]":
+func normalizeHostIP(ip any) string {
+	value := strings.TrimSpace(formatNetworkValue(ip))
+	switch value {
+	case "", "invalid IP", "0.0.0.0", "::", "[::]":
 		return "0.0.0.0"
 	default:
-		return ip
+		return value
 	}
+}
+
+func formatNetworkValue(value any) string {
+	if value == nil {
+		return ""
+	}
+	if stringer, ok := value.(fmt.Stringer); ok {
+		return stringer.String()
+	}
+	return fmt.Sprint(value)
+}
+
+func cloneNetworkValueMap[T any](values map[string]T) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	result := make(map[string]string, len(values))
+	for key, value := range values {
+		result[key] = formatNetworkValue(value)
+	}
+	return result
 }
 
 func isPublicHostIP(ip string) bool {

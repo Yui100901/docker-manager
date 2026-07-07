@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/docker/docker/api/types"
+	mobyclient "github.com/moby/moby/client"
 )
 
 type fakeDoctorDockerService struct {
@@ -17,18 +17,18 @@ type fakeDoctorDockerService struct {
 	versionErr error
 }
 
-func (f fakeDoctorDockerService) Ping(ctx context.Context) (types.Ping, error) {
+func (f fakeDoctorDockerService) Ping(ctx context.Context) (mobyclient.PingResult, error) {
 	if f.pingErr != nil {
-		return types.Ping{}, f.pingErr
+		return mobyclient.PingResult{}, f.pingErr
 	}
-	return types.Ping{APIVersion: "1.48", OSType: "linux"}, nil
+	return mobyclient.PingResult{APIVersion: "1.48", OSType: "linux"}, nil
 }
 
-func (f fakeDoctorDockerService) ServerVersion(ctx context.Context) (types.Version, error) {
+func (f fakeDoctorDockerService) ServerVersion(ctx context.Context) (mobyclient.ServerVersionResult, error) {
 	if f.versionErr != nil {
-		return types.Version{}, f.versionErr
+		return mobyclient.ServerVersionResult{}, f.versionErr
 	}
-	return types.Version{Version: "28.1.1", APIVersion: "1.48", Os: "linux", Arch: "amd64"}, nil
+	return mobyclient.ServerVersionResult{Version: "28.1.1", APIVersion: "1.48", Os: "linux", Arch: "amd64"}, nil
 }
 
 func (f fakeDoctorDockerService) DaemonHost() string {
