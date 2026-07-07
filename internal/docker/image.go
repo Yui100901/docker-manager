@@ -8,8 +8,8 @@ import (
 	"io"
 	"os"
 
-	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/client"
+	oldimage "github.com/docker/docker/api/types/image"
+	"github.com/moby/moby/client"
 )
 
 type ImageManager struct {
@@ -20,35 +20,33 @@ type readOnlyReader struct {
 	io.Reader
 }
 
-// NewImageManager 构造函数
 func NewImageManager() (*ImageManager, error) {
-	cli, err := initDockerClient()
+	cli, err := initMobyClient()
 	if err != nil {
 		return nil, err
 	}
-
 	return &ImageManager{cli: cli}, nil
 }
 
-// List 列出所有镜像
-func (im *ImageManager) List(all bool) ([]image.Summary, error) {
+func (im *ImageManager) List(all bool) ([]oldimage.Summary, error) {
 	return im.ListWithContext(context.Background(), all)
 }
 
-// ListWithContext lists images with caller-provided cancellation.
-func (im *ImageManager) ListWithContext(ctx context.Context, all bool) ([]image.Summary, error) {
+func (im *ImageManager) ListWithContext(ctx context.Context, all bool) ([]oldimage.Summary, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return im.cli.ImageList(ctx, image.ListOptions{All: all})
+	result, err := im.cli.ImageList(ctx, client.ImageListOptions{All: all})
+	if err != nil {
+		return nil, err
+	}
+	return convertDockerType[[]oldimage.Summary](result.Items)
 }
 
-// Save 导出镜像
 func (im *ImageManager) Save(images []string, outputFile string) error {
 	return im.SaveWithContext(context.Background(), images, outputFile)
 }
 
-// SaveWithContext exports images with caller-provided cancellation.
 func (im *ImageManager) SaveWithContext(ctx context.Context, images []string, outputFile string) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -59,7 +57,7 @@ func (im *ImageManager) SaveWithContext(ctx context.Context, images []string, ou
 	}
 	defer func() {
 		if cerr := reader.Close(); cerr != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "警告: 关闭 reader 失败: %v\n", cerr)
+			_, _ = fmt.Fprintf(os.Stderr, "warning: close image save reader failed: %v\n", cerr)
 		}
 	}()
 
@@ -69,19 +67,17 @@ func (im *ImageManager) SaveWithContext(ctx context.Context, images []string, ou
 	}
 	defer func() {
 		if cerr := file.Close(); cerr != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "警告: 关闭文件 %s 失败: %v\n", outputFile, cerr)
+			_, _ = fmt.Fprintf(os.Stderr, "warning: close file %s failed: %v\n", outputFile, cerr)
 		}
 	}()
 
 	return copyWithContext(ctx, file, reader)
 }
 
-// Load 导入镜像
 func (im *ImageManager) Load(inputFile string) error {
 	return im.LoadWithContext(context.Background(), inputFile, os.Stdout)
 }
 
-// LoadWithContext imports an image archive with caller-provided cancellation and output.
 func (im *ImageManager) LoadWithContext(ctx context.Context, inputFile string, output io.Writer) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -95,7 +91,7 @@ func (im *ImageManager) LoadWithContext(ctx context.Context, inputFile string, o
 	}
 	defer func() {
 		if cerr := file.Close(); cerr != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "警告: 关闭文件 %s 失败: %v\n", inputFile, cerr)
+			_, _ = fmt.Fprintf(os.Stderr, "warning: close file %s failed: %v\n", inputFile, cerr)
 		}
 	}()
 
@@ -104,35 +100,30 @@ func (im *ImageManager) LoadWithContext(ctx context.Context, inputFile string, o
 		return err
 	}
 	defer func() {
-		if resp.Body != nil {
-			if cerr := resp.Body.Close(); cerr != nil {
-				_, _ = fmt.Fprintf(os.Stderr, "警告: 关闭 resp.Body 失败: %v\n", cerr)
-			}
+		if cerr := resp.Close(); cerr != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "warning: close image load response failed: %v\n", cerr)
 		}
 	}()
 
-	return copyWithContext(ctx, output, resp.Body)
+	return copyWithContext(ctx, output, resp)
 }
 
-// Tag tags an image in the local Docker engine.
 func (im *ImageManager) Tag(ctx context.Context, source, target string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return im.cli.ImageTag(ctx, source, target)
+	_, err := im.cli.ImageTag(ctx, client.ImageTagOptions{Source: source, Target: target})
+	return err
 }
 
-// Push pushes an image from the local Docker engine to a registry.
 func (im *ImageManager) Push(ctx context.Context, ref string) error {
 	return im.PushWithOutput(ctx, ref, os.Stdout)
 }
 
-// PushWithOutput pushes an image and writes Docker's progress stream to output.
 func (im *ImageManager) PushWithOutput(ctx context.Context, ref string, output io.Writer) error {
 	return im.PushWithAuthOutput(ctx, ref, "", output)
 }
 
-// PushWithAuthOutput pushes an image with optional registry auth and writes Docker's progress stream to output.
 func (im *ImageManager) PushWithAuthOutput(ctx context.Context, ref, registryAuth string, output io.Writer) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -140,13 +131,13 @@ func (im *ImageManager) PushWithAuthOutput(ctx context.Context, ref, registryAut
 	if output == nil {
 		output = io.Discard
 	}
-	resp, err := im.cli.ImagePush(ctx, ref, image.PushOptions{RegistryAuth: registryAuth})
+	resp, err := im.cli.ImagePush(ctx, ref, client.ImagePushOptions{RegistryAuth: registryAuth})
 	if err != nil {
 		return err
 	}
 	defer func() {
 		if cerr := resp.Close(); cerr != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "警告: 关闭 push response 失败: %v\n", cerr)
+			_, _ = fmt.Fprintf(os.Stderr, "warning: close push response failed: %v\n", cerr)
 		}
 	}()
 	return copyDockerPushStream(ctx, output, resp)

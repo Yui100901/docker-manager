@@ -244,10 +244,12 @@ client.DiskUsageOptions
 
 ### 阶段 2: 项目 Docker 封装层
 
-- [ ] 迁移 `internal/docker/container.go`
-- [ ] 迁移 `internal/docker/image.go`
-- [ ] 对 `ContainerList`、`ImageList`、`VolumeList` 等 result 包装做内部适配
-- [ ] 优先让上层业务尽量少感知 SDK 差异
+- [x] 迁移 `internal/docker/container.go`
+- [x] 迁移 `internal/docker/image.go`
+- [x] 对 `ContainerList`、`ImageList`、`NetworkList`、`ContainerInspect`、`NetworkInspect`、`VolumeInspect` 等 result 包装做内部适配
+- [x] 优先让上层业务尽量少感知 SDK 差异
+
+阶段 2 状态: 已完成。`ContainerManager` 和 `ImageManager` 内部改用 `NewMobyClient`，但公开方法仍返回旧 `github.com/docker/docker/api/types/...` 类型，避免 `images`、`reverse` 和 `pull mirror` 在同一阶段被迫迁移。当前通过 `internal/docker/compat.go` 做 JSON 结构转换；后续阶段完成上层模块迁移后，可移除这些兼容转换。
 
 ### 阶段 3: diagnostics
 

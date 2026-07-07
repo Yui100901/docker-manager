@@ -6,170 +6,185 @@ import (
 	"log"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/api/types/volume"
-	"github.com/docker/docker/client"
+	oldcontainer "github.com/docker/docker/api/types/container"
+	oldnetwork "github.com/docker/docker/api/types/network"
+	oldvolume "github.com/docker/docker/api/types/volume"
+	mobycontainer "github.com/moby/moby/api/types/container"
+	mobynetwork "github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/client"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
-// ContainerManager 封装容器相关操作
 type ContainerManager struct {
 	cli *client.Client
 }
 
-// NewContainerManager 构造函数，初始化 DockerClient
 func NewContainerManager() (*ContainerManager, error) {
-	cli, err := initDockerClient()
+	cli, err := initMobyClient()
 	if err != nil {
 		return nil, err
 	}
 	return &ContainerManager{cli: cli}, nil
 }
 
-// ListAll 列出所有容器
-func (cm *ContainerManager) ListAll() ([]container.Summary, error) {
+func (cm *ContainerManager) ListAll() ([]oldcontainer.Summary, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	return cm.cli.ContainerList(ctx, container.ListOptions{All: true})
+	result, err := cm.cli.ContainerList(ctx, client.ContainerListOptions{All: true})
+	if err != nil {
+		return nil, err
+	}
+	return convertDockerType[[]oldcontainer.Summary](result.Items)
 }
 
-// Stop 停止指定容器
 func (cm *ContainerManager) Stop(containerID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	return cm.cli.ContainerStop(ctx, containerID, container.StopOptions{})
+	_, err := cm.cli.ContainerStop(ctx, containerID, client.ContainerStopOptions{})
+	return err
 }
 
-// Remove 删除指定容器
 func (cm *ContainerManager) Remove(containerID string, force, removeVolumes bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	return cm.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{
+	_, err := cm.cli.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{
 		Force:         force,
 		RemoveVolumes: removeVolumes,
 	})
+	return err
 }
 
-// Inspect 获取容器信息
-func (cm *ContainerManager) Inspect(containerID string) (container.InspectResponse, error) {
+func (cm *ContainerManager) Inspect(containerID string) (oldcontainer.InspectResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	return cm.cli.ContainerInspect(ctx, containerID)
+	result, err := cm.cli.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
+	if err != nil {
+		return oldcontainer.InspectResponse{}, err
+	}
+	return convertDockerType[oldcontainer.InspectResponse](result.Container)
 }
 
-func (cm *ContainerManager) InspectNetwork(name string) (network.Inspect, error) {
+func (cm *ContainerManager) InspectNetwork(name string) (oldnetwork.Inspect, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	return cm.cli.NetworkInspect(ctx, name, network.InspectOptions{})
+	result, err := cm.cli.NetworkInspect(ctx, name, client.NetworkInspectOptions{})
+	if err != nil {
+		return oldnetwork.Inspect{}, err
+	}
+	return convertDockerType[oldnetwork.Inspect](result.Network)
 }
 
-func (cm *ContainerManager) InspectVolume(name string) (volume.Volume, error) {
+func (cm *ContainerManager) InspectVolume(name string) (oldvolume.Volume, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	return cm.cli.VolumeInspect(ctx, name)
+	result, err := cm.cli.VolumeInspect(ctx, name, client.VolumeInspectOptions{})
+	if err != nil {
+		return oldvolume.Volume{}, err
+	}
+	return convertDockerType[oldvolume.Volume](result.Volume)
 }
 
-// Create 获取容器信息
-func (cm *ContainerManager) Create(config *container.Config,
-	hostConfig *container.HostConfig,
-	networkingConfig *network.NetworkingConfig,
+func (cm *ContainerManager) Create(config *oldcontainer.Config,
+	hostConfig *oldcontainer.HostConfig,
+	networkingConfig *oldnetwork.NetworkingConfig,
 	platform *ocispec.Platform,
-	containerName string) (container.CreateResponse, error) {
+	containerName string) (oldcontainer.CreateResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	return cm.cli.ContainerCreate(ctx, config, hostConfig, networkingConfig, platform, containerName)
+	mobyConfig, err := convertDockerPointer[mobycontainer.Config](config)
+	if err != nil {
+		return oldcontainer.CreateResponse{}, err
+	}
+	mobyHostConfig, err := convertDockerPointer[mobycontainer.HostConfig](hostConfig)
+	if err != nil {
+		return oldcontainer.CreateResponse{}, err
+	}
+	mobyNetworkingConfig, err := convertDockerPointer[mobynetwork.NetworkingConfig](networkingConfig)
+	if err != nil {
+		return oldcontainer.CreateResponse{}, err
+	}
+	result, err := cm.cli.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Config:           mobyConfig,
+		HostConfig:       mobyHostConfig,
+		NetworkingConfig: mobyNetworkingConfig,
+		Platform:         platform,
+		Name:             containerName,
+	})
+	if err != nil {
+		return oldcontainer.CreateResponse{}, err
+	}
+	return oldcontainer.CreateResponse{ID: result.ID, Warnings: result.Warnings}, nil
 }
 
 func (cm *ContainerManager) Start(containerID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	return cm.cli.ContainerStart(ctx, containerID, container.StartOptions{})
+	_, err := cm.cli.ContainerStart(ctx, containerID, client.ContainerStartOptions{})
+	return err
 }
 
-// buildNetworkingConfig 从 Inspect.NetworkSettings 构造 NetworkingConfig
-func (cm *ContainerManager) buildNetworkingConfig(inspect container.InspectResponse) *network.NetworkingConfig {
+func (cm *ContainerManager) buildNetworkingConfig(inspect oldcontainer.InspectResponse) *oldnetwork.NetworkingConfig {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	nc := &network.NetworkingConfig{
-		EndpointsConfig: make(map[string]*network.EndpointSettings),
+	nc := &oldnetwork.NetworkingConfig{
+		EndpointsConfig: make(map[string]*oldnetwork.EndpointSettings),
 	}
 
-	// 获取当前存在的网络列表
-	nets, err := cm.cli.NetworkList(ctx, network.ListOptions{})
+	result, err := cm.cli.NetworkList(ctx, client.NetworkListOptions{})
 	if err != nil {
-		log.Printf("警告: 获取网络列表失败: %v", err)
+		log.Printf("warning: list networks failed: %v", err)
 		return nc
 	}
 
 	existing := make(map[string]bool)
-	for _, n := range nets {
+	for _, n := range result.Items {
 		existing[n.Name] = true
 	}
 
-	// 防御性检查：避免 nil 引用
 	if inspect.NetworkSettings == nil || inspect.NetworkSettings.Networks == nil {
 		return nc
 	}
 
-	// 遍历原容器网络配置
 	for netName, netSettings := range inspect.NetworkSettings.Networks {
 		if existing[netName] {
-			nc.EndpointsConfig[netName] = &network.EndpointSettings{
+			nc.EndpointsConfig[netName] = &oldnetwork.EndpointSettings{
 				Aliases: netSettings.Aliases,
 			}
 		} else {
-			log.Printf("警告: 网络 %s 已不存在，跳过", netName)
+			log.Printf("warning: network %s does not exist, skipping", netName)
 		}
 	}
 
 	return nc
 }
 
-// RecreateContainer 根据现有容器配置删除并重新创建运行
 func (cm *ContainerManager) RecreateContainer(containerID, newName string) (string, error) {
-	// 使用较长的整体超时
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
 
-	// 1. Inspect 原容器
-	inspect, err := cm.cli.ContainerInspect(ctx, containerID)
+	inspect, err := cm.Inspect(containerID)
 	if err != nil {
-		return "", fmt.Errorf("inspect失败: %w", err)
+		return "", fmt.Errorf("inspect failed: %w", err)
 	}
 
-	// 2. 停止容器（忽略错误）
-	if stopErr := cm.cli.ContainerStop(ctx, containerID, container.StopOptions{}); stopErr != nil {
-		log.Printf("警告: 停止容器 %s 失败: %v", containerID, stopErr)
+	if _, stopErr := cm.cli.ContainerStop(ctx, containerID, client.ContainerStopOptions{}); stopErr != nil {
+		log.Printf("warning: stop container %s failed: %v", containerID, stopErr)
 	}
 
-	// 3. 删除容器（不删除挂载卷，忽略错误）
-	if rmErr := cm.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{
+	if _, rmErr := cm.cli.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{
 		Force:         true,
 		RemoveVolumes: false,
 	}); rmErr != nil {
-		log.Printf("警告: 删除容器 %s 失败: %v", containerID, rmErr)
+		log.Printf("warning: remove container %s failed: %v", containerID, rmErr)
 	}
 
-	// 4. 构造 NetworkingConfig
-	networkingConfig := cm.buildNetworkingConfig(inspect)
-
-	// 5. 重新创建容器
-	resp, err := cm.cli.ContainerCreate(
-		ctx,
-		inspect.Config,     // 原来的 Config
-		inspect.HostConfig, // 原来的 HostConfig
-		networkingConfig,   // 尝试还原网络配置
-		nil,                // Platform 可选，通常传 nil 即可
-		newName,            // 新容器名
-	)
+	resp, err := cm.Create(inspect.Config, inspect.HostConfig, cm.buildNetworkingConfig(inspect), nil, newName)
 	if err != nil {
-		return "", fmt.Errorf("创建容器失败: %w", err)
+		return "", fmt.Errorf("create container failed: %w", err)
 	}
 
-	// 6. 启动新容器
-	if err := cm.cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
-		return "", fmt.Errorf("启动容器失败: %w", err)
+	if _, err := cm.cli.ContainerStart(ctx, resp.ID, client.ContainerStartOptions{}); err != nil {
+		return "", fmt.Errorf("start container failed: %w", err)
 	}
 
 	return resp.ID, nil
