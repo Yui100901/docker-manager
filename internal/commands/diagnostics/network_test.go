@@ -68,6 +68,18 @@ func mustHardwareAddr(value string) network.HardwareAddr {
 	return addr
 }
 
+func TestFormatNetworkValueSkipsInvalidNetIPValues(t *testing.T) {
+	if got := formatNetworkValue(netip.Addr{}); got != "" {
+		t.Fatalf("formatNetworkValue(invalid Addr) = %q, want empty", got)
+	}
+	if got := formatNetworkValue(netip.Prefix{}); got != "" {
+		t.Fatalf("formatNetworkValue(invalid Prefix) = %q, want empty", got)
+	}
+	if got := formatNetworkValue(netip.MustParseAddr("172.20.0.2")); got != "172.20.0.2" {
+		t.Fatalf("formatNetworkValue(valid Addr) = %q", got)
+	}
+}
+
 func TestBuildNetworkReportCombinesNetworksPortsAndRisks(t *testing.T) {
 	report := buildNetworkReport([]container.Summary{
 		{

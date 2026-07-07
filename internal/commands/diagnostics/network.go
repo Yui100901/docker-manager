@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/netip"
 	"sort"
 	"strconv"
 	"strings"
@@ -775,6 +776,18 @@ func normalizeHostIP(ip any) string {
 func formatNetworkValue(value any) string {
 	if value == nil {
 		return ""
+	}
+	switch typed := value.(type) {
+	case netip.Addr:
+		if !typed.IsValid() {
+			return ""
+		}
+		return typed.String()
+	case netip.Prefix:
+		if !typed.IsValid() {
+			return ""
+		}
+		return typed.String()
 	}
 	if stringer, ok := value.(fmt.Stringer); ok {
 		return stringer.String()
