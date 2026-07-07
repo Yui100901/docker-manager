@@ -252,3 +252,4 @@ docs/                           # 测试、发布检查和维护文档
 | [CHANGELOG.md](CHANGELOG.md) | 版本变化、已完成优化和已知非阻断项 |
 | [docs/TESTING.md](docs/TESTING.md) | 本地、远程、企业 registry 和发布前验收说明 |
 | [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) | 发布操作核对清单 |
+| [docs/DOCKER_API_MIGRATION.md](docs/DOCKER_API_MIGRATION.md) | Docker Go SDK 到 Moby client/API 的迁移清单 |
