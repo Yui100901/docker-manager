@@ -15,7 +15,7 @@ import (
 
 	containerapi "github.com/docker/docker/api/types/container"
 	imageapi "github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/client"
+	mobyclient "github.com/moby/moby/client"
 	"github.com/spf13/cobra"
 )
 
@@ -28,7 +28,7 @@ type imageTreeDockerService interface {
 }
 
 var newImageTreeDockerService = func() (imageTreeDockerService, error) {
-	cli, err := docker.NewClient()
+	cli, err := docker.NewMobyClient()
 	if err != nil {
 		return nil, err
 	}
@@ -36,7 +36,7 @@ var newImageTreeDockerService = func() (imageTreeDockerService, error) {
 }
 
 type dockerImageTreeService struct {
-	cli *client.Client
+	cli *mobyclient.Client
 }
 
 type ImageTreeOptions struct {
@@ -433,21 +433,41 @@ func displayLayerText(value string, noTrunc bool, max int) string {
 }
 
 func (s *dockerImageTreeService) ImageInspect(ctx context.Context, imageRef string) (imageapi.InspectResponse, error) {
-	return s.cli.ImageInspect(ctx, imageRef)
+	result, err := s.cli.ImageInspect(ctx, imageRef)
+	if err != nil {
+		return imageapi.InspectResponse{}, err
+	}
+	return docker.ConvertDockerType[imageapi.InspectResponse](result)
 }
 
 func (s *dockerImageTreeService) ImageHistory(ctx context.Context, imageRef string) ([]imageapi.HistoryResponseItem, error) {
-	return s.cli.ImageHistory(ctx, imageRef)
+	result, err := s.cli.ImageHistory(ctx, imageRef)
+	if err != nil {
+		return nil, err
+	}
+	return docker.ConvertDockerType[[]imageapi.HistoryResponseItem](result.Items)
 }
 
 func (s *dockerImageTreeService) ImageList(ctx context.Context) ([]imageapi.Summary, error) {
-	return s.cli.ImageList(ctx, imageapi.ListOptions{All: true})
+	result, err := s.cli.ImageList(ctx, mobyclient.ImageListOptions{All: true})
+	if err != nil {
+		return nil, err
+	}
+	return docker.ConvertDockerType[[]imageapi.Summary](result.Items)
 }
 
 func (s *dockerImageTreeService) ListContainers(ctx context.Context, all bool) ([]containerapi.Summary, error) {
-	return s.cli.ContainerList(ctx, containerapi.ListOptions{All: all})
+	result, err := s.cli.ContainerList(ctx, mobyclient.ContainerListOptions{All: all})
+	if err != nil {
+		return nil, err
+	}
+	return docker.ConvertDockerType[[]containerapi.Summary](result.Items)
 }
 
 func (s *dockerImageTreeService) InspectContainer(ctx context.Context, id string) (containerapi.InspectResponse, error) {
-	return s.cli.ContainerInspect(ctx, id)
+	result, err := s.cli.ContainerInspect(ctx, id, mobyclient.ContainerInspectOptions{})
+	if err != nil {
+		return containerapi.InspectResponse{}, err
+	}
+	return docker.ConvertDockerType[containerapi.InspectResponse](result.Container)
 }

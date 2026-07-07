@@ -253,11 +253,13 @@ client.DiskUsageOptions
 
 ### 阶段 3: diagnostics
 
-- [ ] 迁移 doctor 的 `Ping` / `ServerVersion`
-- [ ] 迁移 prune 的 `DiskUsage` / filters / volume prune
-- [ ] 迁移 health/logs 的 `ContainerLogs` 和 `stdcopy`
-- [ ] 迁移 volume/network/image tree/report 相关类型
-- [ ] 更新 fake service 和单元测试
+- [x] 迁移 doctor 的 `Ping` / `ServerVersion`
+- [x] 迁移 prune 的 `DiskUsage` / filters / volume prune
+- [x] 迁移 health/logs 的 `ContainerLogs` 和 `stdcopy`
+- [x] 迁移 volume/network/image tree/report 相关 Docker API 调用
+- [x] 更新并验证 fake service 和单元测试
+
+阶段 3 状态: 已完成 Docker API 调用路径迁移。`internal/commands/diagnostics` 不再直接创建旧 `github.com/docker/docker/client.Client`，统一通过 `docker.NewMobyClient` 调用 Docker daemon。为控制迁移边界，报告结构和单元测试仍保留旧 `github.com/docker/docker/api/types/...` 类型，service 层负责将 Moby result/options 转换为当前报告逻辑使用的结构。
 
 ### 阶段 4: backup/restore
 

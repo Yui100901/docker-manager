@@ -19,7 +19,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/volume"
-	"github.com/docker/docker/client"
+	mobyclient "github.com/moby/moby/client"
 	"github.com/spf13/cobra"
 )
 
@@ -43,7 +43,7 @@ type containerInspectService interface {
 }
 
 var newVolumeDockerService = func() (volumeDockerService, error) {
-	cli, err := docker.NewClient()
+	cli, err := docker.NewMobyClient()
 	if err != nil {
 		return nil, err
 	}
@@ -53,7 +53,7 @@ var newVolumeDockerService = func() (volumeDockerService, error) {
 var measureLocalVolumeSize = measureLocalVolumeSizeWithGo
 
 type dockerVolumeService struct {
-	cli *client.Client
+	cli *mobyclient.Client
 }
 
 type VolumeOptions struct {

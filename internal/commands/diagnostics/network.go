@@ -16,7 +16,7 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/client"
+	mobyclient "github.com/moby/moby/client"
 	"github.com/spf13/cobra"
 )
 
@@ -28,7 +28,7 @@ type networkDockerService interface {
 }
 
 var newNetworkDockerService = func() (networkDockerService, error) {
-	cli, err := docker.NewClient()
+	cli, err := docker.NewMobyClient()
 	if err != nil {
 		return nil, err
 	}
@@ -36,7 +36,7 @@ var newNetworkDockerService = func() (networkDockerService, error) {
 }
 
 type dockerNetworkService struct {
-	cli *client.Client
+	cli *mobyclient.Client
 }
 
 type NetworkOptions struct {

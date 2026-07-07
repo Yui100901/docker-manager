@@ -6,7 +6,9 @@ import (
 	"docker-manager/internal/docker"
 
 	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/client"
+	oldbuild "github.com/docker/docker/api/types/build"
+	oldswarm "github.com/docker/docker/api/types/swarm"
+	mobyclient "github.com/moby/moby/client"
 )
 
 type doctorDockerService interface {
@@ -17,7 +19,7 @@ type doctorDockerService interface {
 }
 
 var newDoctorDockerService = func() (doctorDockerService, error) {
-	cli, err := docker.NewClient()
+	cli, err := docker.NewMobyClient()
 	if err != nil {
 		return nil, err
 	}
@@ -25,15 +27,41 @@ var newDoctorDockerService = func() (doctorDockerService, error) {
 }
 
 type dockerDoctorService struct {
-	cli *client.Client
+	cli *mobyclient.Client
 }
 
 func (s *dockerDoctorService) Ping(ctx context.Context) (types.Ping, error) {
-	return s.cli.Ping(ctx)
+	result, err := s.cli.Ping(ctx, mobyclient.PingOptions{})
+	if err != nil {
+		return types.Ping{}, err
+	}
+	ping := types.Ping{
+		APIVersion:     result.APIVersion,
+		OSType:         result.OSType,
+		Experimental:   result.Experimental,
+		BuilderVersion: oldbuild.BuilderVersion(result.BuilderVersion),
+	}
+	if result.SwarmStatus != nil {
+		status, err := docker.ConvertDockerType[oldswarm.Status](*result.SwarmStatus)
+		if err != nil {
+			return types.Ping{}, err
+		}
+		ping.SwarmStatus = &status
+	}
+	return ping, nil
 }
 
 func (s *dockerDoctorService) ServerVersion(ctx context.Context) (types.Version, error) {
-	return s.cli.ServerVersion(ctx)
+	result, err := s.cli.ServerVersion(ctx, mobyclient.ServerVersionOptions{})
+	if err != nil {
+		return types.Version{}, err
+	}
+	version, err := docker.ConvertDockerType[types.Version](result)
+	if err != nil {
+		return types.Version{}, err
+	}
+	version.Platform.Name = result.Platform.Name
+	return version, nil
 }
 
 func (s *dockerDoctorService) DaemonHost() string {

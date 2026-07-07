@@ -3,6 +3,10 @@ package docker
 import "encoding/json"
 
 func convertDockerType[T any](src any) (T, error) {
+	return ConvertDockerType[T](src)
+}
+
+func ConvertDockerType[T any](src any) (T, error) {
 	var dst T
 	data, err := json.Marshal(src)
 	if err != nil {
@@ -15,10 +19,14 @@ func convertDockerType[T any](src any) (T, error) {
 }
 
 func convertDockerPointer[T any](src any) (*T, error) {
+	return ConvertDockerPointer[T](src)
+}
+
+func ConvertDockerPointer[T any](src any) (*T, error) {
 	if src == nil {
 		return nil, nil
 	}
-	dst, err := convertDockerType[T](src)
+	dst, err := ConvertDockerType[T](src)
 	if err != nil {
 		return nil, err
 	}

@@ -16,8 +16,8 @@ import (
 	rpt "docker-manager/internal/report"
 
 	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/client"
-	"github.com/docker/docker/pkg/stdcopy"
+	"github.com/moby/moby/api/pkg/stdcopy"
+	mobyclient "github.com/moby/moby/client"
 	"github.com/spf13/cobra"
 )
 
@@ -28,7 +28,7 @@ type healthDockerService interface {
 }
 
 var newHealthDockerService = func() (healthDockerService, error) {
-	cli, err := docker.NewClient()
+	cli, err := docker.NewMobyClient()
 	if err != nil {
 		return nil, err
 	}
@@ -36,7 +36,7 @@ var newHealthDockerService = func() (healthDockerService, error) {
 }
 
 type dockerHealthService struct {
-	cli *client.Client
+	cli *mobyclient.Client
 }
 
 type HealthOptions struct {

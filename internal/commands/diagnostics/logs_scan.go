@@ -16,7 +16,7 @@ import (
 	rpt "docker-manager/internal/report"
 
 	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/client"
+	mobyclient "github.com/moby/moby/client"
 	"github.com/spf13/cobra"
 )
 
@@ -27,7 +27,7 @@ type logsScanDockerService interface {
 }
 
 var newLogsScanDockerService = func() (logsScanDockerService, error) {
-	cli, err := docker.NewClient()
+	cli, err := docker.NewMobyClient()
 	if err != nil {
 		return nil, err
 	}
@@ -35,7 +35,7 @@ var newLogsScanDockerService = func() (logsScanDockerService, error) {
 }
 
 type dockerLogsScanService struct {
-	cli *client.Client
+	cli *mobyclient.Client
 }
 
 type LogsScanOptions struct {
@@ -433,13 +433,30 @@ func sortLogsScanReport(report *LogsScanReport) {
 }
 
 func (s *dockerLogsScanService) ListContainers(ctx context.Context, all bool) ([]container.Summary, error) {
-	return s.cli.ContainerList(ctx, container.ListOptions{All: all})
+	result, err := s.cli.ContainerList(ctx, mobyclient.ContainerListOptions{All: all})
+	if err != nil {
+		return nil, err
+	}
+	return docker.ConvertDockerType[[]container.Summary](result.Items)
 }
 
 func (s *dockerLogsScanService) InspectContainer(ctx context.Context, id string) (container.InspectResponse, error) {
-	return s.cli.ContainerInspect(ctx, id)
+	result, err := s.cli.ContainerInspect(ctx, id, mobyclient.ContainerInspectOptions{})
+	if err != nil {
+		return container.InspectResponse{}, err
+	}
+	return docker.ConvertDockerType[container.InspectResponse](result.Container)
 }
 
 func (s *dockerLogsScanService) ContainerLogs(ctx context.Context, id string, options container.LogsOptions) (io.ReadCloser, error) {
-	return s.cli.ContainerLogs(ctx, id, options)
+	return s.cli.ContainerLogs(ctx, id, mobyclient.ContainerLogsOptions{
+		ShowStdout: options.ShowStdout,
+		ShowStderr: options.ShowStderr,
+		Since:      options.Since,
+		Until:      options.Until,
+		Timestamps: options.Timestamps,
+		Follow:     options.Follow,
+		Tail:       options.Tail,
+		Details:    options.Details,
+	})
 }

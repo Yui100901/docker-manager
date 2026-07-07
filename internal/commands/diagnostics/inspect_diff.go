@@ -16,7 +16,7 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/client"
+	mobyclient "github.com/moby/moby/client"
 	"github.com/spf13/cobra"
 )
 
@@ -25,7 +25,7 @@ type inspectDiffDockerService interface {
 }
 
 var newInspectDiffDockerService = func() (inspectDiffDockerService, error) {
-	cli, err := docker.NewClient()
+	cli, err := docker.NewMobyClient()
 	if err != nil {
 		return nil, err
 	}
@@ -33,7 +33,7 @@ var newInspectDiffDockerService = func() (inspectDiffDockerService, error) {
 }
 
 type dockerInspectDiffService struct {
-	cli *client.Client
+	cli *mobyclient.Client
 }
 
 type InspectDiffOptions struct {
@@ -366,5 +366,9 @@ func printInspectDiffSection(w io.Writer, title string, entries []InspectDiffEnt
 }
 
 func (s *dockerInspectDiffService) InspectContainer(ctx context.Context, name string) (container.InspectResponse, error) {
-	return s.cli.ContainerInspect(ctx, name)
+	result, err := s.cli.ContainerInspect(ctx, name, mobyclient.ContainerInspectOptions{})
+	if err != nil {
+		return container.InspectResponse{}, err
+	}
+	return docker.ConvertDockerType[container.InspectResponse](result.Container)
 }

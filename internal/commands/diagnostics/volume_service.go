@@ -8,24 +8,42 @@ import (
 	"strings"
 	"time"
 
+	"docker-manager/internal/docker"
+
 	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/volume"
-	"github.com/docker/docker/client"
-	"github.com/docker/docker/pkg/stdcopy"
+	"github.com/moby/moby/api/pkg/stdcopy"
+	mobycontainer "github.com/moby/moby/api/types/container"
+	mobymount "github.com/moby/moby/api/types/mount"
+	mobyclient "github.com/moby/moby/client"
 )
 
 func (s *dockerVolumeService) ListVolumes(ctx context.Context) (volume.ListResponse, error) {
-	return s.cli.VolumeList(ctx, volume.ListOptions{Filters: filters.NewArgs()})
+	result, err := s.cli.VolumeList(ctx, mobyclient.VolumeListOptions{Filters: mobyclient.Filters{}})
+	if err != nil {
+		return volume.ListResponse{}, err
+	}
+	volumes, err := docker.ConvertDockerType[[]*volume.Volume](result.Items)
+	if err != nil {
+		return volume.ListResponse{}, err
+	}
+	return volume.ListResponse{Volumes: volumes, Warnings: result.Warnings}, nil
 }
 
 func (s *dockerVolumeService) ListContainers(ctx context.Context, all bool) ([]container.Summary, error) {
-	return s.cli.ContainerList(ctx, container.ListOptions{All: all})
+	result, err := s.cli.ContainerList(ctx, mobyclient.ContainerListOptions{All: all})
+	if err != nil {
+		return nil, err
+	}
+	return docker.ConvertDockerType[[]container.Summary](result.Items)
 }
 
 func (s *dockerVolumeService) InspectContainer(ctx context.Context, id string) (container.InspectResponse, error) {
-	return s.cli.ContainerInspect(ctx, id)
+	result, err := s.cli.ContainerInspect(ctx, id, mobyclient.ContainerInspectOptions{})
+	if err != nil {
+		return container.InspectResponse{}, err
+	}
+	return docker.ConvertDockerType[container.InspectResponse](result.Container)
 }
 
 func (s *dockerVolumeService) MeasureVolumeSize(ctx context.Context, volumeName, helperImage string) (int64, error) {
@@ -33,12 +51,12 @@ func (s *dockerVolumeService) MeasureVolumeSize(ctx context.Context, volumeName,
 		helperImage = volumeDefaultSizeImage
 	}
 	if _, err := s.cli.ImageInspect(ctx, helperImage); err != nil {
-		return -1, fmt.Errorf("helper 镜像 %q 在目标 Docker 上不可用: %w", helperImage, err)
+		return -1, fmt.Errorf("helper image %q is not available on target Docker: %w", helperImage, err)
 	}
 
 	containerName := "dm_volume_size_" + time.Now().Format("20060102150405") + "_" + safeVolumeProbeName(volumeName)
-	resp, err := s.cli.ContainerCreate(ctx,
-		&container.Config{
+	resp, err := s.cli.ContainerCreate(ctx, mobyclient.ContainerCreateOptions{
+		Config: &mobycontainer.Config{
 			Image: helperImage,
 			Cmd: []string{
 				"sh",
@@ -46,39 +64,37 @@ func (s *dockerVolumeService) MeasureVolumeSize(ctx context.Context, volumeName,
 				`bytes=$(du -sb /mnt/volume 2>/dev/null | awk '{print $1}'); if [ -n "$bytes" ]; then echo "$bytes"; else du -sk /mnt/volume 2>/dev/null | awk '{print $1 * 1024}'; fi`,
 			},
 		},
-		&container.HostConfig{
-			Mounts: []mount.Mount{{
-				Type:     mount.TypeVolume,
+		HostConfig: &mobycontainer.HostConfig{
+			Mounts: []mobymount.Mount{{
+				Type:     mobymount.TypeVolume,
 				Source:   volumeName,
 				Target:   "/mnt/volume",
 				ReadOnly: true,
 			}},
 		},
-		nil,
-		nil,
-		containerName,
-	)
+		Name: containerName,
+	})
 	if err != nil {
-		return -1, fmt.Errorf("创建大小探测容器失败: %w", err)
+		return -1, fmt.Errorf("create size probe container failed: %w", err)
 	}
 	defer removeVolumeProbeContainer(s.cli, resp.ID)
 
-	if err := s.cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
-		return -1, fmt.Errorf("启动大小探测容器失败: %w", err)
+	if _, err := s.cli.ContainerStart(ctx, resp.ID, mobyclient.ContainerStartOptions{}); err != nil {
+		return -1, fmt.Errorf("start size probe container failed: %w", err)
 	}
-	waitC, errC := s.cli.ContainerWait(ctx, resp.ID, container.WaitConditionNotRunning)
+	waitResult := s.cli.ContainerWait(ctx, resp.ID, mobyclient.ContainerWaitOptions{Condition: mobycontainer.WaitConditionNotRunning})
 	select {
-	case waitResp := <-waitC:
+	case waitResp := <-waitResult.Result:
 		if waitResp.Error != nil {
-			return -1, fmt.Errorf("大小探测容器失败: %s", waitResp.Error.Message)
+			return -1, fmt.Errorf("size probe container failed: %s", waitResp.Error.Message)
 		}
 		if waitResp.StatusCode != 0 {
 			stderr := readVolumeProbeLogs(ctx, s.cli, resp.ID, true)
-			return -1, fmt.Errorf("大小探测容器退出码=%d stderr=%s", waitResp.StatusCode, strings.TrimSpace(stderr))
+			return -1, fmt.Errorf("size probe container exit_code=%d stderr=%s", waitResp.StatusCode, strings.TrimSpace(stderr))
 		}
-	case err := <-errC:
+	case err := <-waitResult.Error:
 		if err != nil {
-			return -1, fmt.Errorf("等待大小探测容器失败: %w", err)
+			return -1, fmt.Errorf("wait size probe container failed: %w", err)
 		}
 	case <-ctx.Done():
 		return -1, ctx.Err()
@@ -87,17 +103,17 @@ func (s *dockerVolumeService) MeasureVolumeSize(ctx context.Context, volumeName,
 	stdout := readVolumeProbeLogs(ctx, s.cli, resp.ID, false)
 	fields := strings.Fields(stdout)
 	if len(fields) == 0 {
-		return -1, fmt.Errorf("大小探测容器没有输出")
+		return -1, fmt.Errorf("size probe container produced no output")
 	}
 	size, err := strconv.ParseInt(fields[0], 10, 64)
 	if err != nil {
-		return -1, fmt.Errorf("解析大小探测输出 %q 失败: %w", strings.TrimSpace(stdout), err)
+		return -1, fmt.Errorf("parse size probe output %q failed: %w", strings.TrimSpace(stdout), err)
 	}
 	return size, nil
 }
 
-func readVolumeProbeLogs(ctx context.Context, cli *client.Client, containerID string, stderrOnly bool) string {
-	logs, err := cli.ContainerLogs(ctx, containerID, container.LogsOptions{ShowStdout: !stderrOnly, ShowStderr: true, Tail: "all"})
+func readVolumeProbeLogs(ctx context.Context, cli *mobyclient.Client, containerID string, stderrOnly bool) string {
+	logs, err := cli.ContainerLogs(ctx, containerID, mobyclient.ContainerLogsOptions{ShowStdout: !stderrOnly, ShowStderr: true, Tail: "all"})
 	if err != nil {
 		return err.Error()
 	}
@@ -113,10 +129,10 @@ func readVolumeProbeLogs(ctx context.Context, cli *client.Client, containerID st
 	return stderr.String()
 }
 
-func removeVolumeProbeContainer(cli *client.Client, containerID string) {
+func removeVolumeProbeContainer(cli *mobyclient.Client, containerID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_ = cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true})
+	_, _ = cli.ContainerRemove(ctx, containerID, mobyclient.ContainerRemoveOptions{Force: true})
 }
 
 func safeVolumeProbeName(name string) string {
