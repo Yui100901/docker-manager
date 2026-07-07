@@ -8,7 +8,7 @@ import (
 	"io"
 	"os"
 
-	oldimage "github.com/docker/docker/api/types/image"
+	mobyimage "github.com/moby/moby/api/types/image"
 	"github.com/moby/moby/client"
 )
 
@@ -28,11 +28,11 @@ func NewImageManager() (*ImageManager, error) {
 	return &ImageManager{cli: cli}, nil
 }
 
-func (im *ImageManager) List(all bool) ([]oldimage.Summary, error) {
+func (im *ImageManager) List(all bool) ([]mobyimage.Summary, error) {
 	return im.ListWithContext(context.Background(), all)
 }
 
-func (im *ImageManager) ListWithContext(ctx context.Context, all bool) ([]oldimage.Summary, error) {
+func (im *ImageManager) ListWithContext(ctx context.Context, all bool) ([]mobyimage.Summary, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -40,7 +40,7 @@ func (im *ImageManager) ListWithContext(ctx context.Context, all bool) ([]oldima
 	if err != nil {
 		return nil, err
 	}
-	return convertDockerType[[]oldimage.Summary](result.Items)
+	return result.Items, nil
 }
 
 func (im *ImageManager) Save(images []string, outputFile string) error {

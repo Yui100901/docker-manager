@@ -15,7 +15,7 @@ import (
 	"docker-manager/internal/completion"
 
 	"github.com/Yui100901/MyGo/file_utils"
-	"github.com/docker/docker/api/types/image"
+	"github.com/moby/moby/api/types/image"
 	"github.com/spf13/cobra"
 )
 

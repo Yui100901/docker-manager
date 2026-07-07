@@ -2,10 +2,12 @@ package backup
 
 import (
 	"context"
+	"docker-manager/internal/docker"
 	"docker-manager/internal/runconfig"
 	"encoding/json"
 	"fmt"
 	"github.com/docker/docker/api/types/container"
+	mobycontainer "github.com/moby/moby/api/types/container"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -16,7 +18,11 @@ import (
 )
 
 func writeComposeFile(path string, inspect container.InspectResponse) error {
-	parser := runconfig.NewParser(inspect, runconfig.ReverseOptions{
+	converted, err := docker.ConvertDockerType[mobycontainer.InspectResponse](inspect)
+	if err != nil {
+		return err
+	}
+	parser := runconfig.NewParser(converted, runconfig.ReverseOptions{
 		PreserveVolumes: true,
 		ReverseType:     runconfig.ReverseCompose,
 	})

@@ -3,12 +3,13 @@ package runconfig
 import (
 	"fmt"
 	"log"
+	"net/netip"
 	"sort"
 	"strconv"
 	"strings"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/go-connections/nat"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
 )
 
 type ContainerSpec struct {
@@ -73,7 +74,7 @@ func (p *Parser) ToSpec() *ContainerSpec {
 		Image:           p.ci.Config.Image,
 		ContainerName:   strings.TrimPrefix(p.ci.Name, "/"),
 		Labels:          p.parseLabels(),
-		DNS:             copyStringSlice(p.ci.HostConfig.DNS),
+		DNS:             addrSliceToStrings(p.ci.HostConfig.DNS),
 		DNSSearch:       copyStringSlice(p.ci.HostConfig.DNSSearch),
 		ExtraHosts:      copyStringSlice(p.ci.HostConfig.ExtraHosts),
 		CapAdd:          copyStringSlice(p.ci.HostConfig.CapAdd),
@@ -188,7 +189,7 @@ func (p *Parser) parsePortBindings() []PortBindingSpec {
 	return result
 }
 
-func (p *Parser) resolvePublishedPort(port nat.Port, configured nat.PortBinding) []PortBindingSpec {
+func (p *Parser) resolvePublishedPort(port network.Port, configured network.PortBinding) []PortBindingSpec {
 	proto := port.Proto()
 	contPort, err := strconv.Atoi(port.Port())
 	if err != nil {
@@ -202,10 +203,10 @@ func (p *Parser) resolvePublishedPort(port nat.Port, configured nat.PortBinding)
 			return nil
 		}
 		return []PortBindingSpec{{
-			HostIP:   normalizeIP(configured.HostIP),
+			HostIP:   normalizeIP(addrString(configured.HostIP)),
 			HostPort: hp,
 			ContPort: contPort,
-			Proto:    proto,
+			Proto:    string(proto),
 		}}
 	}
 	if p.ci.NetworkSettings == nil {
@@ -221,18 +222,41 @@ func (p *Parser) resolvePublishedPort(port nat.Port, configured nat.PortBinding)
 			log.Printf("警告: 解析运行态主机端口失败 %s: %v", runtimeBinding.HostPort, err)
 			continue
 		}
-		hostIP := runtimeBinding.HostIP
+		hostIP := addrString(runtimeBinding.HostIP)
 		if hostIP == "" {
-			hostIP = configured.HostIP
+			hostIP = addrString(configured.HostIP)
 		}
 		result = append(result, PortBindingSpec{
 			HostIP:   normalizeIP(hostIP),
 			HostPort: hp,
 			ContPort: contPort,
-			Proto:    proto,
+			Proto:    string(proto),
 		})
 	}
 	return result
+}
+
+func addrSliceToStrings(addrs []netip.Addr) []string {
+	if len(addrs) == 0 {
+		return nil
+	}
+	result := make([]string, 0, len(addrs))
+	for _, addr := range addrs {
+		if value := addrString(addr); value != "" {
+			result = append(result, value)
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+func addrString(addr netip.Addr) string {
+	if !addr.IsValid() || addr.IsUnspecified() {
+		return ""
+	}
+	return addr.String()
 }
 
 func (p *Parser) parseDevices() []string {

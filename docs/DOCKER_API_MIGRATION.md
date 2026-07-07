@@ -273,23 +273,25 @@ client.DiskUsageOptions
 
 ### 阶段 5: reverse/rerun、completion、filter
 
-- [ ] 迁移 reverse/rerun 的 inspect 类型
-- [ ] 迁移 runconfig parser 的 container config 类型
-- [ ] 迁移 completion 的 list result 处理
-- [ ] 迁移 resourcefilter 的 container/image/volume summary 类型
-- [ ] 确认筛选和通配符行为不变
+- [x] 迁移 reverse/rerun 的 inspect 类型
+- [x] 迁移 runconfig parser 的 container config 类型
+- [x] 迁移 completion 的 list result 处理
+- [x] 迁移 resourcefilter 的 container/image/volume summary 类型
+- [x] 确认筛选和通配符行为不变
+
+阶段 5 状态: 已完成。`internal/docker.ContainerManager`、`ImageManager`、`reverse/rerun`、`runconfig`、`completion`、`resourcefilter` 和 `images save` 的本地资源处理已切到 `github.com/moby/moby/api` / `github.com/moby/moby/client` 类型。由于 backup 与 diagnostics 的报告结构仍处在旧 SDK 类型边界，当前在调用 `runconfig` / `resourcefilter` 前保留轻量转换；后续迁移这些报告结构后可删除桥接。
 
 ### 阶段 6: 测试和验收
 
 - [x] `go test ./...`
-- [ ] `go vet ./...`
+- [x] `go vet ./...`
 - [ ] `scripts/check.ps1` 或 `scripts/check.sh`
 - [ ] 本地无 Docker 环境 smoke test
 - [ ] 本地 Docker 环境 smoke test
 - [ ] 远程 Docker endpoint 测试
 - [x] backup/restore 小容器迁移测试
 - [ ] prune dry-run / apply 安全边界测试
-- [ ] completion 读取远程 Docker 资源测试
+- [x] completion 读取远程 Docker 资源测试
 
 ## 风险评估
 

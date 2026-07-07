@@ -8,7 +8,7 @@ import (
 	"docker-manager/internal/completion"
 	"docker-manager/internal/resourcefilter"
 
-	"github.com/docker/docker/api/types/container"
+	"github.com/moby/moby/api/types/container"
 	"github.com/spf13/cobra"
 )
 

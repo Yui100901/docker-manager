@@ -3,7 +3,7 @@ package reverse
 import (
 	"docker-manager/internal/runconfig"
 
-	"github.com/docker/docker/api/types/container"
+	"github.com/moby/moby/api/types/container"
 )
 
 type ReverseType = runconfig.ReverseType

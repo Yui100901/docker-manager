@@ -11,13 +11,11 @@ import (
 	"docker-manager/internal/appconfig"
 	"docker-manager/internal/docker"
 
-	"github.com/docker/docker/api/types/container"
-	imageapi "github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/api/types/volume"
+	"github.com/moby/moby/client"
 	"github.com/spf13/cobra"
 )
 
-const completionTimeout = 2 * time.Second
+const completionTimeout = 5 * time.Second
 const defaultConfigPath = appconfig.DefaultPath
 const configEnvName = appconfig.EnvName
 
@@ -132,16 +130,16 @@ func prepareDockerCompletion(cmd *cobra.Command) error {
 func localContainerCompletionValues(ctx context.Context) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctxOrBackground(ctx), completionTimeout)
 	defer cancel()
-	cli, err := docker.NewClient()
+	cli, err := docker.NewMobyClient()
 	if err != nil {
 		return nil, err
 	}
-	containers, err := cli.ContainerList(ctx, container.ListOptions{All: true})
+	result, err := cli.ContainerList(ctx, client.ContainerListOptions{All: true})
 	if err != nil {
 		return nil, err
 	}
 	var values []string
-	for _, c := range containers {
+	for _, c := range result.Items {
 		name := firstContainerName(c.Names)
 		if name != "" {
 			values = append(values, name)
@@ -156,16 +154,16 @@ func localContainerCompletionValues(ctx context.Context) ([]string, error) {
 func localImageCompletionValues(ctx context.Context) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctxOrBackground(ctx), completionTimeout)
 	defer cancel()
-	cli, err := docker.NewClient()
+	cli, err := docker.NewMobyClient()
 	if err != nil {
 		return nil, err
 	}
-	images, err := cli.ImageList(ctx, imageapi.ListOptions{All: true})
+	result, err := cli.ImageList(ctx, client.ImageListOptions{All: true})
 	if err != nil {
 		return nil, err
 	}
 	var values []string
-	for _, img := range images {
+	for _, img := range result.Items {
 		for _, tag := range img.RepoTags {
 			if tag != "" && tag != "<none>:<none>" {
 				values = append(values, tag)
@@ -186,17 +184,17 @@ func localImageCompletionValues(ctx context.Context) ([]string, error) {
 func localVolumeCompletionValues(ctx context.Context) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctxOrBackground(ctx), completionTimeout)
 	defer cancel()
-	cli, err := docker.NewClient()
+	cli, err := docker.NewMobyClient()
 	if err != nil {
 		return nil, err
 	}
-	volumes, err := cli.VolumeList(ctx, volume.ListOptions{})
+	result, err := cli.VolumeList(ctx, client.VolumeListOptions{})
 	if err != nil {
 		return nil, err
 	}
-	values := make([]string, 0, len(volumes.Volumes))
-	for _, vol := range volumes.Volumes {
-		if vol != nil && vol.Name != "" {
+	values := make([]string, 0, len(result.Items))
+	for _, vol := range result.Items {
+		if vol.Name != "" {
 			values = append(values, vol.Name)
 		}
 	}

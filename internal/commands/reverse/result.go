@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sort"
@@ -13,9 +14,9 @@ import (
 
 	"docker-manager/internal/docker"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/api/types/volume"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/api/types/volume"
 	"gopkg.in/yaml.v3"
 )
 
@@ -336,17 +337,17 @@ func composeIPAM(ipam network.IPAM) map[string]interface{} {
 	var configs []map[string]interface{}
 	for _, cfg := range ipam.Config {
 		entry := map[string]interface{}{}
-		if cfg.Subnet != "" {
-			entry["subnet"] = cfg.Subnet
+		if subnet := prefixString(cfg.Subnet); subnet != "" {
+			entry["subnet"] = subnet
 		}
-		if cfg.IPRange != "" {
-			entry["ip_range"] = cfg.IPRange
+		if ipRange := prefixString(cfg.IPRange); ipRange != "" {
+			entry["ip_range"] = ipRange
 		}
-		if cfg.Gateway != "" {
-			entry["gateway"] = cfg.Gateway
+		if gateway := addrString(cfg.Gateway); gateway != "" {
+			entry["gateway"] = gateway
 		}
 		if len(cfg.AuxAddress) > 0 {
-			entry["aux_addresses"] = sortedStringMap(cfg.AuxAddress)
+			entry["aux_addresses"] = sortedAddrMap(cfg.AuxAddress)
 		}
 		if len(entry) > 0 {
 			configs = append(configs, entry)
@@ -356,6 +357,45 @@ func composeIPAM(ipam network.IPAM) map[string]interface{} {
 		result["config"] = configs
 	}
 	return result
+}
+
+func prefixString(prefix netip.Prefix) string {
+	if !prefix.IsValid() {
+		return ""
+	}
+	return prefix.String()
+}
+
+func addrString(addr netip.Addr) string {
+	if !addr.IsValid() || addr.IsUnspecified() {
+		return ""
+	}
+	return addr.String()
+}
+
+func sortedAddrMap(src map[string]netip.Addr) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for _, key := range sortedAddrMapKeys(src) {
+		if value := addrString(src[key]); value != "" {
+			dst[key] = value
+		}
+	}
+	if len(dst) == 0 {
+		return nil
+	}
+	return dst
+}
+
+func sortedAddrMapKeys(src map[string]netip.Addr) []string {
+	keys := make([]string, 0, len(src))
+	for key := range src {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func sortedStringMap(src map[string]string) map[string]string {
@@ -448,7 +488,7 @@ func reverseNetworkNames(info container.InspectResponse) []string {
 			}
 		}
 	}
-	if info.ContainerJSONBase != nil && info.HostConfig != nil {
+	if info.HostConfig != nil {
 		networkMode := string(info.HostConfig.NetworkMode)
 		if isReverseCustomNetwork(networkMode) {
 			seen[networkMode] = true

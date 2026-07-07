@@ -3,16 +3,16 @@ package reverse
 import (
 	"bytes"
 	"log"
+	"net/netip"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/api/types/volume"
-	"github.com/docker/go-connections/nat"
 	units "github.com/docker/go-units"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/api/types/volume"
 )
 
 func TestShellQuote(t *testing.T) {
@@ -193,27 +193,25 @@ func TestCommandFormatterIncludesDevicesAndUlimits(t *testing.T) {
 
 func TestParserToSpecIncludesDeviceUlimitAndLoggingFields(t *testing.T) {
 	spec := NewParser(container.InspectResponse{
-		ContainerJSONBase: &container.ContainerJSONBase{
-			Name: "/demo",
-			HostConfig: &container.HostConfig{
-				LogConfig: container.LogConfig{
-					Type: "json-file",
-					Config: map[string]string{
-						"max-file": "3",
-						"max-size": "10m",
+		Name: "/demo",
+		HostConfig: &container.HostConfig{
+			LogConfig: container.LogConfig{
+				Type: "json-file",
+				Config: map[string]string{
+					"max-file": "3",
+					"max-size": "10m",
+				},
+			},
+			Resources: container.Resources{
+				Devices: []container.DeviceMapping{
+					{
+						PathOnHost:        "/dev/fuse",
+						PathInContainer:   "/dev/fuse",
+						CgroupPermissions: "rwm",
 					},
 				},
-				Resources: container.Resources{
-					Devices: []container.DeviceMapping{
-						{
-							PathOnHost:        "/dev/fuse",
-							PathInContainer:   "/dev/fuse",
-							CgroupPermissions: "rwm",
-						},
-					},
-					Ulimits: []*units.Ulimit{
-						{Name: "nofile", Soft: 1024, Hard: 2048},
-					},
+				Ulimits: []*units.Ulimit{
+					{Name: "nofile", Soft: 1024, Hard: 2048},
 				},
 			},
 		},
@@ -243,22 +241,18 @@ func TestParserUsesRuntimePortWhenConfiguredHostPortIsEmpty(t *testing.T) {
 	defer log.SetOutput(oldLogOutput)
 
 	result := NewParser(container.InspectResponse{
-		ContainerJSONBase: &container.ContainerJSONBase{
-			Name: "/demo",
-			HostConfig: &container.HostConfig{
-				PortBindings: nat.PortMap{
-					"80/tcp": []nat.PortBinding{{HostIP: "127.0.0.1", HostPort: ""}},
-				},
+		Name: "/demo",
+		HostConfig: &container.HostConfig{
+			PortBindings: network.PortMap{
+				network.MustParsePort("80/tcp"): []network.PortBinding{{HostIP: netip.MustParseAddr("127.0.0.1"), HostPort: ""}},
 			},
 		},
 		Config: &container.Config{
 			Image: "busybox:latest",
 		},
 		NetworkSettings: &container.NetworkSettings{
-			NetworkSettingsBase: container.NetworkSettingsBase{
-				Ports: nat.PortMap{
-					"80/tcp": []nat.PortBinding{{HostIP: "127.0.0.1", HostPort: "32768"}},
-				},
+			Ports: network.PortMap{
+				network.MustParsePort("80/tcp"): []network.PortBinding{{HostIP: netip.MustParseAddr("127.0.0.1"), HostPort: "32768"}},
 			},
 		},
 	}, ReverseOptions{}).ToResult()
@@ -277,10 +271,8 @@ func TestParserUsesRuntimePortWhenConfiguredHostPortIsEmpty(t *testing.T) {
 
 func TestParserRedactsEnvAndLabelsWhenRequested(t *testing.T) {
 	result := NewParser(container.InspectResponse{
-		ContainerJSONBase: &container.ContainerJSONBase{
-			Name:       "/demo",
-			HostConfig: &container.HostConfig{},
-		},
+		Name:       "/demo",
+		HostConfig: &container.HostConfig{},
 		Config: &container.Config{
 			Image: "busybox:latest",
 			Env:   []string{"PASSWORD=secret", "MODE=prod"},
@@ -429,22 +421,24 @@ func TestDockerComposeFileStringIncludesInspectedVolumeAndNetworkMetadata(t *tes
 		},
 	}
 	result.NetworkMeta["app_net"] = network.Inspect{
-		Name:       "app_net",
-		Driver:     "bridge",
-		Internal:   true,
-		Attachable: true,
-		EnableIPv6: true,
-		Labels:     map[string]string{"tier": "backend"},
-		Options:    map[string]string{"com.docker.network.bridge.name": "br-app"},
-		IPAM: network.IPAM{
-			Driver:  "default",
-			Options: map[string]string{"foo": "bar"},
-			Config: []network.IPAMConfig{{
-				Subnet:     "172.20.0.0/16",
-				IPRange:    "172.20.5.0/24",
-				Gateway:    "172.20.0.1",
-				AuxAddress: map[string]string{"router": "172.20.0.254"},
-			}},
+		Network: network.Network{
+			Name:       "app_net",
+			Driver:     "bridge",
+			Internal:   true,
+			Attachable: true,
+			EnableIPv6: true,
+			Labels:     map[string]string{"tier": "backend"},
+			Options:    map[string]string{"com.docker.network.bridge.name": "br-app"},
+			IPAM: network.IPAM{
+				Driver:  "default",
+				Options: map[string]string{"foo": "bar"},
+				Config: []network.IPAMConfig{{
+					Subnet:     netip.MustParsePrefix("172.20.0.0/16"),
+					IPRange:    netip.MustParsePrefix("172.20.5.0/24"),
+					Gateway:    netip.MustParseAddr("172.20.0.1"),
+					AuxAddress: map[string]netip.Addr{"router": netip.MustParseAddr("172.20.0.254")},
+				}},
+			},
 		},
 	}
 
