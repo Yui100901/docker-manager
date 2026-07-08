@@ -119,7 +119,7 @@ func NewVolumesReportCommand() *cobra.Command {
 }
 
 func newVolumeListUnusedCommand() *cobra.Command {
-	opts := VolumeOptions{SizeMode: volumeSizeModeAPI, SizeImage: volumeDefaultSizeImage}
+	opts := defaultVolumeOptions()
 	cmd := &cobra.Command{
 		Use:   "ls-unused [volume-pattern...]",
 		Short: "查找疑似未使用 volume，并输出关联容器信息",
@@ -141,10 +141,8 @@ func newVolumeListUnusedCommand() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&opts.All, "all", false, "显示所有 volume，包括仍被容器引用的 volume")
 	cmd.Flags().BoolVar(&opts.NoTrunc, "no-trunc", false, "显示完整 volume 名称和挂载点")
-	cmd.Flags().StringVar(&opts.SizeMode, "size-mode", volumeSizeModeAPI, "volume 大小探测方式: api | local-go | docker-run | auto")
-	cmd.Flags().StringVar(&opts.SizeImage, "size-image", volumeDefaultSizeImage, "docker-run/auto 大小探测使用的 helper 镜像，必须已存在于目标 Docker")
-	cmd.Flags().StringArrayVarP(&opts.Filters, "filter", "f", nil, "筛选 volume，支持名称/driver/mountpoint/label 和 * ? 通配符，可重复指定")
-	_ = cmd.RegisterFlagCompletionFunc("filter", completion.LocalVolumes)
+	commandflags.AddVolumeSizeFlags(cmd, &opts.SizeMode, volumeSizeModeAPI, &opts.SizeImage, volumeDefaultSizeImage)
+	commandflags.AddVolumeFilterFlag(cmd, &opts.Filters)
 	commandflags.AddReportFormatFlag(cmd, &opts.Format)
 	return cmd
 }

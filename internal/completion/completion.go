@@ -4,12 +4,12 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
 	"docker-manager/internal/appconfig"
 	"docker-manager/internal/docker"
+	"docker-manager/internal/dockerconfig"
 
 	"github.com/moby/moby/client"
 	"github.com/spf13/cobra"
@@ -101,27 +101,9 @@ func prepareDockerCompletion(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	opts := docker.Options{
-		Host:       cfg.DockerHost,
-		TLSVerify:  cfg.DockerTLSVerify,
-		CertPath:   cfg.DockerCertPath,
-		APIVersion: cfg.DockerAPIVersion,
-	}
-	if flag := flags.Lookup("docker-host"); flag != nil && flag.Changed {
-		opts.Host = flag.Value.String()
-	}
-	if flag := flags.Lookup("docker-tls-verify"); flag != nil && flag.Changed {
-		value, err := strconv.ParseBool(flag.Value.String())
-		if err != nil {
-			return err
-		}
-		opts.TLSVerify = &value
-	}
-	if flag := flags.Lookup("docker-cert-path"); flag != nil && flag.Changed {
-		opts.CertPath = flag.Value.String()
-	}
-	if flag := flags.Lookup("docker-api-version"); flag != nil && flag.Changed {
-		opts.APIVersion = flag.Value.String()
+	opts, err := dockerconfig.OptionsFromRootFlags(cfg, root)
+	if err != nil {
+		return err
 	}
 	docker.Configure(opts)
 	return nil

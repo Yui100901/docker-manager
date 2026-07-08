@@ -89,11 +89,7 @@ type LogScanMatch struct {
 }
 
 func NewLogsScanCommand() *cobra.Command {
-	opts := LogsScanOptions{
-		Tail:     500,
-		Context:  0,
-		Keywords: []string{"error", "panic", "exception", "fatal", "oom", "killed"},
-	}
+	opts := defaultLogsScanOptions()
 	cmd := &cobra.Command{
 		Use:   "logs [container-pattern...]",
 		Short: "扫描容器最近日志中的错误关键词",
@@ -116,15 +112,13 @@ func NewLogsScanCommand() *cobra.Command {
 		},
 		ValidArgsFunction: completion.LocalContainers,
 	}
-	cmd.Flags().BoolVar(&opts.RunningOnly, "running", false, "只扫描正在运行的容器")
+	commandflags.AddRunningFlag(cmd, &opts.RunningOnly, "只扫描正在运行的容器")
 	cmd.Flags().IntVar(&opts.Tail, "tail", opts.Tail, "每个容器扫描最近日志行数，-1 表示全部")
 	cmd.Flags().IntVar(&opts.Context, "context", opts.Context, "命中日志前后各输出多少行上下文")
 	cmd.Flags().StringVar(&opts.Since, "since", "", "只扫描该时间之后的日志，例如 30m、2h 或 RFC3339 时间")
 	cmd.Flags().StringArrayVar(&opts.Keywords, "keyword", opts.Keywords, "日志扫描关键词，可重复指定")
-	cmd.Flags().StringArrayVarP(&opts.Filters, "filter", "f", nil, "筛选容器，支持 name:/id:/image:/state:/status:/label: 和 * ? 通配符，可重复指定")
-	cmd.Flags().BoolVar(&opts.RedactSecrets, "redact-secrets", false, "脱敏日志命中行和上下文中的疑似敏感信息，便于分享输出")
-	cmd.Flags().StringVar(&opts.RedactProfile, "redact-profile", "", "脱敏策略: none | basic | strict；未指定时 --redact-secrets 等价于 basic")
-	_ = cmd.RegisterFlagCompletionFunc("filter", completion.LocalContainers)
+	commandflags.AddContainerFilterFlag(cmd, &opts.Filters, "")
+	commandflags.AddRedactFlags(cmd, &opts.RedactSecrets, &opts.RedactProfile, "脱敏日志命中行和上下文中的疑似敏感信息，便于分享输出")
 	commandflags.AddReportFormatFlag(cmd, &opts.Format)
 	return cmd
 }

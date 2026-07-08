@@ -80,12 +80,7 @@ type ReportAllSection struct {
 }
 
 func NewReportAllCommand() *cobra.Command {
-	opts := ReportAllOptions{
-		LogTail:         200,
-		LogKeywords:     []string{"error", "panic", "exception", "fatal", "oom", "killed"},
-		VolumeSizeMode:  volumeSizeModeAPI,
-		VolumeSizeImage: volumeDefaultSizeImage,
-	}
+	opts := defaultReportAllOptions()
 	cmd := &cobra.Command{
 		Use:   "all",
 		Short: "聚合输出 health、network、logs、volumes 和 prune dry-run 报告",
@@ -108,10 +103,8 @@ func NewReportAllCommand() *cobra.Command {
 	}
 	cmd.Flags().StringArrayVar(&opts.Include, "include", nil, "只运行指定报告，支持逗号分隔: health,network,logs,volumes,prune")
 	cmd.Flags().StringArrayVar(&opts.Skip, "skip", nil, "跳过指定报告，支持逗号分隔: health,network,logs,volumes,prune")
-	cmd.Flags().BoolVar(&opts.RunningOnly, "running", false, "容器类报告只处理运行中的容器")
-	cmd.Flags().StringArrayVarP(&opts.Filters, "filter", "f", nil, "容器筛选条件，应用于 health、network 和 logs，支持通配符")
-	cmd.Flags().BoolVar(&opts.RedactSecrets, "redact-secrets", false, "对 health/logs 中的日志命中内容进行脱敏")
-	cmd.Flags().StringVar(&opts.RedactProfile, "redact-profile", "", "脱敏策略: none | basic | strict；未指定时 --redact-secrets 等价于 basic")
+	commandflags.AddContainerFilterFlags(cmd, &opts.RunningOnly, &opts.Filters, "容器类报告只处理运行中的容器")
+	commandflags.AddRedactFlags(cmd, &opts.RedactSecrets, &opts.RedactProfile, "对 health/logs 中的日志命中内容进行脱敏")
 	cmd.Flags().BoolVar(&opts.HealthLogs, "health-logs", false, "health 子报告也扫描容器日志；默认由 logs 子报告统一扫描")
 	cmd.Flags().IntVar(&opts.LogTail, "log-tail", opts.LogTail, "logs 子报告每个容器扫描最近日志行数，-1 表示全部")
 	cmd.Flags().IntVar(&opts.LogContext, "log-context", 0, "logs 子报告命中日志前后输出多少行上下文")
@@ -119,12 +112,8 @@ func NewReportAllCommand() *cobra.Command {
 	cmd.Flags().StringArrayVar(&opts.LogKeywords, "log-keyword", opts.LogKeywords, "logs/health 日志扫描关键词，可重复指定")
 	cmd.Flags().BoolVar(&opts.VolumeAll, "volume-all", false, "volumes 子报告显示所有 volume")
 	cmd.Flags().BoolVar(&opts.VolumeNoTrunc, "volume-no-trunc", false, "volumes 子报告显示完整 volume 名称和挂载点")
-	cmd.Flags().StringVar(&opts.VolumeSizeMode, "volume-size-mode", opts.VolumeSizeMode, "volumes 子报告大小探测方式: api | local-go | docker-run | auto")
-	cmd.Flags().StringVar(&opts.VolumeSizeImage, "volume-size-image", opts.VolumeSizeImage, "docker-run/auto 大小探测使用的 helper 镜像")
-	cmd.Flags().StringArrayVar(&opts.PruneOnly, "prune-only", nil, "prune dry-run 只分析指定资源: container | image | volume | build-cache")
-	cmd.Flags().StringArrayVar(&opts.PruneFilters, "prune-filter", nil, "prune dry-run 筛选条件，可重复指定")
-	cmd.Flags().StringVar(&opts.PruneUntil, "prune-until", "", "prune dry-run 只分析该时间之前创建的资源")
-	cmd.Flags().StringArrayVar(&opts.PruneProtectLabels, "prune-protect-label", nil, "prune dry-run 保护指定 label 的资源")
+	commandflags.AddReportAllVolumeSizeFlags(cmd, &opts.VolumeSizeMode, opts.VolumeSizeMode, &opts.VolumeSizeImage, opts.VolumeSizeImage)
+	commandflags.AddReportAllPruneScopeFlags(cmd, &opts.PruneOnly, &opts.PruneFilters, &opts.PruneUntil, &opts.PruneProtectLabels)
 	commandflags.AddReportFormatFlag(cmd, &opts.Format)
 	return cmd
 }
@@ -167,16 +156,14 @@ func runReportAllSection(ctx context.Context, kind string, opts ReportAllOptions
 	}()
 	switch kind {
 	case reportAllKindHealth:
-		childOpts := HealthOptions{
-			RunningOnly:      opts.RunningOnly,
-			NoLogs:           !opts.HealthLogs,
-			LogTail:          opts.LogTail,
-			RestartThreshold: 3,
-			Keywords:         append([]string(nil), opts.LogKeywords...),
-			ContainerFilters: append([]string(nil), opts.Filters...),
-			RedactSecrets:    opts.RedactSecrets,
-			RedactProfile:    opts.RedactProfile,
-		}
+		childOpts := defaultHealthOptions()
+		childOpts.RunningOnly = opts.RunningOnly
+		childOpts.NoLogs = !opts.HealthLogs
+		childOpts.LogTail = opts.LogTail
+		childOpts.Keywords = append([]string(nil), opts.LogKeywords...)
+		childOpts.ContainerFilters = append([]string(nil), opts.Filters...)
+		childOpts.RedactSecrets = opts.RedactSecrets
+		childOpts.RedactProfile = opts.RedactProfile
 		child, runErr := runHealthReport(ctx, childOpts)
 		report.Health = &child
 		err = runErr
@@ -188,16 +175,15 @@ func runReportAllSection(ctx context.Context, kind string, opts ReportAllOptions
 		report.Network = &child
 		err = runErr
 	case reportAllKindLogs:
-		childOpts := LogsScanOptions{
-			RunningOnly:   opts.RunningOnly,
-			Tail:          opts.LogTail,
-			Context:       opts.LogContext,
-			Since:         opts.LogSince,
-			Keywords:      append([]string(nil), opts.LogKeywords...),
-			Filters:       append([]string(nil), opts.Filters...),
-			RedactSecrets: opts.RedactSecrets,
-			RedactProfile: opts.RedactProfile,
-		}
+		childOpts := defaultLogsScanOptions()
+		childOpts.RunningOnly = opts.RunningOnly
+		childOpts.Tail = opts.LogTail
+		childOpts.Context = opts.LogContext
+		childOpts.Since = opts.LogSince
+		childOpts.Keywords = append([]string(nil), opts.LogKeywords...)
+		childOpts.Filters = append([]string(nil), opts.Filters...)
+		childOpts.RedactSecrets = opts.RedactSecrets
+		childOpts.RedactProfile = opts.RedactProfile
 		if validateErr := validateLogsScanArgs(childOpts); validateErr != nil {
 			err = validateErr
 			break
@@ -206,12 +192,11 @@ func runReportAllSection(ctx context.Context, kind string, opts ReportAllOptions
 		report.Logs = &child
 		err = runErr
 	case reportAllKindVolumes:
-		childOpts := VolumeOptions{
-			All:       opts.VolumeAll,
-			NoTrunc:   opts.VolumeNoTrunc,
-			SizeMode:  opts.VolumeSizeMode,
-			SizeImage: opts.VolumeSizeImage,
-		}
+		childOpts := defaultVolumeOptions()
+		childOpts.All = opts.VolumeAll
+		childOpts.NoTrunc = opts.VolumeNoTrunc
+		childOpts.SizeMode = opts.VolumeSizeMode
+		childOpts.SizeImage = opts.VolumeSizeImage
 		if normalizeErr := normalizeVolumeOptions(&childOpts); normalizeErr != nil {
 			err = normalizeErr
 			break

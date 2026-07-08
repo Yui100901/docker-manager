@@ -9,6 +9,7 @@ import (
 	"docker-manager/internal/commands/reverse"
 	"docker-manager/internal/completion"
 	dockerapi "docker-manager/internal/docker"
+	"docker-manager/internal/dockerconfig"
 	"docker-manager/internal/version"
 	"os"
 	"os/signal"
@@ -220,24 +221,15 @@ func applyOutputDefaults(cmd *cobra.Command, cfg *appConfig, opts *outputOptions
 
 func applyDockerDefaults(cmd *cobra.Command, cfg *appConfig, host string, tlsVerify bool, certPath string, apiVersion string) {
 	flags := cmd.Root().PersistentFlags()
-	opts := dockerapi.Options{
-		Host:       cfg.DockerHost,
-		TLSVerify:  cfg.DockerTLSVerify,
-		CertPath:   cfg.DockerCertPath,
-		APIVersion: cfg.DockerAPIVersion,
-	}
-	if flags.Changed("docker-host") {
-		opts.Host = host
-	}
-	if flags.Changed("docker-tls-verify") {
-		value := tlsVerify
-		opts.TLSVerify = &value
-	}
-	if flags.Changed("docker-cert-path") {
-		opts.CertPath = certPath
-	}
-	if flags.Changed("docker-api-version") {
-		opts.APIVersion = apiVersion
-	}
+	opts := dockerconfig.OptionsFromConfig(*cfg, dockerconfig.FlagValues{
+		Host:              host,
+		HostChanged:       flags.Changed("docker-host"),
+		TLSVerify:         tlsVerify,
+		TLSVerifyChanged:  flags.Changed("docker-tls-verify"),
+		CertPath:          certPath,
+		CertPathChanged:   flags.Changed("docker-cert-path"),
+		APIVersion:        apiVersion,
+		APIVersionChanged: flags.Changed("docker-api-version"),
+	})
 	dockerapi.Configure(opts)
 }

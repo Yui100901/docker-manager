@@ -79,8 +79,7 @@ func NewInspectDiffCommand() *cobra.Command {
 		},
 		ValidArgsFunction: completion.LocalContainers,
 	}
-	cmd.Flags().BoolVar(&opts.RedactSecrets, "redact-secrets", false, "脱敏 env/label/cmd/entrypoint/healthcheck/log config 等字段中的疑似敏感信息，便于分享输出")
-	cmd.Flags().StringVar(&opts.RedactProfile, "redact-profile", "", "脱敏策略: none | basic | strict；未指定时 --redact-secrets 等价于 basic")
+	commandflags.AddRedactFlags(cmd, &opts.RedactSecrets, &opts.RedactProfile, "脱敏 env/label/cmd/entrypoint/healthcheck/log config 等字段中的疑似敏感信息，便于分享输出")
 	commandflags.AddReportFormatFlag(cmd, &opts.Format)
 	return cmd
 }

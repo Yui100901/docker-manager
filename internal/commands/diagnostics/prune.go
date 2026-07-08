@@ -33,10 +33,7 @@ func NewPruneReportCommand() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&opts.Apply, "apply", false, "根据报告执行清理")
 	cmd.Flags().BoolVar(&opts.Confirm, "confirm", false, "确认执行 --apply 清理操作")
-	cmd.Flags().StringArrayVar(&opts.Only, "only", nil, "只处理指定资源类型，可重复指定: container | image | volume | build-cache")
-	cmd.Flags().StringArrayVarP(&opts.Filters, "filter", "f", nil, "清理筛选条件，支持 label=key、label=key=value、label!=key、until=<duration|timestamp>，可重复指定")
-	cmd.Flags().StringVar(&opts.Until, "until", "", "仅清理该时间之前创建的资源，例如 24h、168h 或 RFC3339 时间")
-	cmd.Flags().StringArrayVar(&opts.ProtectLabels, "protect-label", nil, "保护带有指定 label 的资源，例如 keep 或 env=prod，可重复指定")
+	commandflags.AddPruneScopeFlags(cmd, &opts.Only, &opts.Filters, &opts.Until, &opts.ProtectLabels)
 	commandflags.AddReportFormatFlag(cmd, &opts.Format)
 	return cmd
 }

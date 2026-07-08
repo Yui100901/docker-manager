@@ -6,9 +6,10 @@ import (
 	"sort"
 	"strings"
 
+	"docker-manager/internal/commandflags"
 	"docker-manager/internal/completion"
-	"docker-manager/internal/resourcefilter"
 	"docker-manager/internal/sensitive"
+	"docker-manager/internal/targets"
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/spf13/cobra"
@@ -105,12 +106,9 @@ func NewReverseCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&noDefaultEnvs, "no-default-envs", false, "不过滤 Docker 默认环境变量")
 	cmd.Flags().BoolVar(&noMergePorts, "no-merge-ports", false, "不合并连续端口")
 	cmd.Flags().BoolVar(&prettyFormat, "pretty", false, "是否格式化输出 docker run 命令（默认关闭）")
-	cmd.Flags().BoolVar(&running, "running", false, "仅筛选正在运行的容器；未指定 --reverse-type 时默认输出 compose")
-	cmd.Flags().StringArrayVarP(&filters, "filter", "f", nil, "筛选容器，支持 name:/id:/image:/state:/status:/label: 和 * ? 通配符，可重复指定")
-	cmd.Flags().BoolVar(&redactSecrets, "redact-secrets", false, "脱敏 env/label 中疑似敏感字段，便于分享输出")
-	cmd.Flags().StringVar(&redactProfile, "redact-profile", "", "脱敏策略: none | basic | strict；未指定时 --redact-secrets 等价于 basic")
+	commandflags.AddContainerFilterFlags(cmd, &running, &filters, "仅筛选正在运行的容器；未指定 --reverse-type 时默认输出 compose")
+	commandflags.AddRedactFlags(cmd, &redactSecrets, &redactProfile, "脱敏 env/label 中疑似敏感字段，便于分享输出")
 	_ = cmd.RegisterFlagCompletionFunc("reverse-type", completeReverseTypes)
-	_ = cmd.RegisterFlagCompletionFunc("filter", completion.LocalContainers)
 
 	return cmd
 }
@@ -187,29 +185,15 @@ func resolveReverseContainerTargetsContext(ctx context.Context, filters []string
 }
 
 func runningContainerNames(containers []container.Summary) []string {
-	return reverseContainerNames(filterReverseRunningContainers(containers))
+	return targets.ContainerNames(targets.RunningContainers(containers))
 }
 
 func filterReverseRunningContainers(containers []container.Summary) []container.Summary {
-	var running []container.Summary
-	for _, c := range containers {
-		if c.State == "running" {
-			running = append(running, c)
-		}
-	}
-	return running
+	return targets.RunningContainers(containers)
 }
 
 func reverseContainerNames(containers []container.Summary) []string {
-	names := make([]string, 0, len(containers))
-	for _, c := range containers {
-		name := reverseContainerDisplayName(c)
-		if name != "" {
-			names = append(names, name)
-		}
-	}
-	sort.Strings(names)
-	return names
+	return targets.ContainerNames(containers)
 }
 
 func expandContainerNamePatterns(args []string) ([]string, error) {
@@ -262,22 +246,7 @@ func expandContainerNamePatternsContext(ctx context.Context, args []string) ([]s
 }
 
 func filterReverseContainers(containers []container.Summary, filters []string) []container.Summary {
-	if len(filters) == 0 {
-		sort.Slice(containers, func(i, j int) bool {
-			return reverseContainerDisplayName(containers[i]) < reverseContainerDisplayName(containers[j])
-		})
-		return containers
-	}
-	var filtered []container.Summary
-	for _, c := range containers {
-		if reverseContainerMatchesAnyFilter(c, filters) {
-			filtered = append(filtered, c)
-		}
-	}
-	sort.Slice(filtered, func(i, j int) bool {
-		return reverseContainerDisplayName(filtered[i]) < reverseContainerDisplayName(filtered[j])
-	})
-	return filtered
+	return targets.FilterContainers(containers, filters)
 }
 
 func matchingContainerNames(containers []container.Summary, pattern string) []string {
@@ -300,16 +269,13 @@ func reverseContainerMatchesPattern(c container.Summary, pattern string) bool {
 }
 
 func reverseContainerMatchesAnyFilter(c container.Summary, filters []string) bool {
-	return resourcefilter.Match(resourcefilter.ContainerCandidates(c), filters, resourcefilter.ContainerKeys...)
+	return targets.ContainerMatchesFilters(c, filters)
 }
 
 func reverseContainerMatchesFilter(c container.Summary, filter string) bool {
-	return resourcefilter.Match(resourcefilter.ContainerCandidates(c), []string{filter}, resourcefilter.ContainerKeys...)
+	return targets.ContainerMatchesFilter(c, filter)
 }
 
 func reverseContainerDisplayName(c container.Summary) string {
-	if len(c.Names) > 0 {
-		return strings.TrimPrefix(c.Names[0], "/")
-	}
-	return c.ID
+	return targets.ContainerDisplayName(c)
 }

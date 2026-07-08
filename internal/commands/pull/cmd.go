@@ -140,7 +140,7 @@ func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command 
 	cmd.Flags().BoolVar(&load, "load", false, "拉取并打包完成后自动导入 Docker")
 	cmd.Flags().BoolVar(&verboseHTTP, "verbose-http", false, "输出底层 HTTP 请求调试日志")
 	cmd.Flags().StringVar(&to, "to", "", "pull 后导入 Docker、tag 并 push 到目标 registry/repository；可用 http:// 或 https:// 指定目标协议")
-	cmd.Flags().StringVar(&dockerConfig, "docker-config", "", "Docker config.json 路径，默认使用 DOCKER_CONFIG/config.json 或 ~/.docker/config.json")
+	commandflags.AddDockerConfigFlag(cmd, &dockerConfig)
 	cmd.Flags().BoolVar(&plainHTTP, "plain-http", false, "使用 http:// 拉取 registry，适用于未启用 TLS 的内网 registry")
 	cmd.Flags().StringVarP(&batchOpts.File, "file", "f", "", "镜像列表文件，空行和 # 注释会被忽略")
 	cmd.Flags().IntVar(&batchOpts.Concurrency, "concurrency", batchOpts.Concurrency, "批量模式并发数量")

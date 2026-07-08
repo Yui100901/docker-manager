@@ -97,9 +97,7 @@ func NewRegistryReportCommand() *cobra.Command {
 			return registryLoginCheckExitError(report, opts)
 		},
 	}
-	cmd.Flags().StringVar(&opts.DockerConfig, "docker-config", "", "Docker config.json 路径，默认使用 DOCKER_CONFIG/config.json 或 ~/.docker/config.json")
-	cmd.Flags().BoolVar(&opts.PlainHTTP, "plain-http", false, "使用 http:// 访问 registry /v2/，用于未启用 TLS 的内网 registry")
-	cmd.Flags().DurationVar(&opts.Timeout, "timeout", opts.Timeout, "registry 连通性检查超时时间")
+	commandflags.AddRegistryClientFlags(cmd, &opts.DockerConfig, &opts.PlainHTTP, &opts.Timeout, opts.Timeout)
 	cmd.Flags().BoolVar(&opts.FailOnError, "fail-on-error", opts.FailOnError, "registry 检查出现 failed 状态时返回非零退出码")
 	cmd.Flags().BoolVar(&opts.FailOnWarning, "fail-on-warning", false, "registry 检查出现 warning 状态时也返回非零退出码")
 	commandflags.AddReportFormatFlag(cmd, &opts.Format)

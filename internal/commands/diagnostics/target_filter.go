@@ -1,49 +1,25 @@
 package diagnostics
 
 import (
-	"fmt"
 	"io"
-	"sort"
-	"strings"
 
 	"docker-manager/internal/docker"
 	"docker-manager/internal/resourcefilter"
+	"docker-manager/internal/targets"
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/volume"
 )
 
-type TargetSelection struct {
-	Count      int      `json:"count"`
-	DefaultAll bool     `json:"default_all"`
-	Running    bool     `json:"running"`
-	Filters    []string `json:"filters,omitempty"`
-	Message    string   `json:"message"`
-}
+type TargetSelection = targets.ContainerSelection
 
 func buildContainerTargetSelection(action string, count int, running bool, filters []string) TargetSelection {
-	target := TargetSelection{
-		Count:      count,
-		DefaultAll: len(filters) == 0 && !running,
-		Running:    running,
-		Filters:    append([]string(nil), filters...),
-	}
-	switch {
-	case target.DefaultAll:
-		target.Message = fmt.Sprintf("未指定容器筛选，默认%s全部本地容器 %d 个", action, count)
-	case running && len(filters) == 0:
-		target.Message = fmt.Sprintf("仅%s运行中容器 %d 个", action, count)
-	case running:
-		target.Message = fmt.Sprintf("在运行中容器内按筛选条件 %q 选中 %d 个", strings.Join(filters, ", "), count)
-	default:
-		target.Message = fmt.Sprintf("按筛选条件 %q 选中 %d 个容器", strings.Join(filters, ", "), count)
-	}
-	return target
+	return targets.BuildContainerSelection(action, count, running, filters)
 }
 
 func printTargetSelection(w io.Writer, target TargetSelection) {
 	if target.Message != "" {
-		fmt.Fprintf(w, "目标: %s\n", target.Message)
+		_, _ = io.WriteString(w, "目标: "+target.Message+"\n")
 	}
 }
 
@@ -54,23 +30,7 @@ func matchesTargetFilters(candidates []string, filters []string) bool {
 }
 
 func filterContainerSummaries(containers []container.Summary, filters []string) []container.Summary {
-	if len(filters) == 0 {
-		return containers
-	}
-	var filtered []container.Summary
-	for _, c := range containers {
-		converted, err := docker.ConvertDockerType[container.Summary](c)
-		if err != nil {
-			continue
-		}
-		if resourcefilter.Match(resourcefilter.ContainerCandidates(converted), filters, resourcefilter.ContainerKeys...) {
-			filtered = append(filtered, c)
-		}
-	}
-	sort.Slice(filtered, func(i, j int) bool {
-		return firstContainerName(filtered[i].Names) < firstContainerName(filtered[j].Names)
-	})
-	return filtered
+	return targets.FilterContainers(containers, filters)
 }
 
 func filterVolumesByPatterns(volumes []volume.Volume, filters []string) []volume.Volume {

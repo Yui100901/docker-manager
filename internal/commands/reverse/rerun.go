@@ -2,6 +2,7 @@ package reverse
 
 import (
 	"context"
+	"docker-manager/internal/commandflags"
 	"docker-manager/internal/docker"
 	"fmt"
 	"io"
@@ -48,9 +49,7 @@ func NewRerunCommand() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "仅打印将要执行的重建动作，不修改 Docker")
 	cmd.Flags().BoolVar(&confirm, "confirm", false, "确认执行停止、删除并重建容器操作")
-	cmd.Flags().BoolVar(&running, "running", false, "仅筛选正在运行的容器")
-	cmd.Flags().StringArrayVarP(&filters, "filter", "f", nil, "筛选容器，支持 name:/id:/image:/state:/status:/label: 和 * ? 通配符，可重复指定")
-	_ = cmd.RegisterFlagCompletionFunc("filter", completion.LocalContainers)
+	commandflags.AddContainerFilterFlags(cmd, &running, &filters, "仅筛选正在运行的容器")
 	return cmd
 }
 
