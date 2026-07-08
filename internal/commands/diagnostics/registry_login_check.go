@@ -4,79 +4,15 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net/http"
 	"strings"
 	"time"
 
 	"docker-manager/internal/commandflags"
-	"docker-manager/internal/docker"
 	"docker-manager/internal/registryauth"
 	rpt "docker-manager/internal/report"
 
-	"github.com/moby/moby/api/types/registry"
-	mobyclient "github.com/moby/moby/client"
 	"github.com/spf13/cobra"
 )
-
-type registryLoginDockerService interface {
-	RegistryLogin(ctx context.Context, auth registry.AuthConfig) (registry.AuthResponse, error)
-}
-
-var newRegistryLoginDockerService = func() (registryLoginDockerService, error) {
-	cli, err := docker.NewMobyClient()
-	if err != nil {
-		return nil, err
-	}
-	return &dockerRegistryLoginService{cli: cli}, nil
-}
-
-var registryCheckHTTPClient httpDoer = http.DefaultClient
-var runDockerCredentialHelper registryauth.HelperRunner = defaultRunDockerCredentialHelper
-
-type dockerRegistryLoginService struct {
-	cli *mobyclient.Client
-}
-
-type httpDoer interface {
-	Do(req *http.Request) (*http.Response, error)
-}
-
-type RegistryLoginCheckOptions struct {
-	DockerConfig  string
-	PlainHTTP     bool
-	Timeout       time.Duration
-	FailOnError   bool
-	FailOnWarning bool
-	commandflags.FormatOptions
-}
-
-type RegistryLoginCheckReport struct {
-	Registry        string           `json:"registry"`
-	DockerConfig    string           `json:"docker_config"`
-	ConfigFound     bool             `json:"config_found"`
-	Credential      CredentialReport `json:"credential"`
-	RegistryPing    CheckResult      `json:"registry_ping"`
-	DockerLogin     CheckResult      `json:"docker_login"`
-	Recommendations []string         `json:"recommendations,omitempty"`
-}
-
-type CredentialReport struct {
-	Found    bool   `json:"found"`
-	Source   string `json:"source,omitempty"`
-	Helper   string `json:"helper,omitempty"`
-	Username string `json:"username,omitempty"`
-	Message  string `json:"message,omitempty"`
-}
-
-type CheckResult struct {
-	Status     string `json:"status"`
-	Message    string `json:"message,omitempty"`
-	HTTPStatus int    `json:"http_status,omitempty"`
-}
-
-type dockerConfigFile = registryauth.Config
-type dockerAuthEntry = registryauth.AuthEntry
-type registryCredential = registryauth.Credential
 
 func NewRegistryReportCommand() *cobra.Command {
 	opts := RegistryLoginCheckOptions{Timeout: 5 * time.Second, FailOnError: true}
@@ -167,95 +103,6 @@ func normalizeRegistryName(input string) (string, error) {
 	return value, nil
 }
 
-func defaultDockerConfigPath() string {
-	return registryauth.DefaultConfigPath()
-}
-
-func readDockerConfig(path string) (dockerConfigFile, bool, error) {
-	return registryauth.ReadConfig(path)
-}
-
-func resolveRegistryCredential(ctx context.Context, cfg dockerConfigFile, registryName string) registryCredential {
-	return registryauth.ResolveCredential(ctx, cfg, registryName, runDockerCredentialHelper)
-}
-
-func findCredentialHelper(cfg dockerConfigFile, keys []string) (string, string) {
-	return registryauth.FindCredentialHelper(cfg, keys)
-}
-
-func registryConfigKeys(registryName string) []string {
-	return registryauth.ConfigKeys(registryName)
-}
-
-func credentialFromAuthEntry(entry dockerAuthEntry) registryCredential {
-	return registryauth.CredentialFromAuthEntry(entry)
-}
-
-func defaultRunDockerCredentialHelper(ctx context.Context, helper, server string) (registryCredential, error) {
-	return registryauth.DefaultRunCredentialHelper(ctx, helper, server)
-}
-
-func pingRegistryV2(ctx context.Context, registryName string, plainHTTP bool, cred registryCredential) CheckResult {
-	scheme := "https"
-	if plainHTTP {
-		scheme = "http"
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s://%s/v2/", scheme, registryName), nil)
-	if err != nil {
-		return CheckResult{Status: "failed", Message: err.Error()}
-	}
-	if cred.Username != "" && cred.Password != "" {
-		req.SetBasicAuth(cred.Username, cred.Password)
-	}
-	resp, err := registryCheckHTTPClient.Do(req)
-	if err != nil {
-		return CheckResult{Status: "failed", Message: err.Error()}
-	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
-
-	switch resp.StatusCode {
-	case http.StatusOK:
-		return CheckResult{Status: "ok", HTTPStatus: resp.StatusCode, Message: "registry /v2/ 可访问"}
-	case http.StatusUnauthorized:
-		if cred.Found {
-			return CheckResult{Status: "failed", HTTPStatus: resp.StatusCode, Message: "registry 需要认证，但已配置凭据未被 /v2/ 接受"}
-		}
-		return CheckResult{Status: "warning", HTTPStatus: resp.StatusCode, Message: "registry 可访问但需要认证"}
-	case http.StatusForbidden:
-		return CheckResult{Status: "failed", HTTPStatus: resp.StatusCode, Message: "registry 拒绝访问"}
-	default:
-		if resp.StatusCode >= 200 && resp.StatusCode < 400 {
-			return CheckResult{Status: "ok", HTTPStatus: resp.StatusCode, Message: resp.Status}
-		}
-		return CheckResult{Status: "failed", HTTPStatus: resp.StatusCode, Message: resp.Status}
-	}
-}
-
-func dockerRegistryLogin(ctx context.Context, registryName string, cred registryCredential) CheckResult {
-	if !cred.Found {
-		return CheckResult{Status: "skipped", Message: "没有可用于 Docker RegistryLogin 的凭据"}
-	}
-	svc, err := newRegistryLoginDockerService()
-	if err != nil {
-		return CheckResult{Status: "failed", Message: err.Error()}
-	}
-	auth := registry.AuthConfig{
-		Username:      cred.Username,
-		Password:      cred.Password,
-		IdentityToken: cred.IdentityToken,
-		ServerAddress: registryName,
-	}
-	resp, err := svc.RegistryLogin(ctx, auth)
-	if err != nil {
-		return CheckResult{Status: "failed", Message: err.Error()}
-	}
-	if resp.Status != "" {
-		return CheckResult{Status: "ok", Message: resp.Status}
-	}
-	return CheckResult{Status: "ok", Message: "Docker registry 登录已接受"}
-}
-
 func buildCredentialReport(cred registryCredential, configErr error) CredentialReport {
 	report := CredentialReport{
 		Found:    cred.Found,
@@ -285,7 +132,7 @@ func registryLoginRecommendations(report RegistryLoginCheckReport) []string {
 		tips = append(tips, "Docker 登录验证失败，建议重新 docker login "+report.Registry)
 	}
 	if isArtifactoryRouterCandidate(report.Registry) && report.RegistryPing.Status != "failed" {
-		tips = append(tips, "Artifactory/JCR Router 8082: /v2/ 可访问不代表 Docker push blob 链路可用；若 Docker push 报 tls: unrecognized name 或 HTTP 端口跳 HTTPS，优先验证 Tomcat 8081、TLS 证书、反向代理和 external URL 配置")
+		tips = append(tips, "Artifactory/JCR Router 8082: /v2/ 可访问不代表 Docker push blob 链路可用；若 Docker push 报 tls: unrecognized name 或 HTTP 端口走 HTTPS，优先验证 Tomcat 8081、TLS 证书、反向代理和 external URL 配置")
 	}
 	return uniqueStrings(tips)
 }
@@ -297,78 +144,6 @@ func isArtifactoryRouterCandidate(registryName string) bool {
 			(strings.Contains(lower, "artifactory") || strings.Contains(lower, "jfrog")))
 }
 
-func printRegistryLoginCheckReport(w io.Writer, report RegistryLoginCheckReport) {
-	fmt.Fprintln(w, "Docker registry 登录检查")
-	fmt.Fprintf(w, "Registry: %s\n", report.Registry)
-	fmt.Fprintf(w, "Docker config: %s 已找到=%v\n", report.DockerConfig, report.ConfigFound)
-	fmt.Fprintf(w, "凭据: 已找到=%v 来源=%s", report.Credential.Found, valueOr(report.Credential.Source, "无"))
-	if report.Credential.Helper != "" {
-		fmt.Fprintf(w, " helper=%s", report.Credential.Helper)
-	}
-	if report.Credential.Username != "" {
-		fmt.Fprintf(w, " 用户=%s", report.Credential.Username)
-	}
-	if report.Credential.Message != "" {
-		fmt.Fprintf(w, " 信息=%s", report.Credential.Message)
-	}
-	fmt.Fprintln(w)
-	fmt.Fprintf(w, "Registry 连通性: %s", checkStatusText(report.RegistryPing.Status))
-	if report.RegistryPing.HTTPStatus != 0 {
-		fmt.Fprintf(w, " http=%d", report.RegistryPing.HTTPStatus)
-	}
-	if report.RegistryPing.Message != "" {
-		fmt.Fprintf(w, " 信息=%s", report.RegistryPing.Message)
-	}
-	fmt.Fprintln(w)
-	fmt.Fprintf(w, "Docker 登录: %s", checkStatusText(report.DockerLogin.Status))
-	if report.DockerLogin.Message != "" {
-		fmt.Fprintf(w, " 信息=%s", report.DockerLogin.Message)
-	}
-	fmt.Fprintln(w)
-	if len(report.Recommendations) > 0 {
-		fmt.Fprintln(w, "\n建议:")
-		for _, tip := range report.Recommendations {
-			fmt.Fprintf(w, "  - %s\n", tip)
-		}
-	}
-}
-
-func valueOr(value, fallback string) string {
-	if value == "" {
-		return fallback
-	}
-	return value
-}
-
-func checkStatusText(status string) string {
-	switch status {
-	case "ok":
-		return "通过"
-	case "warning":
-		return "警告"
-	case "failed":
-		return "失败"
-	case "skipped":
-		return "跳过"
-	default:
-		return status
-	}
-}
-
 func uniqueStrings(values []string) []string {
 	return registryauth.UniqueStrings(values)
-}
-
-func (s *dockerRegistryLoginService) RegistryLogin(ctx context.Context, auth registry.AuthConfig) (registry.AuthResponse, error) {
-	result, err := s.cli.RegistryLogin(ctx, mobyclient.RegistryLoginOptions{
-		Username:      auth.Username,
-		Password:      auth.Password,
-		ServerAddress: auth.ServerAddress,
-		IdentityToken: auth.IdentityToken,
-		RegistryToken: auth.RegistryToken,
-	})
-	if err != nil {
-		return registry.AuthResponse{}, err
-	}
-	return result.Auth, nil
 }
