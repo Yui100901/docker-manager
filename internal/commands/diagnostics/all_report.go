@@ -38,6 +38,7 @@ type ReportAllOptions struct {
 	RunningOnly   bool
 	Filters       []string
 	RedactSecrets bool
+	RedactProfile string
 
 	HealthLogs bool
 
@@ -110,6 +111,7 @@ func NewReportAllCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&opts.RunningOnly, "running", false, "容器类报告只处理运行中的容器")
 	cmd.Flags().StringArrayVarP(&opts.Filters, "filter", "f", nil, "容器筛选条件，应用于 health、network 和 logs，支持通配符")
 	cmd.Flags().BoolVar(&opts.RedactSecrets, "redact-secrets", false, "对 health/logs 中的日志命中内容进行脱敏")
+	cmd.Flags().StringVar(&opts.RedactProfile, "redact-profile", "", "脱敏策略: none | basic | strict；未指定时 --redact-secrets 等价于 basic")
 	cmd.Flags().BoolVar(&opts.HealthLogs, "health-logs", false, "health 子报告也扫描容器日志；默认由 logs 子报告统一扫描")
 	cmd.Flags().IntVar(&opts.LogTail, "log-tail", opts.LogTail, "logs 子报告每个容器扫描最近日志行数，-1 表示全部")
 	cmd.Flags().IntVar(&opts.LogContext, "log-context", 0, "logs 子报告命中日志前后输出多少行上下文")
@@ -128,6 +130,9 @@ func NewReportAllCommand() *cobra.Command {
 }
 
 func runReportAll(ctx context.Context, opts ReportAllOptions) (ReportAllReport, error) {
+	if _, err := normalizeRedactProfile(opts.RedactProfile, opts.RedactSecrets); err != nil {
+		return ReportAllReport{}, err
+	}
 	selected, err := selectReportAllKinds(opts.Include, opts.Skip)
 	if err != nil {
 		return ReportAllReport{}, err
@@ -170,6 +175,7 @@ func runReportAllSection(ctx context.Context, kind string, opts ReportAllOptions
 			Keywords:         append([]string(nil), opts.LogKeywords...),
 			ContainerFilters: append([]string(nil), opts.Filters...),
 			RedactSecrets:    opts.RedactSecrets,
+			RedactProfile:    opts.RedactProfile,
 		}
 		child, runErr := runHealthReport(ctx, childOpts)
 		report.Health = &child
@@ -190,6 +196,7 @@ func runReportAllSection(ctx context.Context, kind string, opts ReportAllOptions
 			Keywords:      append([]string(nil), opts.LogKeywords...),
 			Filters:       append([]string(nil), opts.Filters...),
 			RedactSecrets: opts.RedactSecrets,
+			RedactProfile: opts.RedactProfile,
 		}
 		if validateErr := validateLogsScanArgs(childOpts); validateErr != nil {
 			err = validateErr

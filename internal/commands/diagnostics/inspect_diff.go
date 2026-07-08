@@ -40,6 +40,7 @@ type dockerInspectDiffService struct {
 
 type InspectDiffOptions struct {
 	RedactSecrets bool
+	RedactProfile string
 	commandflags.FormatOptions
 }
 
@@ -65,6 +66,9 @@ func NewInspectDiffCommand() *cobra.Command {
 		Short: "对比两个容器的关键配置差异",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if _, err := normalizeRedactProfile(opts.RedactProfile, opts.RedactSecrets); err != nil {
+				return err
+			}
 			report, err := runInspectDiff(cmd.Context(), args[0], args[1], opts)
 			if err != nil {
 				return fmt.Errorf("对比容器 inspect 失败: %w", err)
@@ -76,11 +80,15 @@ func NewInspectDiffCommand() *cobra.Command {
 		ValidArgsFunction: completion.LocalContainers,
 	}
 	cmd.Flags().BoolVar(&opts.RedactSecrets, "redact-secrets", false, "脱敏 env/label/cmd/entrypoint/healthcheck/log config 等字段中的疑似敏感信息，便于分享输出")
+	cmd.Flags().StringVar(&opts.RedactProfile, "redact-profile", "", "脱敏策略: none | basic | strict；未指定时 --redact-secrets 等价于 basic")
 	commandflags.AddReportFormatFlag(cmd, &opts.Format)
 	return cmd
 }
 
 func runInspectDiff(ctx context.Context, leftName, rightName string, opts InspectDiffOptions) (InspectDiffReport, error) {
+	if _, err := normalizeRedactProfile(opts.RedactProfile, opts.RedactSecrets); err != nil {
+		return InspectDiffReport{}, err
+	}
 	svc, err := newInspectDiffDockerService()
 	if err != nil {
 		return InspectDiffReport{}, err
@@ -131,9 +139,10 @@ func buildInspectDiffReport(leftName, rightName string, left, right container.In
 
 func inspectComparableFields(info container.InspectResponse, opts InspectDiffOptions) map[string]string {
 	fields := map[string]string{}
+	redactProfile, _ := normalizeRedactProfile(opts.RedactProfile, opts.RedactSecrets)
 	add := func(path string, value interface{}) {
-		if opts.RedactSecrets {
-			value = redactInspectDiffValue(value)
+		if redactProfile != "none" {
+			value = redactInspectDiffValue(value, redactProfile)
 		}
 		fields[path] = inspectDiffValue(value)
 	}
@@ -148,7 +157,7 @@ func inspectComparableFields(info container.InspectResponse, opts InspectDiffOpt
 		add("config.cmd", []string(cfg.Cmd))
 		add("config.entrypoint", []string(cfg.Entrypoint))
 		add("config.healthcheck", comparableHealthcheck(cfg.Healthcheck))
-		add("config.env", envMap(cfg.Env, opts.RedactSecrets))
+		add("config.env", envMap(cfg.Env, redactProfile))
 		add("config.labels", cfg.Labels)
 		add("config.exposed_ports", cfg.ExposedPorts)
 		add("config.tty", cfg.Tty)
@@ -199,36 +208,36 @@ func inspectComparableFields(info container.InspectResponse, opts InspectDiffOpt
 	return fields
 }
 
-func redactInspectDiffValue(value interface{}) interface{} {
+func redactInspectDiffValue(value interface{}, profile sensitiveProfile) interface{} {
 	switch v := value.(type) {
 	case nil:
 		return nil
 	case string:
-		return redactSensitiveText(v)
+		return redactSensitiveTextWithProfile(v, profile)
 	case []string:
-		return redactStringSlice(v)
+		return redactStringSliceWithProfile(v, profile)
 	case map[string]string:
-		return redactStringMap(v)
+		return redactStringMapWithProfile(v, profile)
 	case map[string]interface{}:
 		result := make(map[string]interface{}, len(v))
 		for key, item := range v {
-			if isSensitiveKey(key) {
+			if isSensitiveKeyWithProfile(key, profile) {
 				result[key] = redactedValue
 			} else {
-				result[key] = redactInspectDiffValue(item)
+				result[key] = redactInspectDiffValue(item, profile)
 			}
 		}
 		return result
 	case []interface{}:
 		result := make([]interface{}, len(v))
 		for i, item := range v {
-			result[i] = redactInspectDiffValue(item)
+			result[i] = redactInspectDiffValue(item, profile)
 		}
 		return result
 	case []map[string]interface{}:
 		result := make([]map[string]interface{}, len(v))
 		for i, item := range v {
-			result[i] = redactInspectDiffValue(item).(map[string]interface{})
+			result[i] = redactInspectDiffValue(item, profile).(map[string]interface{})
 		}
 		return result
 	default:
@@ -295,7 +304,7 @@ func comparableNetworks(networks map[string]*network.EndpointSettings) map[strin
 	return result
 }
 
-func envMap(envs []string, redactSecrets bool) map[string]string {
+func envMap(envs []string, redactProfile sensitiveProfile) map[string]string {
 	result := map[string]string{}
 	for _, env := range envs {
 		key, value, found := strings.Cut(env, "=")
@@ -303,10 +312,10 @@ func envMap(envs []string, redactSecrets bool) map[string]string {
 			result[env] = ""
 			continue
 		}
-		if redactSecrets && isSensitiveKey(key) {
+		if redactProfile != "none" && isSensitiveKeyWithProfile(key, redactProfile) {
 			value = redactedValue
-		} else if redactSecrets {
-			value = redactSensitiveText(value)
+		} else if redactProfile != "none" {
+			value = redactSensitiveTextWithProfile(value, redactProfile)
 		}
 		result[key] = value
 	}

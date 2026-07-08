@@ -48,6 +48,7 @@ type HealthOptions struct {
 	Keywords         []string
 	ContainerFilters []string
 	RedactSecrets    bool
+	RedactProfile    string
 	commandflags.FormatOptions
 }
 
@@ -151,6 +152,9 @@ func NewHealthCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			runOpts := opts
 			runOpts.ContainerFilters = append(append([]string(nil), opts.ContainerFilters...), args...)
+			if _, err := normalizeRedactProfile(runOpts.RedactProfile, runOpts.RedactSecrets); err != nil {
+				return err
+			}
 			report, err := runHealthReport(cmd.Context(), runOpts)
 			if err != nil {
 				return fmt.Errorf("生成体检报告失败: %w", err)
@@ -168,12 +172,16 @@ func NewHealthCommand() *cobra.Command {
 	cmd.Flags().StringArrayVar(&opts.Keywords, "keyword", opts.Keywords, "日志扫描关键词，可重复指定")
 	cmd.Flags().StringArrayVarP(&opts.ContainerFilters, "filter", "f", nil, "筛选容器，支持 name:/id:/image:/state:/status:/label: 和 * ? 通配符，可重复指定")
 	cmd.Flags().BoolVar(&opts.RedactSecrets, "redact-secrets", false, "脱敏日志命中行中的疑似敏感信息，便于分享输出")
+	cmd.Flags().StringVar(&opts.RedactProfile, "redact-profile", "", "脱敏策略: none | basic | strict；未指定时 --redact-secrets 等价于 basic")
 	_ = cmd.RegisterFlagCompletionFunc("filter", completion.LocalContainers)
 	commandflags.AddReportFormatFlag(cmd, &opts.Format)
 	return cmd
 }
 
 func runHealthReport(ctx context.Context, opts HealthOptions) (HealthReport, error) {
+	if _, err := normalizeRedactProfile(opts.RedactProfile, opts.RedactSecrets); err != nil {
+		return HealthReport{}, err
+	}
 	svc, err := newHealthDockerService()
 	if err != nil {
 		return HealthReport{}, err
@@ -288,7 +296,7 @@ func buildHealthContainerResult(ctx context.Context, svc healthDockerService, su
 	}
 
 	if !opts.NoLogs && result.item.LogReadability != "disabled" && result.item.LogReadability != "unsupported" && opts.LogTail != 0 && len(keywords) > 0 {
-		matches, err := scanHealthLogs(ctx, svc, ref, inspect, opts.LogTail, keywords, opts.RedactSecrets)
+		matches, err := scanHealthLogs(ctx, svc, ref, inspect, opts.LogTail, keywords, opts.RedactProfile, opts.RedactSecrets)
 		if err != nil {
 			result.issues = append(result.issues, HealthIssue{
 				Severity:  "warn",
@@ -507,7 +515,7 @@ func addLogDriverIssue(report *HealthReport, item HealthContainer) {
 	})
 }
 
-func scanHealthLogs(ctx context.Context, svc healthDockerService, id string, inspect container.InspectResponse, tail int, keywords []string, redactSecrets bool) ([]LogMatch, error) {
+func scanHealthLogs(ctx context.Context, svc healthDockerService, id string, inspect container.InspectResponse, tail int, keywords []string, redactProfileValue string, redactSecrets bool) ([]LogMatch, error) {
 	if availability := containerLogDriverAvailability(inspect); !availability.Readable {
 		return nil, fmt.Errorf("%s", availability.Reason)
 	}
@@ -530,9 +538,13 @@ func scanHealthLogs(ctx context.Context, svc healthDockerService, id string, ins
 		return nil, err
 	}
 	matches := findLogMatches(text, keywords)
-	if redactSecrets {
+	redactProfile, err := normalizeRedactProfile(redactProfileValue, redactSecrets)
+	if err != nil {
+		return nil, err
+	}
+	if redactProfile != "none" {
 		for i := range matches {
-			matches[i].Line = redactSensitiveText(matches[i].Line)
+			matches[i].Line = redactSensitiveTextWithProfile(matches[i].Line, redactProfile)
 		}
 	}
 	return matches, nil

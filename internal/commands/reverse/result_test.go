@@ -297,6 +297,26 @@ func TestParserRedactsEnvAndLabelsWhenRequested(t *testing.T) {
 	}
 }
 
+func TestParserStrictRedactsAdditionalKeys(t *testing.T) {
+	result := NewParser(container.InspectResponse{
+		Name:       "/demo",
+		HostConfig: &container.HostConfig{LogConfig: container.LogConfig{Type: "json-file"}},
+		Config: &container.Config{
+			Image:  "nginx",
+			Env:    []string{"PUBLIC_KEY=ssh-rsa AAA", "MODE=prod"},
+			Labels: map[string]string{"session_id": "abc123", "owner": "team-a"},
+		},
+	}, ReverseOptions{RedactProfile: "strict"}).ToResult()
+
+	run := strings.Join(result.Command, " ")
+	if strings.Contains(run, "ssh-rsa AAA") || result.Compose.Labels["session_id"] != "<redacted>" {
+		t.Fatalf("strict redaction leaked sensitive values: run=%s labels=%#v", run, result.Compose.Labels)
+	}
+	if !strings.Contains(run, "PUBLIC_KEY=<redacted>") || result.Compose.Labels["owner"] != "team-a" {
+		t.Fatalf("strict redaction = run=%s labels=%#v", run, result.Compose.Labels)
+	}
+}
+
 func TestCommandFormatterIncludesLoggingOptions(t *testing.T) {
 	cmd := CommandFormatter{}.Format(&ContainerSpec{
 		Image:         "busybox:latest",

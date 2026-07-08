@@ -1,50 +1,29 @@
 package runconfig
 
-import "strings"
+import "docker-manager/internal/sensitive"
 
-const redactedValue = "<redacted>"
+const redactedValue = sensitive.RedactedValue
 
-var sensitiveKeyNeedles = []string{
-	"password",
-	"passwd",
-	"secret",
-	"token",
-	"credential",
-	"authorization",
-	"auth",
-	"private_key",
-	"apikey",
-	"api_key",
+func normalizeRedactProfile(profile string, redactSecrets bool) (sensitive.Profile, error) {
+	return sensitive.NormalizeProfile(profile, redactSecrets)
 }
 
 func isSensitiveKey(key string) bool {
-	key = strings.ToLower(key)
-	for _, needle := range sensitiveKeyNeedles {
-		if strings.Contains(key, needle) {
-			return true
-		}
-	}
-	return false
+	return sensitive.IsSensitiveKey(key, sensitive.ProfileBasic)
 }
 
 func redactEnvValue(env string) string {
-	key, _, found := strings.Cut(env, "=")
-	if !found || !isSensitiveKey(key) {
-		return env
-	}
-	return key + "=" + redactedValue
+	return sensitive.RedactEnvValue(env, sensitive.ProfileBasic)
+}
+
+func redactEnvValueWithProfile(env string, profile sensitive.Profile) string {
+	return sensitive.RedactEnvValue(env, profile)
 }
 
 func redactStringMap(values map[string]string) map[string]string {
-	if len(values) == 0 {
-		return nil
-	}
-	result := make(map[string]string, len(values))
-	for key, value := range values {
-		if isSensitiveKey(key) {
-			value = redactedValue
-		}
-		result[key] = value
-	}
-	return result
+	return sensitive.RedactStringMap(values, sensitive.ProfileBasic)
+}
+
+func redactStringMapWithProfile(values map[string]string, profile sensitive.Profile) map[string]string {
+	return sensitive.RedactStringMap(values, profile)
 }

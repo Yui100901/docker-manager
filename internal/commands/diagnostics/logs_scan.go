@@ -47,6 +47,7 @@ type LogsScanOptions struct {
 	Keywords      []string
 	Filters       []string
 	RedactSecrets bool
+	RedactProfile string
 	commandflags.FormatOptions
 }
 
@@ -102,6 +103,9 @@ func NewLogsScanCommand() *cobra.Command {
 			if err := validateLogsScanArgs(runOpts); err != nil {
 				return err
 			}
+			if _, err := normalizeRedactProfile(runOpts.RedactProfile, runOpts.RedactSecrets); err != nil {
+				return err
+			}
 			report, err := runLogsScan(cmd.Context(), runOpts)
 			if err != nil {
 				return fmt.Errorf("扫描日志失败: %w", err)
@@ -119,6 +123,7 @@ func NewLogsScanCommand() *cobra.Command {
 	cmd.Flags().StringArrayVar(&opts.Keywords, "keyword", opts.Keywords, "日志扫描关键词，可重复指定")
 	cmd.Flags().StringArrayVarP(&opts.Filters, "filter", "f", nil, "筛选容器，支持 name:/id:/image:/state:/status:/label: 和 * ? 通配符，可重复指定")
 	cmd.Flags().BoolVar(&opts.RedactSecrets, "redact-secrets", false, "脱敏日志命中行和上下文中的疑似敏感信息，便于分享输出")
+	cmd.Flags().StringVar(&opts.RedactProfile, "redact-profile", "", "脱敏策略: none | basic | strict；未指定时 --redact-secrets 等价于 basic")
 	_ = cmd.RegisterFlagCompletionFunc("filter", completion.LocalContainers)
 	commandflags.AddReportFormatFlag(cmd, &opts.Format)
 	return cmd
@@ -135,6 +140,9 @@ func validateLogsScanArgs(opts LogsScanOptions) error {
 }
 
 func runLogsScan(ctx context.Context, opts LogsScanOptions) (LogsScanReport, error) {
+	if _, err := normalizeRedactProfile(opts.RedactProfile, opts.RedactSecrets); err != nil {
+		return LogsScanReport{}, err
+	}
 	svc, err := newLogsScanDockerService()
 	if err != nil {
 		return LogsScanReport{}, err
@@ -285,8 +293,13 @@ func buildLogsScanContainerResult(ctx context.Context, svc logsScanDockerService
 		result.err = err
 		return result
 	}
-	if opts.RedactSecrets {
-		redactLogScanMatches(result.item.Matches)
+	redactProfile, err := normalizeRedactProfile(opts.RedactProfile, opts.RedactSecrets)
+	if err != nil {
+		result.err = err
+		return result
+	}
+	if redactProfile != "none" {
+		redactLogScanMatches(result.item.Matches, redactProfile)
 	}
 	if len(result.item.Matches) > 0 {
 		result.summary.ContainersMatched++
@@ -385,11 +398,11 @@ func findLogScanMatchesWithContext(ctx context.Context, text string, keywords []
 	return matches, nil
 }
 
-func redactLogScanMatches(matches []LogScanMatch) {
+func redactLogScanMatches(matches []LogScanMatch, profile sensitiveProfile) {
 	for i := range matches {
-		matches[i].Line = redactSensitiveText(matches[i].Line)
-		matches[i].Before = redactStringSlice(matches[i].Before)
-		matches[i].After = redactStringSlice(matches[i].After)
+		matches[i].Line = redactSensitiveTextWithProfile(matches[i].Line, profile)
+		matches[i].Before = redactStringSliceWithProfile(matches[i].Before, profile)
+		matches[i].After = redactStringSliceWithProfile(matches[i].After, profile)
 	}
 }
 

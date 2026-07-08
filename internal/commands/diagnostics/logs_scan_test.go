@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -159,6 +160,37 @@ func TestBuildLogsScanReportRedactsSecretsWhenRequested(t *testing.T) {
 	}
 	if !strings.Contains(joined, "<redacted>") {
 		t.Fatalf("redacted log output = %q, want <redacted>", joined)
+	}
+}
+
+func TestBuildLogsScanReportStrictRedactsSessionAndCookie(t *testing.T) {
+	fake := &fakeLogsScanDockerService{
+		logs: map[string]string{
+			"api": "ERROR session_id=abc123\nERROR Cookie: sid=secret-cookie\n",
+		},
+		inspects: map[string]container.InspectResponse{
+			"api": {
+				Name:       "/api",
+				ID:         "api-id",
+				State:      &container.State{Status: "running"},
+				Config:     &container.Config{Image: "demo/api"},
+				HostConfig: &container.HostConfig{LogConfig: container.LogConfig{Type: "json-file"}},
+			},
+		},
+	}
+	report, err := buildLogsScanReport(context.Background(), fake, []container.Summary{{ID: "api", Names: []string{"/api"}}}, LogsScanOptions{
+		Tail:          10,
+		Keywords:      []string{"error"},
+		RedactProfile: "strict",
+	})
+	if err != nil {
+		t.Fatalf("buildLogsScanReport() error = %v", err)
+	}
+	joined := fmt.Sprint(report.Containers[0].Matches)
+	for _, leaked := range []string{"abc123", "secret-cookie"} {
+		if strings.Contains(joined, leaked) {
+			t.Fatalf("strict redacted log output leaked %q: %q", leaked, joined)
+		}
 	}
 }
 

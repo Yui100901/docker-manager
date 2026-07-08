@@ -164,7 +164,7 @@ dm completion powershell
 | `dm restore` | 从备份目录或 tar.gz 离线包恢复镜像、网络、volume 和容器 |
 | `dm health` | 输出容器健康、重启、日志、端口和挂载风险报告 |
 | `dm network` | 输出网络、端口映射、endpoint、IPAM 和暴露端口风险报告 |
-| `dm logs` | 扫描容器日志关键字，支持上下文和脱敏 |
+| `dm logs` | 扫描容器日志关键字，支持上下文和 `none/basic/strict` 脱敏策略 |
 | `dm diff` | 对比两个容器 inspect 的关键配置差异 |
 | `dm prune` | 生成可清理资源报告，可通过 `--apply --confirm` 执行 |
 | `dm volumes` | 分析 volume 使用关系、大小和疑似未使用资源 |
@@ -214,7 +214,9 @@ dm restore web-backup.tar.gz --name web-restored
 dm health --format markdown
 dm network --format html
 dm logs --keyword error --tail 500
+dm logs --keyword error --redact-profile strict
 dm diff old-web new-web --redact-secrets
+dm reverse web --redact-profile basic
 dm volumes --size-mode auto --format json
 dm prune --filter label=env=test --format markdown
 dm registry registry.local:5000 --plain-http

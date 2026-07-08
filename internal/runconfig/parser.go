@@ -117,7 +117,9 @@ var defaultEnvKeys = map[string]bool{
 
 func (p *Parser) parseEnvs() []string {
 	envs := p.ci.Config.Env
-	if !p.options.FilterDefaultEnvs && !p.options.RedactSecrets {
+	profile, _ := normalizeRedactProfile(p.options.RedactProfile, p.options.RedactSecrets)
+	redact := profile != "none"
+	if !p.options.FilterDefaultEnvs && !redact {
 		return envs
 	}
 	var result []string
@@ -129,8 +131,8 @@ func (p *Parser) parseEnvs() []string {
 				continue
 			}
 		}
-		if p.options.RedactSecrets {
-			e = redactEnvValue(e)
+		if redact {
+			e = redactEnvValueWithProfile(e, profile)
 		}
 		result = append(result, e)
 	}
@@ -139,10 +141,11 @@ func (p *Parser) parseEnvs() []string {
 
 func (p *Parser) parseLabels() map[string]string {
 	labels := copyStringMap(p.ci.Config.Labels)
-	if !p.options.RedactSecrets {
+	profile, _ := normalizeRedactProfile(p.options.RedactProfile, p.options.RedactSecrets)
+	if profile == "none" {
 		return labels
 	}
-	return redactStringMap(labels)
+	return redactStringMapWithProfile(labels, profile)
 }
 
 func (p *Parser) parseMounts() []string {

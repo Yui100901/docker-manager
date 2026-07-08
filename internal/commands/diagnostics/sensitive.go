@@ -1,78 +1,49 @@
 package diagnostics
 
 import (
-	"regexp"
-	"strings"
+	"docker-manager/internal/sensitive"
 )
 
-const redactedValue = "<redacted>"
+const redactedValue = sensitive.RedactedValue
 
-var sensitiveKeyNeedles = []string{
-	"password",
-	"passwd",
-	"secret",
-	"token",
-	"credential",
-	"authorization",
-	"auth",
-	"private_key",
-	"apikey",
-	"api_key",
+type sensitiveProfile = sensitive.Profile
+
+func normalizeRedactProfile(profile string, redactSecrets bool) (sensitive.Profile, error) {
+	return sensitive.NormalizeProfile(profile, redactSecrets)
 }
 
-var sensitiveAssignmentPattern = regexp.MustCompile(`(?i)\b([a-z0-9_.-]*(?:password|passwd|secret|token|credential|authorization|auth|private_key|apikey|api_key)[a-z0-9_.-]*)(\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)`)
-var sensitiveJSONFieldPattern = regexp.MustCompile(`(?i)("?[a-z0-9_.-]*(?:password|passwd|secret|token|credential|authorization|auth|private_key|apikey|api_key)[a-z0-9_.-]*"?\s*:\s*)("[^"]*"|[^\s,;}]+)`)
-var authorizationHeaderPattern = regexp.MustCompile(`(?i)\b(authorization)(\s*:\s*)([^\r\n]+)`)
-var urlCredentialPattern = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://[^/\s:@]+):([^@\s/]+)@`)
-
 func isSensitiveKey(key string) bool {
-	key = strings.ToLower(key)
-	for _, needle := range sensitiveKeyNeedles {
-		if strings.Contains(key, needle) {
-			return true
-		}
-	}
-	return false
+	return sensitive.IsSensitiveKey(key, sensitive.ProfileBasic)
+}
+
+func isSensitiveKeyWithProfile(key string, profile sensitive.Profile) bool {
+	return sensitive.IsSensitiveKey(key, profile)
 }
 
 func redactEnvValue(env string) string {
-	key, _, found := strings.Cut(env, "=")
-	if !found || !isSensitiveKey(key) {
-		return env
-	}
-	return key + "=" + redactedValue
+	return sensitive.RedactEnvValue(env, sensitive.ProfileBasic)
 }
 
 func redactStringMap(values map[string]string) map[string]string {
-	if len(values) == 0 {
-		return nil
-	}
-	result := make(map[string]string, len(values))
-	for key, value := range values {
-		if isSensitiveKey(key) {
-			value = redactedValue
-		} else {
-			value = redactSensitiveText(value)
-		}
-		result[key] = value
-	}
-	return result
+	return sensitive.RedactStringMap(values, sensitive.ProfileBasic)
+}
+
+func redactStringMapWithProfile(values map[string]string, profile sensitive.Profile) map[string]string {
+	return sensitive.RedactStringMap(values, profile)
 }
 
 func redactSensitiveText(text string) string {
-	text = authorizationHeaderPattern.ReplaceAllString(text, `${1}${2}`+redactedValue)
-	text = sensitiveJSONFieldPattern.ReplaceAllString(text, `${1}"`+redactedValue+`"`)
-	text = sensitiveAssignmentPattern.ReplaceAllString(text, `${1}${2}`+redactedValue)
-	return urlCredentialPattern.ReplaceAllString(text, `${1}:`+redactedValue+`@`)
+	return sensitive.RedactText(text, sensitive.ProfileBasic)
+}
+
+func redactSensitiveTextWithProfile(text string, profile sensitive.Profile) string {
+	return sensitive.RedactText(text, profile)
 }
 
 func redactStringSlice(items []string) []string {
-	if len(items) == 0 {
-		return nil
-	}
-	result := make([]string, len(items))
-	for i, item := range items {
-		result[i] = redactSensitiveText(item)
-	}
-	return result
+	return sensitive.RedactStringSlice(items, sensitive.ProfileBasic)
+}
+
+func redactStringSliceWithProfile(items []string, profile sensitive.Profile) []string {
+	return sensitive.RedactStringSlice(items, profile)
 }

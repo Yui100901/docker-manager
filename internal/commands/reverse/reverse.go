@@ -8,6 +8,7 @@ import (
 
 	"docker-manager/internal/completion"
 	"docker-manager/internal/resourcefilter"
+	"docker-manager/internal/sensitive"
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/spf13/cobra"
@@ -23,6 +24,7 @@ func NewReverseCommand() *cobra.Command {
 		prettyFormat    bool
 		running         bool
 		redactSecrets   bool
+		redactProfile   string
 		filters         []string
 	)
 
@@ -44,6 +46,9 @@ func NewReverseCommand() *cobra.Command {
 			}
 
 			// 传递选项
+			if _, err := sensitive.NormalizeProfile(redactProfile, redactSecrets); err != nil {
+				return err
+			}
 			effectiveFilterDefaultEnvs := true
 			if noDefaultEnvs {
 				effectiveFilterDefaultEnvs = false
@@ -60,6 +65,7 @@ func NewReverseCommand() *cobra.Command {
 				Save:              save,
 				ReverseType:       rt,
 				RedactSecrets:     redactSecrets,
+				RedactProfile:     redactProfile,
 			}
 
 			targetFilters := append(append([]string(nil), filters...), args...)
@@ -102,6 +108,7 @@ func NewReverseCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&running, "running", false, "仅筛选正在运行的容器；未指定 --reverse-type 时默认输出 compose")
 	cmd.Flags().StringArrayVarP(&filters, "filter", "f", nil, "筛选容器，支持 name:/id:/image:/state:/status:/label: 和 * ? 通配符，可重复指定")
 	cmd.Flags().BoolVar(&redactSecrets, "redact-secrets", false, "脱敏 env/label 中疑似敏感字段，便于分享输出")
+	cmd.Flags().StringVar(&redactProfile, "redact-profile", "", "脱敏策略: none | basic | strict；未指定时 --redact-secrets 等价于 basic")
 	_ = cmd.RegisterFlagCompletionFunc("reverse-type", completeReverseTypes)
 	_ = cmd.RegisterFlagCompletionFunc("filter", completion.LocalContainers)
 
