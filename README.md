@@ -243,6 +243,8 @@ mirrors:
     tags:
       include: ["1.27.*", "latest"]
       exclude: ["*-alpine"]
+      keep_latest: 5
+      sort: semver-desc
     platforms:
       - linux/amd64
 ```
@@ -252,6 +254,8 @@ dm registry sync --file registry-sync.yaml --format markdown
 dm registry sync --file registry-sync.yaml --apply --skip-existing --output-dir ./sync-cache
 dm report registry-sync --file registry-sync.yaml --format json
 ```
+
+`tags.include/exclude` 先决定候选 tag，`tags.keep_latest` 或 `tags.limit` 再按 `tags.sort` 排序后截取；`sort` 支持 `name-asc`、`name-desc`、`semver-asc` 和 `semver-desc`。
 
 ## 项目结构
 

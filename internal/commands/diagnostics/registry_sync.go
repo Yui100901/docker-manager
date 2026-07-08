@@ -76,8 +76,11 @@ type RegistrySyncMirror struct {
 }
 
 type RegistrySyncTagRules struct {
-	Include []string `json:"include,omitempty" yaml:"include"`
-	Exclude []string `json:"exclude,omitempty" yaml:"exclude"`
+	Include    []string `json:"include,omitempty" yaml:"include"`
+	Exclude    []string `json:"exclude,omitempty" yaml:"exclude"`
+	Sort       string   `json:"sort,omitempty" yaml:"sort"`
+	Limit      int      `json:"limit,omitempty" yaml:"limit"`
+	KeepLatest int      `json:"keep_latest,omitempty" yaml:"keep_latest"`
 }
 
 type RegistrySyncReport struct {
@@ -111,14 +114,21 @@ type RegistrySyncMirrorResult struct {
 }
 
 type RegistrySyncItem struct {
-	Source      string `json:"source"`
-	Target      string `json:"target"`
-	TargetInput string `json:"target_input,omitempty"`
-	Tag         string `json:"tag"`
-	Platform    string `json:"platform,omitempty"`
-	Status      string `json:"status"`
-	Reason      string `json:"reason,omitempty"`
-	Attempts    int    `json:"attempts,omitempty"`
+	Source         string                `json:"source"`
+	Target         string                `json:"target"`
+	TargetInput    string                `json:"target_input,omitempty"`
+	Tag            string                `json:"tag"`
+	Platform       string                `json:"platform,omitempty"`
+	Status         string                `json:"status"`
+	Reason         string                `json:"reason,omitempty"`
+	Attempts       int                   `json:"attempts,omitempty"`
+	AttemptDetails []RegistrySyncAttempt `json:"attempt_details,omitempty"`
+}
+
+type RegistrySyncAttempt struct {
+	Attempt int    `json:"attempt"`
+	Status  string `json:"status"`
+	Message string `json:"message,omitempty"`
 }
 
 type registrySyncImageRef struct {
@@ -265,22 +275,22 @@ func buildRegistrySyncMirrorPlan(ctx context.Context, mirror RegistrySyncMirror,
 		result.Message = err.Error()
 		return result, nil
 	}
-	sort.Strings(tags)
 	result.TagsListed = len(tags)
 
 	var items []RegistrySyncItem
-	for _, tag := range tags {
+	for _, decision := range selectRegistrySyncTags(tags, mirror.Tags) {
 		if err := ctx.Err(); err != nil {
 			result.Status = "failed"
 			result.Message = err.Error()
 			return result, items
 		}
-		if !registrySyncTagSelected(tag, mirror.Tags) {
+		tag := decision.Tag
+		if !decision.Selected {
 			items = append(items, RegistrySyncItem{
 				Source: source.Display + ":" + tag,
 				Tag:    tag,
 				Status: "skipped",
-				Reason: "tag rule",
+				Reason: decision.Reason,
 			})
 			continue
 		}
@@ -431,14 +441,28 @@ func executeRegistrySyncItem(ctx context.Context, item RegistrySyncItem, opts Re
 		if err := ctx.Err(); err != nil {
 			result.Status = registrySyncStatusFailed
 			result.Reason = err.Error()
+			result.AttemptDetails = append(result.AttemptDetails, RegistrySyncAttempt{
+				Attempt: attempt,
+				Status:  registrySyncStatusFailed,
+				Message: err.Error(),
+			})
 			return result
 		}
 		if err := runner.PullImage(item.Source, pullOpts); err != nil {
 			lastErr = err
+			result.AttemptDetails = append(result.AttemptDetails, RegistrySyncAttempt{
+				Attempt: attempt,
+				Status:  registrySyncStatusFailed,
+				Message: err.Error(),
+			})
 			continue
 		}
 		result.Status = registrySyncStatusSuccess
 		result.Reason = "synced"
+		result.AttemptDetails = append(result.AttemptDetails, RegistrySyncAttempt{
+			Attempt: attempt,
+			Status:  registrySyncStatusSuccess,
+		})
 		return result
 	}
 	result.Status = registrySyncStatusFailed
@@ -558,6 +582,158 @@ func registrySyncTagSelected(tag string, rules RegistrySyncTagRules) bool {
 		return false
 	}
 	return !registrySyncAnyPatternMatch(rules.Exclude, tag)
+}
+
+type registrySyncTagDecision struct {
+	Tag      string
+	Selected bool
+	Reason   string
+}
+
+func selectRegistrySyncTags(tags []string, rules RegistrySyncTagRules) []registrySyncTagDecision {
+	tags = registryauth.UniqueStrings(tags)
+	sortRegistrySyncTags(tags, registrySyncTagSortMode(rules))
+
+	var selected []registrySyncTagDecision
+	var skipped []registrySyncTagDecision
+	for _, tag := range tags {
+		switch {
+		case len(rules.Include) > 0 && !registrySyncAnyPatternMatch(rules.Include, tag):
+			skipped = append(skipped, registrySyncTagDecision{Tag: tag, Reason: "include rule"})
+		case registrySyncAnyPatternMatch(rules.Exclude, tag):
+			skipped = append(skipped, registrySyncTagDecision{Tag: tag, Reason: "exclude rule"})
+		default:
+			selected = append(selected, registrySyncTagDecision{Tag: tag, Selected: true, Reason: "tag rule"})
+		}
+	}
+
+	limit, reason := registrySyncTagLimit(rules)
+	if limit > 0 && len(selected) > limit {
+		limited := append([]registrySyncTagDecision(nil), selected[:limit]...)
+		for _, decision := range selected[limit:] {
+			decision.Selected = false
+			decision.Reason = reason
+			skipped = append(skipped, decision)
+		}
+		selected = limited
+	}
+	return append(selected, skipped...)
+}
+
+func registrySyncTagLimit(rules RegistrySyncTagRules) (int, string) {
+	if rules.KeepLatest > 0 {
+		return rules.KeepLatest, "keep_latest"
+	}
+	if rules.Limit > 0 {
+		return rules.Limit, "limit"
+	}
+	return 0, ""
+}
+
+func registrySyncTagSortMode(rules RegistrySyncTagRules) string {
+	mode := strings.ToLower(strings.TrimSpace(rules.Sort))
+	if mode == "" && rules.KeepLatest > 0 {
+		return "semver-desc"
+	}
+	if mode == "" {
+		return "name-asc"
+	}
+	switch mode {
+	case "name", "name-asc", "name-desc", "semver", "semver-asc", "semver-desc":
+		if mode == "name" {
+			return "name-asc"
+		}
+		if mode == "semver" {
+			return "semver-desc"
+		}
+		return mode
+	default:
+		return "name-asc"
+	}
+}
+
+func sortRegistrySyncTags(tags []string, mode string) {
+	sort.SliceStable(tags, func(i, j int) bool {
+		a, b := tags[i], tags[j]
+		switch mode {
+		case "name-desc":
+			return a > b
+		case "semver-asc":
+			if cmp := compareRegistrySyncSemverTag(a, b); cmp != 0 {
+				return cmp < 0
+			}
+			return a < b
+		case "semver-desc":
+			if cmp := compareRegistrySyncSemverTag(a, b); cmp != 0 {
+				return cmp > 0
+			}
+			return a > b
+		default:
+			return a < b
+		}
+	})
+}
+
+func compareRegistrySyncSemverTag(a, b string) int {
+	va, oka := parseRegistrySyncSemver(a)
+	vb, okb := parseRegistrySyncSemver(b)
+	switch {
+	case oka && !okb:
+		return 1
+	case !oka && okb:
+		return -1
+	case !oka && !okb:
+		return strings.Compare(a, b)
+	}
+	maxLen := len(va)
+	if len(vb) > maxLen {
+		maxLen = len(vb)
+	}
+	for i := 0; i < maxLen; i++ {
+		var ai, bi int
+		if i < len(va) {
+			ai = va[i]
+		}
+		if i < len(vb) {
+			bi = vb[i]
+		}
+		if ai < bi {
+			return -1
+		}
+		if ai > bi {
+			return 1
+		}
+	}
+	return 0
+}
+
+func parseRegistrySyncSemver(tag string) ([]int, bool) {
+	value := strings.TrimPrefix(strings.TrimSpace(tag), "v")
+	if value == "" {
+		return nil, false
+	}
+	if before, _, ok := strings.Cut(value, "-"); ok {
+		value = before
+	}
+	parts := strings.Split(value, ".")
+	if len(parts) == 0 {
+		return nil, false
+	}
+	version := make([]int, 0, len(parts))
+	for _, part := range parts {
+		if part == "" {
+			return nil, false
+		}
+		n := 0
+		for _, r := range part {
+			if r < '0' || r > '9' {
+				return nil, false
+			}
+			n = n*10 + int(r-'0')
+		}
+		version = append(version, n)
+	}
+	return version, true
 }
 
 func registrySyncAnyPatternMatch(patterns []string, value string) bool {
@@ -877,6 +1053,9 @@ func printRegistrySyncReport(w io.Writer, report RegistrySyncReport) {
 		fmt.Fprintf(w, "  - [%s] %s -> %s", item.Status, item.Source, item.Target)
 		if item.Platform != "" {
 			fmt.Fprintf(w, " platform=%s", item.Platform)
+		}
+		if item.Attempts > 0 {
+			fmt.Fprintf(w, " attempts=%d", item.Attempts)
 		}
 		if item.Reason != "" {
 			fmt.Fprintf(w, " 原因=%s", item.Reason)

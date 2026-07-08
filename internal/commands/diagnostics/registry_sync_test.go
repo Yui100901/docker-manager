@@ -36,6 +36,44 @@ func TestRegistrySyncTagSelected(t *testing.T) {
 	}
 }
 
+func TestSelectRegistrySyncTagsKeepLatestSemver(t *testing.T) {
+	decisions := selectRegistrySyncTags([]string{"latest", "1.2.0", "1.10.0", "1.0.0", "v2.0.0"}, RegistrySyncTagRules{
+		Include:    []string{"*", "latest"},
+		KeepLatest: 2,
+	})
+	var selected []string
+	skipped := map[string]string{}
+	for _, decision := range decisions {
+		if decision.Selected {
+			selected = append(selected, decision.Tag)
+			continue
+		}
+		skipped[decision.Tag] = decision.Reason
+	}
+	if strings.Join(selected, ",") != "v2.0.0,1.10.0" {
+		t.Fatalf("selected = %#v, want newest semver tags", selected)
+	}
+	if skipped["1.2.0"] != "keep_latest" || skipped["latest"] != "keep_latest" {
+		t.Fatalf("skipped = %#v, want keep_latest reasons", skipped)
+	}
+}
+
+func TestSelectRegistrySyncTagsSortAndLimit(t *testing.T) {
+	decisions := selectRegistrySyncTags([]string{"b", "c", "a"}, RegistrySyncTagRules{
+		Sort:  "name-desc",
+		Limit: 2,
+	})
+	var selected []string
+	for _, decision := range decisions {
+		if decision.Selected {
+			selected = append(selected, decision.Tag)
+		}
+	}
+	if strings.Join(selected, ",") != "c,b" {
+		t.Fatalf("selected = %#v, want name desc limited", selected)
+	}
+}
+
 func TestRegistrySyncApplyFlagOnlyOnRegistryCommand(t *testing.T) {
 	registryCmd := NewRegistryCommand()
 	syncCmd, _, err := registryCmd.Find([]string{"sync"})
@@ -182,6 +220,47 @@ func TestRunRegistrySyncApplyExecutesPlannedItems(t *testing.T) {
 	}
 	if calls[0].to != "http://registry.local/team/app:1.1.0" {
 		t.Fatalf("to = %q, want tagged http target", calls[0].to)
+	}
+}
+
+func TestRunRegistrySyncApplyRecordsAttemptDetails(t *testing.T) {
+	server := registrySyncTagServer(t, []string{"latest"})
+	defer server.Close()
+	configPath := writeRegistrySyncConfig(t, server.URL, "")
+
+	attempts := 0
+	restore := stubRegistrySyncRunner(t, &fakeRegistrySyncRunner{
+		pull: func(imageName string, opts pull.PullOptions) error {
+			attempts++
+			if attempts == 1 {
+				return errors.New("temporary push failure")
+			}
+			return nil
+		},
+	})
+	defer restore()
+
+	report, err := runRegistrySync(context.Background(), RegistrySyncOptions{
+		Config:      configPath,
+		PlainHTTP:   true,
+		Timeout:     5 * time.Second,
+		DryRun:      false,
+		OutputDir:   t.TempDir(),
+		Concurrency: 1,
+		Retries:     1,
+	})
+	if err != nil {
+		t.Fatalf("runRegistrySync() error = %v", err)
+	}
+	if report.Summary.Succeeded != 1 || report.Items[0].Attempts != 2 {
+		t.Fatalf("report = %#v, want success after two attempts", report)
+	}
+	details := report.Items[0].AttemptDetails
+	if len(details) != 2 || details[0].Status != registrySyncStatusFailed || details[1].Status != registrySyncStatusSuccess {
+		t.Fatalf("attempt details = %#v, want failed then success", details)
+	}
+	if !strings.Contains(details[0].Message, "temporary push failure") {
+		t.Fatalf("first attempt message = %q, want temporary failure", details[0].Message)
 	}
 }
 
