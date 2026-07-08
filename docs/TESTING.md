@@ -51,6 +51,7 @@ exec > >(tee -a "$DM_TEST_LOG") 2>&1
 ```bash
 bash scripts/e2e.sh --mode smoke
 bash scripts/e2e.sh --mode install
+bash scripts/e2e.sh --mode cancel
 bash scripts/e2e.sh --mode full
 bash scripts/e2e.sh --mode destructive
 ```
@@ -65,7 +66,7 @@ DM_E2E_DM_BIN=/root/dm bash scripts/e2e.sh
 DM_E2E_KEEP_WORKDIR=1 DM_E2E_WORK_DIR="$DM_TEST_ROOT/e2e-work" bash scripts/e2e.sh
 ```
 
-`smoke` 不依赖 Docker；`install` 验证临时安装/卸载；`full` 和 `destructive` 会启动临时 registry，并覆盖镜像拉取、导入、推送、备份恢复、报告和破坏性命令安全边界。
+`smoke` 不依赖 Docker；`install` 验证临时安装/卸载；`cancel` 使用本地阻塞探针验证 SIGINT/context 取消；`full` 和 `destructive` 会启动临时 registry，并覆盖镜像拉取、导入、推送、备份恢复、报告和破坏性命令安全边界。
 
 网络受限时可使用代理:
 
