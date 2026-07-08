@@ -13,6 +13,7 @@ import (
 	"docker-manager/internal/commandflags"
 	"docker-manager/internal/completion"
 	"docker-manager/internal/docker"
+	"docker-manager/internal/parallel"
 	rpt "docker-manager/internal/report"
 
 	"github.com/moby/moby/api/types/container"
@@ -198,7 +199,7 @@ func buildLogsScanReport(ctx context.Context, svc logsScanDockerService, targets
 		Keywords:       keywords,
 	}
 	results := make([]logsScanBuildResult, len(targets))
-	runDiagnosticsParallel(ctx, len(targets), diagnosticsInspectConcurrency, func(ctx context.Context, i int) {
+	parallel.ForEachIndex(ctx, len(targets), diagnosticsInspectConcurrency, func(ctx context.Context, i int) {
 		results[i] = buildLogsScanContainerResult(ctx, svc, targets[i], opts, keywords)
 	})
 	for _, result := range results {

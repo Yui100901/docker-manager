@@ -13,6 +13,7 @@ import (
 	"docker-manager/internal/commandflags"
 	"docker-manager/internal/completion"
 	"docker-manager/internal/docker"
+	"docker-manager/internal/parallel"
 	rpt "docker-manager/internal/report"
 
 	"github.com/moby/moby/api/types/container"
@@ -87,7 +88,7 @@ func runInspectDiff(ctx context.Context, leftName, rightName string, opts Inspec
 	names := []string{leftName, rightName}
 	inspects := make([]container.InspectResponse, len(names))
 	errs := make([]error, len(names))
-	runDiagnosticsParallel(ctx, len(names), len(names), func(ctx context.Context, i int) {
+	parallel.ForEachIndex(ctx, len(names), len(names), func(ctx context.Context, i int) {
 		inspect, err := svc.InspectContainer(ctx, names[i])
 		if err != nil {
 			errs[i] = err

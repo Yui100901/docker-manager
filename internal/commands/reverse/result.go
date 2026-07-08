@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"docker-manager/internal/docker"
+	"docker-manager/internal/parallel"
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
@@ -427,7 +428,7 @@ func reverseWithOptions(ctx context.Context, names []string, options ReverseOpti
 		return nil, err
 	}
 	inspectResults := make([]reverseInspectResult, len(names))
-	runReverseParallel(ctx, len(names), reverseInspectConcurrency, func(ctx context.Context, i int) {
+	parallel.ForEachIndex(ctx, len(names), reverseInspectConcurrency, func(ctx context.Context, i int) {
 		info, err := containerManager.InspectContext(ctx, names[i])
 		if err != nil {
 			inspectResults[i].err = err
@@ -497,7 +498,7 @@ func inspectReverseVolumeMetadata(ctx context.Context, names []string) (map[stri
 	results := make([]volume.Volume, len(names))
 	errs := make([]error, len(names))
 	ok := make([]bool, len(names))
-	runReverseParallel(ctx, len(names), reverseInspectConcurrency, func(ctx context.Context, i int) {
+	parallel.ForEachIndex(ctx, len(names), reverseInspectConcurrency, func(ctx context.Context, i int) {
 		result, err := containerManager.InspectVolumeContext(ctx, names[i])
 		if err != nil {
 			errs[i] = err
@@ -529,7 +530,7 @@ func inspectReverseNetworkMetadata(ctx context.Context, names []string) (map[str
 	results := make([]network.Inspect, len(names))
 	errs := make([]error, len(names))
 	ok := make([]bool, len(names))
-	runReverseParallel(ctx, len(names), reverseInspectConcurrency, func(ctx context.Context, i int) {
+	parallel.ForEachIndex(ctx, len(names), reverseInspectConcurrency, func(ctx context.Context, i int) {
 		result, err := containerManager.InspectNetworkContext(ctx, names[i])
 		if err != nil {
 			errs[i] = err

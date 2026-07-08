@@ -11,6 +11,7 @@ import (
 	"docker-manager/internal/commandflags"
 	"docker-manager/internal/completion"
 	"docker-manager/internal/docker"
+	"docker-manager/internal/parallel"
 	rpt "docker-manager/internal/report"
 
 	containerapi "github.com/moby/moby/api/types/container"
@@ -157,7 +158,7 @@ func runImageTree(ctx context.Context, imageRef string, opts ImageTreeOptions) (
 func inspectImageTreeContainers(ctx context.Context, svc imageTreeDockerService, containers []containerapi.Summary) (map[string]containerapi.InspectResponse, error) {
 	results := make([]containerapi.InspectResponse, len(containers))
 	ok := make([]bool, len(containers))
-	runDiagnosticsParallel(ctx, len(containers), diagnosticsInspectConcurrency, func(ctx context.Context, i int) {
+	parallel.ForEachIndex(ctx, len(containers), diagnosticsInspectConcurrency, func(ctx context.Context, i int) {
 		c := containers[i]
 		ref := c.ID
 		if ref == "" {

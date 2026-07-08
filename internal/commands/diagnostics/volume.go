@@ -14,6 +14,7 @@ import (
 	"docker-manager/internal/commandflags"
 	"docker-manager/internal/completion"
 	"docker-manager/internal/docker"
+	"docker-manager/internal/parallel"
 	rpt "docker-manager/internal/report"
 
 	"github.com/moby/moby/api/types/container"
@@ -264,7 +265,7 @@ func probeVolumeSizes(ctx context.Context, svc volumeDockerService, report *Volu
 	for i := range results {
 		results[i].index = i
 	}
-	runDiagnosticsParallel(ctx, len(report.Volumes), diagnosticsProbeConcurrency, func(ctx context.Context, i int) {
+	parallel.ForEachIndex(ctx, len(report.Volumes), diagnosticsProbeConcurrency, func(ctx context.Context, i int) {
 		vol := &report.Volumes[i]
 		if vol.Size >= 0 || vol.Driver != "local" {
 			return
@@ -365,7 +366,7 @@ func inspectVolumeContainerRefs(ctx context.Context, svc containerInspectService
 	refs := make(map[string][]VolumeContainerRef)
 	refsByIndex := make([]map[string][]VolumeContainerRef, len(containers))
 	warningsByIndex := make([]string, len(containers))
-	runDiagnosticsParallel(ctx, len(containers), diagnosticsInspectConcurrency, func(ctx context.Context, i int) {
+	parallel.ForEachIndex(ctx, len(containers), diagnosticsInspectConcurrency, func(ctx context.Context, i int) {
 		c := containers[i]
 		localRefs := make(map[string][]VolumeContainerRef)
 		inspect, err := svc.InspectContainer(ctx, c.ID)

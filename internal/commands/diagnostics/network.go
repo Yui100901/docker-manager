@@ -13,6 +13,7 @@ import (
 	"docker-manager/internal/commandflags"
 	"docker-manager/internal/completion"
 	"docker-manager/internal/docker"
+	"docker-manager/internal/parallel"
 	rpt "docker-manager/internal/report"
 
 	"github.com/moby/moby/api/types/container"
@@ -305,7 +306,7 @@ func inspectNetworkContainers(ctx context.Context, svc networkDockerService, con
 	warningsByIndex := make([]string, len(containers))
 	inspectsByIndex := make([]container.InspectResponse, len(containers))
 	okByIndex := make([]bool, len(containers))
-	runDiagnosticsParallel(ctx, len(containers), diagnosticsInspectConcurrency, func(ctx context.Context, i int) {
+	parallel.ForEachIndex(ctx, len(containers), diagnosticsInspectConcurrency, func(ctx context.Context, i int) {
 		c := containers[i]
 		ref := c.ID
 		if ref == "" {
@@ -339,7 +340,7 @@ func inspectNetworkContainers(ctx context.Context, svc networkDockerService, con
 func inspectNetworks(ctx context.Context, svc networkDockerService, networks []network.Summary) ([]network.Inspect, []string, error) {
 	inspects := make([]network.Inspect, len(networks))
 	warningsByIndex := make([]string, len(networks))
-	runDiagnosticsParallel(ctx, len(networks), diagnosticsInspectConcurrency, func(ctx context.Context, i int) {
+	parallel.ForEachIndex(ctx, len(networks), diagnosticsInspectConcurrency, func(ctx context.Context, i int) {
 		net := networks[i]
 		inspect, err := svc.InspectNetwork(ctx, net.Name)
 		if err != nil {

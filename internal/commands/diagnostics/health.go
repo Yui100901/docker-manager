@@ -13,6 +13,7 @@ import (
 	"docker-manager/internal/commandflags"
 	"docker-manager/internal/completion"
 	"docker-manager/internal/docker"
+	"docker-manager/internal/parallel"
 	rpt "docker-manager/internal/report"
 
 	"github.com/moby/moby/api/pkg/stdcopy"
@@ -200,7 +201,7 @@ func buildHealthReport(ctx context.Context, svc healthDockerService, containers 
 	report := HealthReport{GeneratedAt: time.Now().Format(time.RFC3339), DockerEndpoint: docker.Endpoint()}
 	keywords := normalizeKeywords(opts.Keywords)
 	results := make([]healthContainerBuildResult, len(containers))
-	runDiagnosticsParallel(ctx, len(containers), diagnosticsInspectConcurrency, func(ctx context.Context, i int) {
+	parallel.ForEachIndex(ctx, len(containers), diagnosticsInspectConcurrency, func(ctx context.Context, i int) {
 		results[i] = buildHealthContainerResult(ctx, svc, containers[i], opts, keywords)
 	})
 	if err := ctx.Err(); err != nil {
