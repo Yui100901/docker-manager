@@ -26,7 +26,16 @@ func printBackupDryRunPlan(w io.Writer, outputDir string, manifest BackupManifes
 		if archivePath == "" {
 			archivePath = outputDir + ".tar.gz"
 		}
+		if archiveOpts, err := archiveOptionsFromBackup(opts); err == nil {
+			archivePath = backupArchiveOutputPath(archivePath, archiveOpts)
+		}
 		fmt.Fprintf(w, "  离线包: %s\n", archivePath)
+		if opts.Encrypt {
+			fmt.Fprintln(w, "  加密: 启用")
+		}
+		if opts.SplitSize != "" {
+			fmt.Fprintf(w, "  分卷大小: %s\n", opts.SplitSize)
+		}
 		fmt.Fprintf(w, "  将生成附加文件: %s, %s, %s\n", backupReadmeName, backupRestoreName, backupChecksumName)
 	}
 	for _, entry := range manifest.Containers {

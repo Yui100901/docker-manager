@@ -24,7 +24,7 @@ func buildRestorePlanReport(ctx context.Context, backupPath string, opts Restore
 	if err := checkBackupContext(ctx); err != nil {
 		return RestorePlanReport{}, err
 	}
-	resolvedDir, cleanup, err := resolveRestoreBackupDirWithContext(ctx, backupPath)
+	resolvedDir, cleanup, err := resolveRestoreBackupDirWithOptions(ctx, backupPath, opts)
 	if err != nil {
 		return RestorePlanReport{}, err
 	}

@@ -46,6 +46,9 @@ func NewBackupCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", false, "只预览备份动作，不写入文件")
 	cmd.Flags().BoolVar(&opts.Bundle, "bundle", false, "生成离线迁移包 tar.gz，并附带 README、restore 脚本和 checksums")
 	cmd.Flags().StringVar(&opts.BundleOutput, "bundle-output", "", "离线迁移包输出路径，默认 <backup-dir>.tar.gz")
+	cmd.Flags().BoolVar(&opts.Encrypt, "encrypt", false, "加密离线迁移包；需要 --passphrase-file")
+	cmd.Flags().StringVar(&opts.PassphraseFile, "passphrase-file", "", "加密或解密备份包使用的口令文件")
+	cmd.Flags().StringVar(&opts.SplitSize, "split-size", "", "按指定大小分卷输出离线迁移包，例如 512M、2G")
 	cmd.Flags().StringVar(&opts.OutputDir, "output-dir", "", "备份输出目录；批量目标会在该目录下拆分子目录")
 	cmd.Flags().BoolVar(&opts.Merge, "merge", false, "将多个容器合并为一个批量备份包，可整体 restore")
 	return cmd
@@ -97,6 +100,7 @@ func NewRestoreCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&opts.NoStart, "no-start", false, "只创建容器，不启动")
 	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", false, "只预览恢复动作，不修改 Docker")
 	cmd.Flags().BoolVar(&opts.Plan, "plan", false, "生成恢复前差异预览和恢复计划报告，不修改 Docker")
+	cmd.Flags().StringVar(&opts.PassphraseFile, "passphrase-file", "", "解密加密备份包使用的口令文件")
 	cmd.Flags().BoolVar(&opts.SkipChecksum, "skip-checksum", false, "跳过 checksums.txt 完整性校验")
 	commandflags.AddReportFormatFlag(cmd, &opts.Format)
 	return cmd

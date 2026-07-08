@@ -22,7 +22,7 @@ func restoreBackup(ctx context.Context, backupDir string, opts RestoreOptions) e
 	if opts.Output == nil {
 		opts.Output = io.Discard
 	}
-	resolvedDir, cleanup, err := resolveRestoreBackupDirWithContext(ctx, backupDir)
+	resolvedDir, cleanup, err := resolveRestoreBackupDirWithOptions(ctx, backupDir, opts)
 	if err != nil {
 		return err
 	}

@@ -50,24 +50,28 @@ type dockerBackupService struct {
 }
 
 type BackupOptions struct {
-	OutputDir    string
-	IncludeImage bool
-	DryRun       bool
-	Bundle       bool
-	BundleOutput string
-	Merge        bool
-	Output       io.Writer
+	OutputDir      string
+	IncludeImage   bool
+	DryRun         bool
+	Bundle         bool
+	BundleOutput   string
+	Encrypt        bool
+	PassphraseFile string
+	SplitSize      string
+	Merge          bool
+	Output         io.Writer
 }
 
 type RestoreOptions struct {
-	Name         string
-	Replace      bool
-	NoStart      bool
-	DryRun       bool
-	Plan         bool
-	Format       string
-	SkipChecksum bool
-	Output       io.Writer
+	Name           string
+	Replace        bool
+	NoStart        bool
+	DryRun         bool
+	Plan           bool
+	Format         string
+	PassphraseFile string
+	SkipChecksum   bool
+	Output         io.Writer
 }
 
 // BackupManifest keeps the current batch-friendly containers list while still

@@ -22,14 +22,15 @@ func createBackupArchive(sourceDir, archivePath string) error {
 }
 
 func createBackupArchiveWithContext(ctx context.Context, sourceDir, archivePath string) error {
+	return createBackupArchiveWithOptions(ctx, sourceDir, archivePath, backupArchiveOptions{})
+}
+
+func createBackupArchiveWithOptions(ctx context.Context, sourceDir, archivePath string, opts backupArchiveOptions) error {
 	if err := checkBackupContext(ctx); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(archivePath), 0755); err != nil {
-		return err
-	}
 	archiveAbs, _ := filepath.Abs(archivePath)
-	file, err := os.Create(archivePath)
+	file, err := openBackupArchiveWriter(ctx, archivePath, opts)
 	if err != nil {
 		return err
 	}
@@ -90,10 +91,14 @@ func resolveRestoreBackupDir(path string) (string, func(), error) {
 }
 
 func resolveRestoreBackupDirWithContext(ctx context.Context, path string) (string, func(), error) {
+	return resolveRestoreBackupDirWithOptions(ctx, path, RestoreOptions{})
+}
+
+func resolveRestoreBackupDirWithOptions(ctx context.Context, path string, opts RestoreOptions) (string, func(), error) {
 	if err := checkBackupContext(ctx); err != nil {
 		return "", nil, err
 	}
-	if !isBackupArchive(path) {
+	if !isBackupArchive(path) && !isBackupArchivePart(path) && !isEncryptedBackupArchive(path) {
 		return path, nil, nil
 	}
 	tempDir, err := os.MkdirTemp("", "dm-restore-*")
@@ -101,7 +106,24 @@ func resolveRestoreBackupDirWithContext(ctx context.Context, path string) (strin
 		return "", nil, err
 	}
 	cleanup := func() { _ = os.RemoveAll(tempDir) }
-	if err := extractBackupArchiveWithContext(ctx, path, tempDir); err != nil {
+	archivePath := path
+	if isBackupArchivePart(path) {
+		joined := filepath.Join(tempDir, strings.TrimSuffix(filepath.Base(path), ".part-001"))
+		if err := joinBackupArchivePartsWithContext(ctx, path, joined); err != nil {
+			cleanup()
+			return "", nil, err
+		}
+		archivePath = joined
+	}
+	if isEncryptedBackupArchive(archivePath) {
+		decrypted := filepath.Join(tempDir, strings.TrimSuffix(filepath.Base(archivePath), ".enc"))
+		if err := decryptBackupArchiveWithContext(ctx, archivePath, decrypted, opts.PassphraseFile); err != nil {
+			cleanup()
+			return "", nil, err
+		}
+		archivePath = decrypted
+	}
+	if err := extractBackupArchiveWithContext(ctx, archivePath, tempDir); err != nil {
 		cleanup()
 		return "", nil, err
 	}
@@ -116,6 +138,14 @@ func resolveRestoreBackupDirWithContext(ctx context.Context, path string) (strin
 func isBackupArchive(path string) bool {
 	lower := strings.ToLower(path)
 	return strings.HasSuffix(lower, ".tar.gz") || strings.HasSuffix(lower, ".tgz")
+}
+
+func isEncryptedBackupArchive(path string) bool {
+	return strings.HasSuffix(strings.ToLower(path), ".enc")
+}
+
+func isBackupArchivePart(path string) bool {
+	return strings.HasSuffix(strings.ToLower(path), ".part-001")
 }
 
 func extractBackupArchive(archivePath, destDir string) error {

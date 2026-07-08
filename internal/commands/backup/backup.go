@@ -19,6 +19,14 @@ func backupContainers(ctx context.Context, patterns []string, opts BackupOptions
 	if len(patterns) == 0 {
 		return BackupContainersResult{}, fmt.Errorf("必须提供至少一个容器名称或通配符")
 	}
+	if (opts.Encrypt || opts.SplitSize != "") && !opts.Bundle {
+		return BackupContainersResult{}, fmt.Errorf("--encrypt 和 --split-size 仅在 --bundle 时可用")
+	}
+	if opts.Bundle {
+		if _, err := archiveOptionsFromBackup(opts); err != nil {
+			return BackupContainersResult{}, err
+		}
+	}
 	targets, err := resolveBackupContainerTargets(ctx, patterns)
 	if err != nil {
 		return BackupContainersResult{}, err
@@ -118,6 +126,10 @@ func backupContainersMerged(ctx context.Context, targets []string, opts BackupOp
 			return BackupContainersResult{}, fmt.Errorf("write manifest: %w", err)
 		}
 		if opts.Bundle {
+			archiveOpts, err := archiveOptionsFromBackup(opts)
+			if err != nil {
+				return BackupContainersResult{}, err
+			}
 			if err := writeBackupBundleArtifactsWithContext(ctx, root, manifest); err != nil {
 				return BackupContainersResult{}, err
 			}
@@ -125,7 +137,8 @@ func backupContainersMerged(ctx context.Context, targets []string, opts BackupOp
 			if archivePath == "" {
 				archivePath = root + ".tar.gz"
 			}
-			if err := createBackupArchiveWithContext(ctx, root, archivePath); err != nil {
+			archivePath = backupArchiveOutputPath(archivePath, archiveOpts)
+			if err := createBackupArchiveWithOptions(ctx, root, archivePath, archiveOpts); err != nil {
 				return BackupContainersResult{}, err
 			}
 			log.Printf("Backup batch bundle: %s", archivePath)
@@ -254,6 +267,10 @@ func backupContainer(ctx context.Context, name string, opts BackupOptions) (stri
 		return "", fmt.Errorf("write manifest: %w", err)
 	}
 	if opts.Bundle {
+		archiveOpts, err := archiveOptionsFromBackup(opts)
+		if err != nil {
+			return "", err
+		}
 		if err := checkBackupContext(ctx); err != nil {
 			return "", err
 		}
@@ -264,7 +281,8 @@ func backupContainer(ctx context.Context, name string, opts BackupOptions) (stri
 		if archivePath == "" {
 			archivePath = outputDir + ".tar.gz"
 		}
-		if err := createBackupArchiveWithContext(ctx, outputDir, archivePath); err != nil {
+		archivePath = backupArchiveOutputPath(archivePath, archiveOpts)
+		if err := createBackupArchiveWithOptions(ctx, outputDir, archivePath, archiveOpts); err != nil {
 			return "", err
 		}
 		log.Printf("Backup bundle: %s", archivePath)

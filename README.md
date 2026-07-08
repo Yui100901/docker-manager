@@ -8,7 +8,7 @@
 
 - 镜像拉取、归档、导入和重新推送: `dm pull`、`dm save`、`dm load`、`dm tree`。
 - 容器逆向和重建: `dm reverse` 只读输出 `docker run` 或 compose，`dm rerun` 显式确认后重建容器。
-- 容器离线迁移: `dm backup` 和 `dm restore` 支持批量包、合并包、checksum、恢复前计划预览、README 和 restore 脚本。
+- 容器离线迁移: `dm backup` 和 `dm restore` 支持批量包、合并包、checksum、恢复前计划预览、加密包、分卷包、README 和 restore 脚本。
 - 诊断报告: `dm health`、`dm network`、`dm logs`、`dm diff`、`dm prune`、`dm volumes`、`dm registry`、`dm doctor`。
 - 远程 Docker 管理: 支持 Docker 标准环境变量、`.dm.yaml` 和全局参数指定 Docker endpoint。
 - Shell completion: 支持 bash、zsh、fish 和 PowerShell，容器/镜像/volume 候选会按当前 Docker endpoint 查询。
@@ -204,8 +204,12 @@ dm rerun web --confirm
 ```bash
 dm backup web --dry-run
 dm backup web --bundle --bundle-output web-backup.tar.gz
+dm backup web --bundle --encrypt --passphrase-file ./backup.pass --bundle-output web-backup.tar.gz
+dm backup web --bundle --split-size 2G --bundle-output web-backup.tar.gz
 dm restore web-backup.tar.gz --plan --format html
 dm restore web-backup.tar.gz --plan --format json
+dm restore web-backup.tar.gz.enc --passphrase-file ./backup.pass --plan
+dm restore web-backup.tar.gz.part-001 --plan
 dm restore web-backup.tar.gz --dry-run
 dm restore web-backup.tar.gz --name web-restored
 ```

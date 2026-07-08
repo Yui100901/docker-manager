@@ -664,6 +664,94 @@ func TestRestoreBackupSupportsTarGzArchive(t *testing.T) {
 	}
 }
 
+func TestRestoreBackupSupportsEncryptedArchive(t *testing.T) {
+	root := t.TempDir()
+	passFile := filepath.Join(root, "pass.txt")
+	if err := os.WriteFile(passFile, []byte("secret-pass\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "bundle")
+	writeTestJSON(t, filepath.Join(dir, backupManifestName), BackupManifest{
+		Version: 1,
+		Containers: []BackupContainerManifest{{
+			ContainerName: "demo",
+			InspectFile:   backupInspectName,
+		}},
+	})
+	writeTestJSON(t, filepath.Join(dir, backupInspectName), container.InspectResponse{
+		Name:       "/demo",
+		Config:     &container.Config{Image: "busybox:latest"},
+		HostConfig: &container.HostConfig{},
+	})
+	archive := filepath.Join(root, "bundle.tar.gz.enc")
+	if err := createBackupArchiveWithOptions(context.Background(), dir, archive, backupArchiveOptions{Encrypt: true, PassphraseFile: passFile}); err != nil {
+		t.Fatalf("createBackupArchiveWithOptions() error = %v", err)
+	}
+	fake := &fakeBackupDockerService{}
+	restoreFactory := replaceBackupServiceFactory(fake)
+	defer restoreFactory()
+	if err := restoreBackup(context.Background(), archive, RestoreOptions{NoStart: true, PassphraseFile: passFile}); err != nil {
+		t.Fatalf("restoreBackup() encrypted archive error = %v", err)
+	}
+	if !hasCall(fake.calls, "create-container:demo") {
+		t.Fatalf("calls = %#v, want create-container", fake.calls)
+	}
+}
+
+func TestRestoreBackupSupportsSplitArchive(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "bundle")
+	writeTestJSON(t, filepath.Join(dir, backupManifestName), BackupManifest{
+		Version: 1,
+		Containers: []BackupContainerManifest{{
+			ContainerName: "demo",
+			InspectFile:   backupInspectName,
+		}},
+	})
+	writeTestJSON(t, filepath.Join(dir, backupInspectName), container.InspectResponse{
+		Name:       "/demo",
+		Config:     &container.Config{Image: "busybox:latest"},
+		HostConfig: &container.HostConfig{},
+	})
+	archive := filepath.Join(root, "bundle.tar.gz")
+	if err := createBackupArchiveWithOptions(context.Background(), dir, archive, backupArchiveOptions{SplitSize: 128}); err != nil {
+		t.Fatalf("createBackupArchiveWithOptions() split error = %v", err)
+	}
+	if _, err := os.Stat(splitPartPath(archive, 1)); err != nil {
+		t.Fatalf("missing first split part: %v", err)
+	}
+	if _, err := os.Stat(splitPartPath(archive, 2)); err != nil {
+		t.Fatalf("missing second split part: %v", err)
+	}
+	fake := &fakeBackupDockerService{}
+	restoreFactory := replaceBackupServiceFactory(fake)
+	defer restoreFactory()
+	if err := restoreBackup(context.Background(), splitPartPath(archive, 1), RestoreOptions{NoStart: true}); err != nil {
+		t.Fatalf("restoreBackup() split archive error = %v", err)
+	}
+	if !hasCall(fake.calls, "create-container:demo") {
+		t.Fatalf("calls = %#v, want create-container", fake.calls)
+	}
+}
+
+func TestBackupCommandEncryptRequiresPassphraseFile(t *testing.T) {
+	fake := &fakeBackupDockerService{}
+	restoreFactory := replaceBackupServiceFactory(fake)
+	defer restoreFactory()
+	cmd := NewBackupCommand()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"demo", "--bundle", "--encrypt", "--output-dir", filepath.Join(t.TempDir(), "backup")})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want passphrase error")
+	}
+	if !strings.Contains(err.Error(), "--passphrase-file") {
+		t.Fatalf("error = %v, want passphrase-file", err)
+	}
+}
+
 func TestRestoreBackupSupportsBatchManifest(t *testing.T) {
 	root := t.TempDir()
 	writeTestJSON(t, filepath.Join(root, backupManifestName), BackupManifest{
