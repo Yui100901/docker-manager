@@ -1,10 +1,13 @@
 package reverse
 
-import "sync"
+import (
+	"context"
+	"sync"
+)
 
 const reverseInspectConcurrency = 8
 
-func runReverseParallel(total, limit int, fn func(int)) {
+func runReverseParallel(ctx context.Context, total, limit int, fn func(context.Context, int)) {
 	if total <= 0 {
 		return
 	}
@@ -18,11 +21,17 @@ func runReverseParallel(total, limit int, fn func(int)) {
 		go func() {
 			defer wg.Done()
 			for index := range jobs {
-				fn(index)
+				if ctx.Err() != nil {
+					continue
+				}
+				fn(ctx, index)
 			}
 		}()
 	}
 	for index := 0; index < total; index++ {
+		if ctx.Err() != nil {
+			break
+		}
 		jobs <- index
 	}
 	close(jobs)

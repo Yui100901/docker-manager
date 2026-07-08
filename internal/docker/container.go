@@ -26,7 +26,11 @@ func NewContainerManager() (*ContainerManager, error) {
 }
 
 func (cm *ContainerManager) ListAll() ([]mobycontainer.Summary, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	return cm.ListAllContext(context.Background())
+}
+
+func (cm *ContainerManager) ListAllContext(ctx context.Context) ([]mobycontainer.Summary, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	result, err := cm.cli.ContainerList(ctx, client.ContainerListOptions{All: true})
 	if err != nil {
@@ -53,7 +57,11 @@ func (cm *ContainerManager) Remove(containerID string, force, removeVolumes bool
 }
 
 func (cm *ContainerManager) Inspect(containerID string) (mobycontainer.InspectResponse, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	return cm.InspectContext(context.Background(), containerID)
+}
+
+func (cm *ContainerManager) InspectContext(ctx context.Context, containerID string) (mobycontainer.InspectResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	result, err := cm.cli.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
 	if err != nil {
@@ -63,7 +71,11 @@ func (cm *ContainerManager) Inspect(containerID string) (mobycontainer.InspectRe
 }
 
 func (cm *ContainerManager) InspectNetwork(name string) (mobynetwork.Inspect, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	return cm.InspectNetworkContext(context.Background(), name)
+}
+
+func (cm *ContainerManager) InspectNetworkContext(ctx context.Context, name string) (mobynetwork.Inspect, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	result, err := cm.cli.NetworkInspect(ctx, name, client.NetworkInspectOptions{})
 	if err != nil {
@@ -73,7 +85,11 @@ func (cm *ContainerManager) InspectNetwork(name string) (mobynetwork.Inspect, er
 }
 
 func (cm *ContainerManager) InspectVolume(name string) (mobyvolume.Volume, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	return cm.InspectVolumeContext(context.Background(), name)
+}
+
+func (cm *ContainerManager) InspectVolumeContext(ctx context.Context, name string) (mobyvolume.Volume, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	result, err := cm.cli.VolumeInspect(ctx, name, client.VolumeInspectOptions{})
 	if err != nil {

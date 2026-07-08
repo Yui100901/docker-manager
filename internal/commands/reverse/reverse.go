@@ -1,6 +1,7 @@
 package reverse
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -62,7 +63,8 @@ func NewReverseCommand() *cobra.Command {
 			}
 
 			targetFilters := append(append([]string(nil), filters...), args...)
-			targets, err := resolveReverseContainerTargets(targetFilters, running)
+			ctx := cmd.Context()
+			targets, err := resolveReverseContainerTargetsContext(ctx, targetFilters, running)
 			if err != nil {
 				return err
 			}
@@ -71,7 +73,7 @@ func NewReverseCommand() *cobra.Command {
 				fmt.Fprintln(cmd.OutOrStdout(), comment)
 			}
 
-			reverseResult, err := reverseWithOptions(targets, opts)
+			reverseResult, err := reverseWithOptions(ctx, targets, opts)
 			if err != nil {
 				return err
 			}
@@ -128,10 +130,17 @@ func completeReverseTypes(cmd *cobra.Command, args []string, toComplete string) 
 }
 
 func listRunningContainerNames() ([]string, error) {
+	return listRunningContainerNamesContext(context.Background())
+}
+
+func listRunningContainerNamesContext(ctx context.Context) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := ensureContainerManager(); err != nil {
 		return nil, err
 	}
-	containers, err := containerManager.ListAll()
+	containers, err := containerManager.ListAllContext(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -139,10 +148,17 @@ func listRunningContainerNames() ([]string, error) {
 }
 
 func resolveReverseContainerTargets(filters []string, runningOnly bool) ([]string, error) {
+	return resolveReverseContainerTargetsContext(context.Background(), filters, runningOnly)
+}
+
+func resolveReverseContainerTargetsContext(ctx context.Context, filters []string, runningOnly bool) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := ensureContainerManager(); err != nil {
 		return nil, err
 	}
-	containers, err := containerManager.ListAll()
+	containers, err := containerManager.ListAllContext(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -190,6 +206,13 @@ func reverseContainerNames(containers []container.Summary) []string {
 }
 
 func expandContainerNamePatterns(args []string) ([]string, error) {
+	return expandContainerNamePatternsContext(context.Background(), args)
+}
+
+func expandContainerNamePatternsContext(ctx context.Context, args []string) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	hasWildcard := false
 	for _, arg := range args {
 		if strings.ContainsAny(arg, "*?") {
@@ -203,7 +226,7 @@ func expandContainerNamePatterns(args []string) ([]string, error) {
 	if err := ensureContainerManager(); err != nil {
 		return nil, err
 	}
-	containers, err := containerManager.ListAll()
+	containers, err := containerManager.ListAllContext(ctx)
 	if err != nil {
 		return nil, err
 	}

@@ -1,6 +1,7 @@
 package reverse
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -418,13 +419,16 @@ func sortedMapKeys(src map[string]string) []string {
 	return keys
 }
 
-func reverseWithOptions(names []string, options ReverseOptions) (*ReverseResult, error) {
+func reverseWithOptions(ctx context.Context, names []string, options ReverseOptions) (*ReverseResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := ensureContainerManager(); err != nil {
 		return nil, err
 	}
 	inspectResults := make([]reverseInspectResult, len(names))
-	runReverseParallel(len(names), reverseInspectConcurrency, func(i int) {
-		info, err := containerManager.Inspect(names[i])
+	runReverseParallel(ctx, len(names), reverseInspectConcurrency, func(ctx context.Context, i int) {
+		info, err := containerManager.InspectContext(ctx, names[i])
 		if err != nil {
 			inspectResults[i].err = err
 			return
@@ -436,6 +440,9 @@ func reverseWithOptions(names []string, options ReverseOptions) (*ReverseResult,
 			ok:     true,
 		}
 	})
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	results := make([]ParsedResult, 0, len(names))
 	volumeNames := map[string]bool{}
@@ -453,8 +460,16 @@ func reverseWithOptions(names []string, options ReverseOptions) (*ReverseResult,
 	}
 
 	result := NewReverseResult(results, options)
-	result.VolumeMeta = inspectReverseVolumeMetadata(sortedBoolMapKeys(volumeNames))
-	result.NetworkMeta = inspectReverseNetworkMetadata(sortedBoolMapKeys(networkNames))
+	volumeMeta, err := inspectReverseVolumeMetadata(ctx, sortedBoolMapKeys(volumeNames))
+	if err != nil {
+		return nil, err
+	}
+	networkMeta, err := inspectReverseNetworkMetadata(ctx, sortedBoolMapKeys(networkNames))
+	if err != nil {
+		return nil, err
+	}
+	result.VolumeMeta = volumeMeta
+	result.NetworkMeta = networkMeta
 	return result, nil
 }
 
@@ -474,16 +489,16 @@ func collectReverseResourceNames(info container.InspectResponse, volumeNames, ne
 	}
 }
 
-func inspectReverseVolumeMetadata(names []string) map[string]volume.Volume {
+func inspectReverseVolumeMetadata(ctx context.Context, names []string) (map[string]volume.Volume, error) {
 	meta := map[string]volume.Volume{}
 	if len(names) == 0 {
-		return meta
+		return meta, nil
 	}
 	results := make([]volume.Volume, len(names))
 	errs := make([]error, len(names))
 	ok := make([]bool, len(names))
-	runReverseParallel(len(names), reverseInspectConcurrency, func(i int) {
-		result, err := containerManager.InspectVolume(names[i])
+	runReverseParallel(ctx, len(names), reverseInspectConcurrency, func(ctx context.Context, i int) {
+		result, err := containerManager.InspectVolumeContext(ctx, names[i])
 		if err != nil {
 			errs[i] = err
 			return
@@ -491,6 +506,9 @@ func inspectReverseVolumeMetadata(names []string) map[string]volume.Volume {
 		results[i] = result
 		ok[i] = true
 	})
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	for i, name := range names {
 		if errs[i] != nil {
 			log.Printf("volume %s inspect failed: %v", name, errs[i])
@@ -500,19 +518,19 @@ func inspectReverseVolumeMetadata(names []string) map[string]volume.Volume {
 			meta[name] = results[i]
 		}
 	}
-	return meta
+	return meta, nil
 }
 
-func inspectReverseNetworkMetadata(names []string) map[string]network.Inspect {
+func inspectReverseNetworkMetadata(ctx context.Context, names []string) (map[string]network.Inspect, error) {
 	meta := map[string]network.Inspect{}
 	if len(names) == 0 {
-		return meta
+		return meta, nil
 	}
 	results := make([]network.Inspect, len(names))
 	errs := make([]error, len(names))
 	ok := make([]bool, len(names))
-	runReverseParallel(len(names), reverseInspectConcurrency, func(i int) {
-		result, err := containerManager.InspectNetwork(names[i])
+	runReverseParallel(ctx, len(names), reverseInspectConcurrency, func(ctx context.Context, i int) {
+		result, err := containerManager.InspectNetworkContext(ctx, names[i])
 		if err != nil {
 			errs[i] = err
 			return
@@ -520,6 +538,9 @@ func inspectReverseNetworkMetadata(names []string) map[string]network.Inspect {
 		results[i] = result
 		ok[i] = true
 	})
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	for i, name := range names {
 		if errs[i] != nil {
 			log.Printf("network %s inspect failed: %v", name, errs[i])
@@ -529,7 +550,7 @@ func inspectReverseNetworkMetadata(names []string) map[string]network.Inspect {
 			meta[name] = results[i]
 		}
 	}
-	return meta
+	return meta, nil
 }
 
 func reverseNamedVolumeNames(info container.InspectResponse) []string {

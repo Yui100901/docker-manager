@@ -1,7 +1,9 @@
 package reverse
 
 import (
+	"context"
 	"docker-manager/internal/docker"
+	"errors"
 	"strings"
 	"testing"
 
@@ -78,6 +80,18 @@ func TestReverseRunningCanCombineWithExplicitNames(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "无效的输出类型") {
 		t.Fatalf("Execute() error = %q, want invalid type error", err.Error())
+	}
+}
+
+func TestReverseCommandReturnsCanceledContext(t *testing.T) {
+	cmd := NewReverseCommand()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cmd.SetContext(ctx)
+
+	err := cmd.Execute()
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Execute() error = %v, want context.Canceled", err)
 	}
 }
 
