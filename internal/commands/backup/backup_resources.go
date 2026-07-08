@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"sort"
 
+	"docker-manager/internal/parallel"
+
 	"github.com/moby/moby/api/types/container"
 )
 
@@ -22,20 +24,21 @@ func backupNetworks(ctx context.Context, svc backupDockerService, outputDir stri
 	}
 	sort.Strings(names)
 
-	var refs []BackupResourceRef
-	for _, name := range names {
-		if err := checkBackupContext(ctx); err != nil {
-			return nil, err
-		}
+	refs := make([]BackupResourceRef, len(names))
+	if err := parallel.ForEachIndexErr(ctx, len(names), backupInspectConcurrency, func(ctx context.Context, i int) error {
+		name := names[i]
 		netMeta, err := svc.InspectNetwork(ctx, name)
 		if err != nil {
-			return nil, fmt.Errorf("inspect network %s: %w", name, err)
+			return fmt.Errorf("inspect network %s: %w", name, err)
 		}
 		rel := filepath.Join("networks", safeBackupName(name)+".json")
 		if err := writeJSONFile(filepath.Join(outputDir, rel), netMeta); err != nil {
-			return nil, fmt.Errorf("write network %s: %w", name, err)
+			return fmt.Errorf("write network %s: %w", name, err)
 		}
-		refs = append(refs, BackupResourceRef{Name: name, File: filepath.ToSlash(rel)})
+		refs[i] = BackupResourceRef{Name: name, File: filepath.ToSlash(rel)}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 	return refs, nil
 }
@@ -45,20 +48,21 @@ func backupVolumes(ctx context.Context, svc backupDockerService, outputDir strin
 	if len(names) == 0 {
 		return nil, nil
 	}
-	var refs []BackupResourceRef
-	for _, name := range names {
-		if err := checkBackupContext(ctx); err != nil {
-			return nil, err
-		}
+	refs := make([]BackupResourceRef, len(names))
+	if err := parallel.ForEachIndexErr(ctx, len(names), backupInspectConcurrency, func(ctx context.Context, i int) error {
+		name := names[i]
 		volMeta, err := svc.InspectVolume(ctx, name)
 		if err != nil {
-			return nil, fmt.Errorf("inspect volume %s: %w", name, err)
+			return fmt.Errorf("inspect volume %s: %w", name, err)
 		}
 		rel := filepath.Join("volumes", safeBackupName(name)+".json")
 		if err := writeJSONFile(filepath.Join(outputDir, rel), volMeta); err != nil {
-			return nil, fmt.Errorf("write volume %s: %w", name, err)
+			return fmt.Errorf("write volume %s: %w", name, err)
 		}
-		refs = append(refs, BackupResourceRef{Name: name, File: filepath.ToSlash(rel)})
+		refs[i] = BackupResourceRef{Name: name, File: filepath.ToSlash(rel)}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 	return refs, nil
 }
@@ -76,32 +80,34 @@ func inspectBackupNetworkRefs(ctx context.Context, svc backupDockerService, insp
 	}
 	sort.Strings(names)
 
-	refs := make([]BackupResourceRef, 0, len(names))
-	for _, name := range names {
-		if err := checkBackupContext(ctx); err != nil {
-			return nil, err
-		}
+	refs := make([]BackupResourceRef, len(names))
+	if err := parallel.ForEachIndexErr(ctx, len(names), backupInspectConcurrency, func(ctx context.Context, i int) error {
+		name := names[i]
 		if _, err := svc.InspectNetwork(ctx, name); err != nil {
-			return nil, fmt.Errorf("inspect network %s: %w", name, err)
+			return fmt.Errorf("inspect network %s: %w", name, err)
 		}
 		rel := filepath.Join("networks", safeBackupName(name)+".json")
-		refs = append(refs, BackupResourceRef{Name: name, File: filepath.ToSlash(rel)})
+		refs[i] = BackupResourceRef{Name: name, File: filepath.ToSlash(rel)}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 	return refs, nil
 }
 
 func inspectBackupVolumeRefs(ctx context.Context, svc backupDockerService, inspect container.InspectResponse) ([]BackupResourceRef, error) {
 	names := namedVolumes(inspect)
-	refs := make([]BackupResourceRef, 0, len(names))
-	for _, name := range names {
-		if err := checkBackupContext(ctx); err != nil {
-			return nil, err
-		}
+	refs := make([]BackupResourceRef, len(names))
+	if err := parallel.ForEachIndexErr(ctx, len(names), backupInspectConcurrency, func(ctx context.Context, i int) error {
+		name := names[i]
 		if _, err := svc.InspectVolume(ctx, name); err != nil {
-			return nil, fmt.Errorf("inspect volume %s: %w", name, err)
+			return fmt.Errorf("inspect volume %s: %w", name, err)
 		}
 		rel := filepath.Join("volumes", safeBackupName(name)+".json")
-		refs = append(refs, BackupResourceRef{Name: name, File: filepath.ToSlash(rel)})
+		refs[i] = BackupResourceRef{Name: name, File: filepath.ToSlash(rel)}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 	return refs, nil
 }

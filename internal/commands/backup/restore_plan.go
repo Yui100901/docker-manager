@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"docker-manager/internal/docker"
+	"docker-manager/internal/parallel"
 
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/container"
@@ -64,14 +65,18 @@ func buildRestorePlanReportFromDir(ctx context.Context, svc backupDockerService,
 	}
 	ports, portWarnings := currentRestorePortBindings(ctx, svc)
 	report.Warnings = append(report.Warnings, portWarnings...)
-	for _, entry := range manifest.Containers {
-		if err := checkBackupContext(ctx); err != nil {
-			return report, err
-		}
-		plan, err := buildRestoreContainerPlan(ctx, svc, backupDir, entry, opts, ports)
+	plans := make([]RestoreContainerPlan, len(manifest.Containers))
+	if err := parallel.ForEachIndexErr(ctx, len(manifest.Containers), backupInspectConcurrency, func(ctx context.Context, i int) error {
+		plan, err := buildRestoreContainerPlan(ctx, svc, backupDir, manifest.Containers[i], opts, ports)
 		if err != nil {
-			return report, err
+			return err
 		}
+		plans[i] = plan
+		return nil
+	}); err != nil {
+		return report, err
+	}
+	for _, plan := range plans {
 		report.Containers = append(report.Containers, plan)
 		addRestorePlanSummary(&report.Summary, plan)
 	}
@@ -170,26 +175,27 @@ func restoreImagePlan(ctx context.Context, svc backupDockerService, entryDir str
 }
 
 func restoreNetworkPlans(ctx context.Context, svc backupDockerService, entryDir string, refs []BackupResourceRef) []RestoreResourcePlan {
-	plans := make([]RestoreResourcePlan, 0, len(refs))
-	for _, ref := range refs {
+	plans := make([]RestoreResourcePlan, len(refs))
+	parallel.ForEachIndex(ctx, len(refs), backupInspectConcurrency, func(ctx context.Context, i int) {
+		ref := refs[i]
 		plan := RestoreResourcePlan{Name: ref.Name, File: ref.File, Action: "create"}
 		expected, err := readNetworkInspect(entryDir, ref)
 		if err != nil {
 			plan.Action = "error"
 			plan.Error = err.Error()
-			plans = append(plans, plan)
-			continue
+			plans[i] = plan
+			return
 		}
 		actual, err := svc.InspectNetwork(ctx, ref.Name)
 		if err != nil {
 			if cerrdefs.IsNotFound(err) {
-				plans = append(plans, plan)
-				continue
+				plans[i] = plan
+				return
 			}
 			plan.Action = "error"
 			plan.Error = err.Error()
-			plans = append(plans, plan)
-			continue
+			plans[i] = plan
+			return
 		}
 		plan.Exists = true
 		plan.Action = "reuse"
@@ -198,32 +204,33 @@ func restoreNetworkPlans(ctx context.Context, svc backupDockerService, entryDir 
 			plan.Different = true
 			plan.Action = "reuse-different"
 		}
-		plans = append(plans, plan)
-	}
+		plans[i] = plan
+	})
 	return plans
 }
 
 func restoreVolumePlans(ctx context.Context, svc backupDockerService, entryDir string, refs []BackupResourceRef) []RestoreResourcePlan {
-	plans := make([]RestoreResourcePlan, 0, len(refs))
-	for _, ref := range refs {
+	plans := make([]RestoreResourcePlan, len(refs))
+	parallel.ForEachIndex(ctx, len(refs), backupInspectConcurrency, func(ctx context.Context, i int) {
+		ref := refs[i]
 		plan := RestoreResourcePlan{Name: ref.Name, File: ref.File, Action: "create"}
 		expected, err := readVolumeInspect(entryDir, ref)
 		if err != nil {
 			plan.Action = "error"
 			plan.Error = err.Error()
-			plans = append(plans, plan)
-			continue
+			plans[i] = plan
+			return
 		}
 		actual, err := svc.InspectVolume(ctx, ref.Name)
 		if err != nil {
 			if cerrdefs.IsNotFound(err) {
-				plans = append(plans, plan)
-				continue
+				plans[i] = plan
+				return
 			}
 			plan.Action = "error"
 			plan.Error = err.Error()
-			plans = append(plans, plan)
-			continue
+			plans[i] = plan
+			return
 		}
 		plan.Exists = true
 		plan.Action = "reuse"
@@ -232,8 +239,8 @@ func restoreVolumePlans(ctx context.Context, svc backupDockerService, entryDir s
 			plan.Different = true
 			plan.Action = "reuse-different"
 		}
-		plans = append(plans, plan)
-	}
+		plans[i] = plan
+	})
 	return plans
 }
 
@@ -278,20 +285,25 @@ func currentRestorePortBindings(ctx context.Context, svc backupDockerService) (m
 	if err != nil {
 		return nil, []string{fmt.Sprintf("无法列出现有容器检查端口冲突: %v", err)}
 	}
-	result := map[string]string{}
-	var warnings []string
-	for _, summary := range containers {
+	type portBindingInspectResult struct {
+		keys    []string
+		name    string
+		warning string
+	}
+	inspectResults := make([]portBindingInspectResult, len(containers))
+	parallel.ForEachIndex(ctx, len(containers), backupInspectConcurrency, func(ctx context.Context, i int) {
+		summary := containers[i]
 		ref := summary.ID
 		if ref == "" {
 			ref = firstContainerName(summary.Names)
 		}
 		if ref == "" {
-			continue
+			return
 		}
 		inspect, err := svc.InspectContainer(ctx, ref)
 		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("无法 inspect 容器 %s 检查端口冲突: %v", ref, err))
-			continue
+			inspectResults[i].warning = fmt.Sprintf("无法 inspect 容器 %s 检查端口冲突: %v", ref, err)
+			return
 		}
 		name := normalizeContainerName(inspect.Name)
 		if name == "" {
@@ -300,8 +312,17 @@ func currentRestorePortBindings(ctx context.Context, svc backupDockerService) (m
 		if name == "" {
 			name = restoreShortID(summary.ID)
 		}
-		for _, key := range restorePortKeys(inspect) {
-			result[key] = name
+		inspectResults[i] = portBindingInspectResult{keys: restorePortKeys(inspect), name: name}
+	})
+	result := map[string]string{}
+	var warnings []string
+	for _, item := range inspectResults {
+		if item.warning != "" {
+			warnings = append(warnings, item.warning)
+			continue
+		}
+		for _, key := range item.keys {
+			result[key] = item.name
 		}
 	}
 	return result, warnings

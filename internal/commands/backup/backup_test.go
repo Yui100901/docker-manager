@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/moby/moby/api/types/container"
@@ -20,6 +21,7 @@ import (
 )
 
 type fakeBackupDockerService struct {
+	mu              sync.Mutex
 	inspect         container.InspectResponse
 	inspects        map[string]container.InspectResponse
 	containers      []container.Summary
@@ -32,12 +34,16 @@ type fakeBackupDockerService struct {
 }
 
 func (f *fakeBackupDockerService) ListContainers(ctx context.Context, all bool) ([]container.Summary, error) {
+	f.mu.Lock()
 	f.calls = append(f.calls, "list-containers")
+	f.mu.Unlock()
 	return f.containers, nil
 }
 
 func (f *fakeBackupDockerService) InspectContainer(ctx context.Context, name string) (container.InspectResponse, error) {
+	f.mu.Lock()
 	f.calls = append(f.calls, "inspect-container:"+name)
+	f.mu.Unlock()
 	if inspect, ok := f.inspects[name]; ok {
 		return inspect, nil
 	}
@@ -45,7 +51,9 @@ func (f *fakeBackupDockerService) InspectContainer(ctx context.Context, name str
 }
 
 func (f *fakeBackupDockerService) SaveImage(ctx context.Context, refs []string, outputFile string) error {
+	f.mu.Lock()
 	f.calls = append(f.calls, "save-image:"+strings.Join(refs, ","))
+	f.mu.Unlock()
 	if err := os.MkdirAll(filepath.Dir(outputFile), 0755); err != nil {
 		return err
 	}
@@ -53,53 +61,73 @@ func (f *fakeBackupDockerService) SaveImage(ctx context.Context, refs []string, 
 }
 
 func (f *fakeBackupDockerService) LoadImage(ctx context.Context, inputFile string, output io.Writer) error {
+	f.mu.Lock()
 	f.calls = append(f.calls, "load-image:"+filepath.Base(inputFile))
 	f.loadOutput = output
+	f.mu.Unlock()
 	return nil
 }
 
 func (f *fakeBackupDockerService) ImageExists(ctx context.Context, ref string) (bool, error) {
+	f.mu.Lock()
 	f.calls = append(f.calls, "image-exists:"+ref)
+	f.mu.Unlock()
 	return f.imageExists, nil
 }
 
 func (f *fakeBackupDockerService) InspectNetwork(ctx context.Context, name string) (network.Inspect, error) {
+	f.mu.Lock()
 	f.calls = append(f.calls, "inspect-network:"+name)
+	f.mu.Unlock()
 	return f.network, nil
 }
 
 func (f *fakeBackupDockerService) CreateNetwork(ctx context.Context, inspect network.Inspect) error {
+	f.mu.Lock()
 	f.calls = append(f.calls, "create-network:"+inspect.Name)
+	f.mu.Unlock()
 	return nil
 }
 
 func (f *fakeBackupDockerService) InspectVolume(ctx context.Context, name string) (volume.Volume, error) {
+	f.mu.Lock()
 	f.calls = append(f.calls, "inspect-volume:"+name)
+	f.mu.Unlock()
 	return f.volume, nil
 }
 
 func (f *fakeBackupDockerService) CreateVolume(ctx context.Context, vol volume.Volume) error {
+	f.mu.Lock()
 	f.calls = append(f.calls, "create-volume:"+vol.Name)
+	f.mu.Unlock()
 	return nil
 }
 
 func (f *fakeBackupDockerService) ContainerExists(ctx context.Context, name string) (bool, error) {
+	f.mu.Lock()
 	f.calls = append(f.calls, "container-exists:"+name)
+	f.mu.Unlock()
 	return f.containerExists, nil
 }
 
 func (f *fakeBackupDockerService) RemoveContainer(ctx context.Context, name string) error {
+	f.mu.Lock()
 	f.calls = append(f.calls, "remove-container:"+name)
+	f.mu.Unlock()
 	return nil
 }
 
 func (f *fakeBackupDockerService) CreateContainer(ctx context.Context, inspect container.InspectResponse, name string) (string, error) {
+	f.mu.Lock()
 	f.calls = append(f.calls, "create-container:"+name)
+	f.mu.Unlock()
 	return "restored-id", nil
 }
 
 func (f *fakeBackupDockerService) StartContainer(ctx context.Context, id string) error {
+	f.mu.Lock()
 	f.calls = append(f.calls, "start-container:"+id)
+	f.mu.Unlock()
 	return nil
 }
 

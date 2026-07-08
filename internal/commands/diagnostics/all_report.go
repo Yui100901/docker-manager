@@ -11,6 +11,7 @@ import (
 
 	"docker-manager/internal/commandflags"
 	"docker-manager/internal/docker"
+	"docker-manager/internal/parallel"
 	rpt "docker-manager/internal/report"
 
 	"github.com/spf13/cobra"
@@ -79,6 +80,17 @@ type ReportAllSection struct {
 	Error          string `json:"error,omitempty"`
 }
 
+type reportAllSectionResult struct {
+	section ReportAllSection
+	err     error
+
+	health  *HealthReport
+	network *NetworkReport
+	logs    *LogsScanReport
+	volumes *VolumeReport
+	prune   *PruneReport
+}
+
 func NewReportAllCommand() *cobra.Command {
 	opts := defaultReportAllOptions()
 	cmd := &cobra.Command{
@@ -131,28 +143,48 @@ func runReportAll(ctx context.Context, opts ReportAllOptions) (ReportAllReport, 
 		DockerEndpoint: docker.Endpoint(),
 		Selected:       selected,
 	}
+	results := make([]reportAllSectionResult, len(selected))
+	parallel.ForEachIndex(ctx, len(selected), len(selected), func(ctx context.Context, i int) {
+		results[i] = runReportAllSection(ctx, selected[i], opts)
+	})
+	if err := ctx.Err(); err != nil {
+		return report, err
+	}
+
 	var errs []error
-	for _, kind := range selected {
-		if err := ctx.Err(); err != nil {
-			return report, err
+	for _, result := range results {
+		report.Sections = append(report.Sections, result.section)
+		switch result.section.Name {
+		case reportAllKindHealth:
+			report.Health = result.health
+		case reportAllKindNetwork:
+			report.Network = result.network
+		case reportAllKindLogs:
+			report.Logs = result.logs
+		case reportAllKindVolumes:
+			report.Volumes = result.volumes
+		case reportAllKindPrune:
+			report.Prune = result.prune
 		}
-		section, err := runReportAllSection(ctx, kind, opts, &report)
-		report.Sections = append(report.Sections, section)
-		if err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return report, err
+		if result.err != nil {
+			if errors.Is(result.err, context.Canceled) || errors.Is(result.err, context.DeadlineExceeded) {
+				return report, result.err
 			}
-			errs = append(errs, fmt.Errorf("%s: %w", kind, err))
+			errs = append(errs, fmt.Errorf("%s: %w", result.section.Name, result.err))
 		}
 	}
 	return report, errors.Join(errs...)
 }
 
-func runReportAllSection(ctx context.Context, kind string, opts ReportAllOptions, report *ReportAllReport) (section ReportAllSection, err error) {
-	section = ReportAllSection{Name: kind, Status: "ok"}
+func runReportAllSection(ctx context.Context, kind string, opts ReportAllOptions) (result reportAllSectionResult) {
+	result.section = ReportAllSection{Name: kind, Status: "ok"}
 	start := time.Now()
 	defer func() {
-		section.DurationMillis = time.Since(start).Milliseconds()
+		result.section.DurationMillis = time.Since(start).Milliseconds()
+		if result.err != nil {
+			result.section.Status = "failed"
+			result.section.Error = result.err.Error()
+		}
 	}()
 	switch kind {
 	case reportAllKindHealth:
@@ -165,15 +197,15 @@ func runReportAllSection(ctx context.Context, kind string, opts ReportAllOptions
 		childOpts.RedactSecrets = opts.RedactSecrets
 		childOpts.RedactProfile = opts.RedactProfile
 		child, runErr := runHealthReport(ctx, childOpts)
-		report.Health = &child
-		err = runErr
+		result.health = &child
+		result.err = runErr
 	case reportAllKindNetwork:
 		child, runErr := runNetworkReport(ctx, NetworkOptions{
 			RunningOnly:      opts.RunningOnly,
 			ContainerFilters: append([]string(nil), opts.Filters...),
 		})
-		report.Network = &child
-		err = runErr
+		result.network = &child
+		result.err = runErr
 	case reportAllKindLogs:
 		childOpts := defaultLogsScanOptions()
 		childOpts.RunningOnly = opts.RunningOnly
@@ -185,12 +217,12 @@ func runReportAllSection(ctx context.Context, kind string, opts ReportAllOptions
 		childOpts.RedactSecrets = opts.RedactSecrets
 		childOpts.RedactProfile = opts.RedactProfile
 		if validateErr := validateLogsScanArgs(childOpts); validateErr != nil {
-			err = validateErr
+			result.err = validateErr
 			break
 		}
 		child, runErr := runLogsScan(ctx, childOpts)
-		report.Logs = &child
-		err = runErr
+		result.logs = &child
+		result.err = runErr
 	case reportAllKindVolumes:
 		childOpts := defaultVolumeOptions()
 		childOpts.All = opts.VolumeAll
@@ -198,12 +230,12 @@ func runReportAllSection(ctx context.Context, kind string, opts ReportAllOptions
 		childOpts.SizeMode = opts.VolumeSizeMode
 		childOpts.SizeImage = opts.VolumeSizeImage
 		if normalizeErr := normalizeVolumeOptions(&childOpts); normalizeErr != nil {
-			err = normalizeErr
+			result.err = normalizeErr
 			break
 		}
 		child, runErr := runVolumeReport(ctx, childOpts)
-		report.Volumes = &child
-		err = runErr
+		result.volumes = &child
+		result.err = runErr
 	case reportAllKindPrune:
 		child, runErr := runPruneReport(ctx, PruneReportOptions{
 			Only:          append([]string(nil), opts.PruneOnly...),
@@ -211,16 +243,12 @@ func runReportAllSection(ctx context.Context, kind string, opts ReportAllOptions
 			Until:         opts.PruneUntil,
 			ProtectLabels: append([]string(nil), opts.PruneProtectLabels...),
 		})
-		report.Prune = &child
-		err = runErr
+		result.prune = &child
+		result.err = runErr
 	default:
-		err = fmt.Errorf("unsupported report kind %q", kind)
+		result.err = fmt.Errorf("unsupported report kind %q", kind)
 	}
-	if err != nil {
-		section.Status = "failed"
-		section.Error = err.Error()
-	}
-	return section, err
+	return result
 }
 
 func selectReportAllKinds(include, skip []string) ([]string, error) {
