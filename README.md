@@ -154,7 +154,7 @@ dm completion powershell
 
 | 命令 | 功能 |
 | --- | --- |
-| `dm pull` / `dm image pull` | 从 registry 拉取镜像，支持归档、导入 Docker、批量同步和重新推送 |
+| `dm pull` / `dm image pull` | 从 registry 拉取镜像，支持未压缩、gzip、zstd 镜像层归档、导入 Docker、批量同步和重新推送 |
 | `dm save` / `dm image save` | 导出本地镜像，支持筛选、通配符、dry-run 和批量导出 |
 | `dm load` / `dm image load` | 导入镜像 tar/tar.gz/tgz，默认递归扫描目录 |
 | `dm tree` / `dm image tree` | 分析镜像层、历史、大小占比和本地容器引用 |

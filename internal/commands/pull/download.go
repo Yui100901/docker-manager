@@ -16,6 +16,7 @@ import (
 
 	"docker-manager/internal/textfmt"
 
+	"github.com/klauspost/compress/zstd"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"golang.org/x/sync/errgroup"
 )
@@ -88,15 +89,22 @@ func (r *PullRunner) downloadLayer(ctx context.Context, info *ImageInfo, layer o
 }
 
 func materializeLayerTar(blobPath, tarPath, mediaType string) error {
-	if isZstdLayerMediaType(mediaType) {
-		return fmt.Errorf("暂不支持 zstd 压缩镜像层: %s", mediaType)
-	}
 	isGzip, err := fileHasGzipHeader(blobPath)
+	if err != nil {
+		return fmt.Errorf("读取层文件失败: %w", err)
+	}
+	isZstd, err := fileHasZstdHeader(blobPath)
 	if err != nil {
 		return fmt.Errorf("读取层文件失败: %w", err)
 	}
 	if isGzip || isGzipLayerMediaType(mediaType) {
 		if err := decompressGzipFile(blobPath, tarPath); err != nil {
+			return fmt.Errorf("解压失败: %w", err)
+		}
+		return os.Remove(blobPath)
+	}
+	if isZstd || isZstdLayerMediaType(mediaType) {
+		if err := decompressZstdFile(blobPath, tarPath); err != nil {
 			return fmt.Errorf("解压失败: %w", err)
 		}
 		return os.Remove(blobPath)
@@ -124,6 +132,24 @@ func fileHasGzipHeader(path string) (bool, error) {
 		return false, err
 	}
 	return n == 2 && header[0] == 0x1f && header[1] == 0x8b, nil
+}
+
+func fileHasZstdHeader(path string) (bool, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		if cerr := file.Close(); cerr != nil {
+			log.Printf("警告: 关闭文件 %s 失败: %v", path, cerr)
+		}
+	}()
+	var header [4]byte
+	n, err := io.ReadFull(file, header[:])
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return false, err
+	}
+	return n == 4 && header == [4]byte{0x28, 0xb5, 0x2f, 0xfd}, nil
 }
 
 func decompressGzipFile(srcPath, dstPath string) error {
@@ -164,12 +190,46 @@ func decompressGzipFile(srcPath, dstPath string) error {
 	return nil
 }
 
+func decompressZstdFile(srcPath, dstPath string) error {
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if cerr := src.Close(); cerr != nil {
+			log.Printf("警告: 关闭文件 %s 失败: %v", srcPath, cerr)
+		}
+	}()
+	zr, err := zstd.NewReader(src)
+	if err != nil {
+		return err
+	}
+	defer zr.Close()
+
+	_ = os.Remove(dstPath)
+	dst, err := os.Create(dstPath)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(dst, zr)
+	closeErr := dst.Close()
+	if copyErr != nil {
+		_ = os.Remove(dstPath)
+		return copyErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(dstPath)
+		return closeErr
+	}
+	return nil
+}
+
 func isGzipLayerMediaType(mediaType string) bool {
 	return strings.HasSuffix(mediaType, "+gzip") || strings.Contains(mediaType, ".tar.gzip")
 }
 
 func isZstdLayerMediaType(mediaType string) bool {
-	return strings.HasSuffix(mediaType, "+zstd")
+	return strings.HasSuffix(mediaType, "+zstd") || strings.Contains(mediaType, ".tar.zstd")
 }
 
 type httpStatusError struct {

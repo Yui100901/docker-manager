@@ -13,6 +13,8 @@ require (
 
 require github.com/moby/moby/api v1.55.0
 
+require github.com/klauspost/compress v1.19.0
+
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/containerd/errdefs v1.0.0

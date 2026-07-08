@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/Yui100901/MyGo/network/http_utils"
+	"github.com/klauspost/compress/zstd"
 	digest "github.com/opencontainers/go-digest"
 )
 
@@ -478,6 +479,76 @@ func TestMaterializeLayerTarDecompressesGzipLayer(t *testing.T) {
 	if _, err := os.Stat(blobPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("blob file still exists or unexpected stat error: %v", err)
 	}
+}
+
+func TestMaterializeLayerTarDecompressesZstdLayer(t *testing.T) {
+	dir := t.TempDir()
+	blobPath := filepath.Join(dir, "layer.blob")
+	tarPath := filepath.Join(dir, "layer.tar")
+	content := []byte("zstd compressed tar content")
+	if err := writeZstdTestFile(blobPath, content); err != nil {
+		t.Fatalf("writeZstdTestFile() error = %v", err)
+	}
+
+	if err := materializeLayerTar(blobPath, tarPath, "application/vnd.oci.image.layer.v1.tar+zstd"); err != nil {
+		t.Fatalf("materializeLayerTar() error = %v", err)
+	}
+	got, err := os.ReadFile(tarPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if string(got) != string(content) {
+		t.Fatalf("layer.tar = %q, want %q", got, content)
+	}
+	if _, err := os.Stat(blobPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("blob file still exists or unexpected stat error: %v", err)
+	}
+}
+
+func TestMaterializeLayerTarDetectsZstdHeader(t *testing.T) {
+	dir := t.TempDir()
+	blobPath := filepath.Join(dir, "layer.blob")
+	tarPath := filepath.Join(dir, "layer.tar")
+	content := []byte("zstd header compressed tar content")
+	if err := writeZstdTestFile(blobPath, content); err != nil {
+		t.Fatalf("writeZstdTestFile() error = %v", err)
+	}
+
+	if err := materializeLayerTar(blobPath, tarPath, "application/vnd.oci.image.layer.v1.tar"); err != nil {
+		t.Fatalf("materializeLayerTar() error = %v", err)
+	}
+	got, err := os.ReadFile(tarPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if string(got) != string(content) {
+		t.Fatalf("layer.tar = %q, want %q", got, content)
+	}
+	if _, err := os.Stat(blobPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("blob file still exists or unexpected stat error: %v", err)
+	}
+}
+
+func writeZstdTestFile(path string, content []byte) error {
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	zw, err := zstd.NewWriter(file)
+	if err != nil {
+		_ = file.Close()
+		return err
+	}
+	if _, err := zw.Write(content); err != nil {
+		_ = zw.Close()
+		_ = file.Close()
+		return err
+	}
+	if err := zw.Close(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
 }
 
 func TestResolveOutputFile(t *testing.T) {
