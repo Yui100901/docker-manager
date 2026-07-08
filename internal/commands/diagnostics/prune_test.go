@@ -18,18 +18,20 @@ import (
 )
 
 type fakePruneDockerService struct {
-	usage           pruneDiskUsage
-	containerReport container.PruneReport
-	imageReport     image.PruneReport
-	volumeReport    volume.PruneReport
-	cacheReport     *build.CachePruneReport
-	containers      []container.Summary
-	inspects        map[string]container.InspectResponse
-	calls           []string
+	usage            pruneDiskUsage
+	containerReport  container.PruneReport
+	imageReport      image.PruneReport
+	volumeReport     volume.PruneReport
+	cacheReport      *build.CachePruneReport
+	containers       []container.Summary
+	inspects         map[string]container.InspectResponse
+	calls            []string
+	diskUsageOptions []mobyclient.DiskUsageOptions
 }
 
-func (f *fakePruneDockerService) DiskUsage(ctx context.Context) (pruneDiskUsage, error) {
+func (f *fakePruneDockerService) DiskUsage(ctx context.Context, opts mobyclient.DiskUsageOptions) (pruneDiskUsage, error) {
 	f.calls = append(f.calls, "disk-usage")
+	f.diskUsageOptions = append(f.diskUsageOptions, opts)
 	if err := ctx.Err(); err != nil {
 		return pruneDiskUsage{}, err
 	}
@@ -140,6 +142,64 @@ func TestRunPruneReportSkipsVolumeReferencedByInspect(t *testing.T) {
 	if report.EstimatedBytes != 0 {
 		t.Fatalf("EstimatedBytes = %d, want 0", report.EstimatedBytes)
 	}
+}
+
+func TestRunPruneReportUsesDefaultDiskUsageOptionsWithoutOnly(t *testing.T) {
+	fake := &fakePruneDockerService{}
+	restoreFactory := replacePruneServiceFactory(fake)
+	defer restoreFactory()
+
+	if _, err := runPruneReport(context.Background(), PruneReportOptions{}); err != nil {
+		t.Fatalf("runPruneReport() error = %v", err)
+	}
+	if len(fake.diskUsageOptions) != 1 {
+		t.Fatalf("diskUsageOptions = %#v, want one call", fake.diskUsageOptions)
+	}
+	if fake.diskUsageOptions[0] != (mobyclient.DiskUsageOptions{}) {
+		t.Fatalf("DiskUsageOptions = %#v, want zero value for default full report", fake.diskUsageOptions[0])
+	}
+}
+
+func TestRunPruneReportUsesOnlyDiskUsageOptions(t *testing.T) {
+	fake := &fakePruneDockerService{
+		usage: pruneDiskUsage{
+			Volumes: []*volume.Volume{
+				{Name: "data", Driver: "local", UsageData: &volume.UsageData{RefCount: 0, Size: 500}},
+			},
+			Images: []*image.Summary{
+				{ID: "sha256:dangling-image", RepoTags: []string{"<none>:<none>"}, Size: 300},
+			},
+		},
+	}
+	restoreFactory := replacePruneServiceFactory(fake)
+	defer restoreFactory()
+
+	report, err := runPruneReport(context.Background(), PruneReportOptions{Only: []string{"volume"}})
+	if err != nil {
+		t.Fatalf("runPruneReport() error = %v", err)
+	}
+	if len(fake.diskUsageOptions) != 1 {
+		t.Fatalf("diskUsageOptions = %#v, want one call", fake.diskUsageOptions)
+	}
+	want := mobyclient.DiskUsageOptions{Volumes: true}
+	if fake.diskUsageOptions[0] != want {
+		t.Fatalf("DiskUsageOptions = %#v, want %#v", fake.diskUsageOptions[0], want)
+	}
+	if len(report.UnusedVolumes) != 1 || len(report.DanglingImages) != 0 {
+		t.Fatalf("report = %#v, want only volume candidates", report)
+	}
+	if !hasPruneCall(fake.calls, "list-containers") {
+		t.Fatalf("calls = %#v, want volume reference check", fake.calls)
+	}
+}
+
+func hasPruneCall(calls []string, want string) bool {
+	for _, call := range calls {
+		if call == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestEnsurePruneVolumeCandidatesStillUnreferencedRejectsReferencedVolume(t *testing.T) {

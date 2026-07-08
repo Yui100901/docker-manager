@@ -366,7 +366,7 @@ func runPruneReport(ctx context.Context, opts PruneReportOptions) (PruneReport, 
 	if err != nil {
 		return PruneReport{}, err
 	}
-	usage, err := svc.DiskUsage(ctx)
+	usage, err := svc.DiskUsage(ctx, pruneDiskUsageOptions(scope))
 	if err != nil {
 		return PruneReport{}, err
 	}
@@ -396,6 +396,18 @@ func runPruneReport(ctx context.Context, opts PruneReportOptions) (PruneReport, 
 		report.ApplyResult = &applyResult
 	}
 	return report, nil
+}
+
+func pruneDiskUsageOptions(scope PruneScope) mobyclient.DiskUsageOptions {
+	if len(scope.Only) == 0 {
+		return mobyclient.DiskUsageOptions{}
+	}
+	return mobyclient.DiskUsageOptions{
+		Containers: scope.includes(pruneKindContainer),
+		Images:     scope.includes(pruneKindImage),
+		Volumes:    scope.includes(pruneKindVolume),
+		BuildCache: scope.includes(pruneKindBuildCache),
+	}
 }
 
 func buildPruneReport(usage pruneDiskUsage, scope PruneScope) PruneReport {

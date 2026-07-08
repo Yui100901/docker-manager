@@ -13,7 +13,7 @@ import (
 )
 
 type pruneDockerService interface {
-	DiskUsage(ctx context.Context) (pruneDiskUsage, error)
+	DiskUsage(ctx context.Context, opts mobyclient.DiskUsageOptions) (pruneDiskUsage, error)
 	ListContainers(ctx context.Context, all bool) ([]container.Summary, error)
 	InspectContainer(ctx context.Context, id string) (container.InspectResponse, error)
 	PruneContainers(ctx context.Context, pruneFilters mobyclient.Filters) (container.PruneReport, error)
@@ -34,8 +34,8 @@ type dockerPruneService struct {
 	cli *mobyclient.Client
 }
 
-func (s *dockerPruneService) DiskUsage(ctx context.Context) (pruneDiskUsage, error) {
-	result, err := s.cli.DiskUsage(ctx, mobyclient.DiskUsageOptions{})
+func (s *dockerPruneService) DiskUsage(ctx context.Context, opts mobyclient.DiskUsageOptions) (pruneDiskUsage, error) {
+	result, err := s.cli.DiskUsage(ctx, opts)
 	if err != nil {
 		return pruneDiskUsage{}, err
 	}
