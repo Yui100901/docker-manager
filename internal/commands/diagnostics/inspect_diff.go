@@ -87,22 +87,15 @@ func runInspectDiff(ctx context.Context, leftName, rightName string, opts Inspec
 	}
 	names := []string{leftName, rightName}
 	inspects := make([]container.InspectResponse, len(names))
-	errs := make([]error, len(names))
-	parallel.ForEachIndex(ctx, len(names), len(names), func(ctx context.Context, i int) {
+	if err := parallel.ForEachIndexErr(ctx, len(names), len(names), func(ctx context.Context, i int) error {
 		inspect, err := svc.InspectContainer(ctx, names[i])
 		if err != nil {
-			errs[i] = err
-			return
+			return fmt.Errorf("inspect %s: %w", names[i], err)
 		}
 		inspects[i] = inspect
-	})
-	if err := ctx.Err(); err != nil {
+		return nil
+	}); err != nil {
 		return InspectDiffReport{}, err
-	}
-	for i, err := range errs {
-		if err != nil {
-			return InspectDiffReport{}, fmt.Errorf("inspect %s: %w", names[i], err)
-		}
 	}
 	return buildInspectDiffReport(leftName, rightName, inspects[0], inspects[1], opts), nil
 }

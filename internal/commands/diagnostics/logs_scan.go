@@ -199,13 +199,14 @@ func buildLogsScanReport(ctx context.Context, svc logsScanDockerService, targets
 		Keywords:       keywords,
 	}
 	results := make([]logsScanBuildResult, len(targets))
-	parallel.ForEachIndex(ctx, len(targets), diagnosticsInspectConcurrency, func(ctx context.Context, i int) {
-		results[i] = buildLogsScanContainerResult(ctx, svc, targets[i], opts, keywords)
-	})
+	if err := parallel.ForEachIndexErr(ctx, len(targets), diagnosticsInspectConcurrency, func(ctx context.Context, i int) error {
+		result := buildLogsScanContainerResult(ctx, svc, targets[i], opts, keywords)
+		results[i] = result
+		return result.err
+	}); err != nil {
+		return report, err
+	}
 	for _, result := range results {
-		if result.err != nil {
-			return report, result.err
-		}
 		if result.item.Name == "" && result.item.ID == "" {
 			continue
 		}
@@ -215,9 +216,6 @@ func buildLogsScanReport(ctx context.Context, svc logsScanDockerService, targets
 		report.Summary.Errors += result.summary.Errors
 		report.Summary.LogsUnavailable += result.summary.LogsUnavailable
 		report.Containers = append(report.Containers, result.item)
-	}
-	if err := ctx.Err(); err != nil {
-		return report, err
 	}
 	sortLogsScanReport(&report)
 	return report, nil
