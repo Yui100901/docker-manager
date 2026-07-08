@@ -12,8 +12,7 @@ import (
 
 	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/api/types/container"
-	mobycontainer "github.com/moby/moby/api/types/container"
-	mobymount "github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/api/types/volume"
 	mobyclient "github.com/moby/moby/client"
 )
@@ -52,7 +51,7 @@ func (s *dockerVolumeService) MeasureVolumeSize(ctx context.Context, volumeName,
 
 	containerName := "dm_volume_size_" + time.Now().Format("20060102150405") + "_" + safeVolumeProbeName(volumeName)
 	resp, err := s.cli.ContainerCreate(ctx, mobyclient.ContainerCreateOptions{
-		Config: &mobycontainer.Config{
+		Config: &container.Config{
 			Image: helperImage,
 			Cmd: []string{
 				"sh",
@@ -60,9 +59,9 @@ func (s *dockerVolumeService) MeasureVolumeSize(ctx context.Context, volumeName,
 				`bytes=$(du -sb /mnt/volume 2>/dev/null | awk '{print $1}'); if [ -n "$bytes" ]; then echo "$bytes"; else du -sk /mnt/volume 2>/dev/null | awk '{print $1 * 1024}'; fi`,
 			},
 		},
-		HostConfig: &mobycontainer.HostConfig{
-			Mounts: []mobymount.Mount{{
-				Type:     mobymount.TypeVolume,
+		HostConfig: &container.HostConfig{
+			Mounts: []mount.Mount{{
+				Type:     mount.TypeVolume,
 				Source:   volumeName,
 				Target:   "/mnt/volume",
 				ReadOnly: true,
@@ -78,7 +77,7 @@ func (s *dockerVolumeService) MeasureVolumeSize(ctx context.Context, volumeName,
 	if _, err := s.cli.ContainerStart(ctx, resp.ID, mobyclient.ContainerStartOptions{}); err != nil {
 		return -1, fmt.Errorf("start size probe container failed: %w", err)
 	}
-	waitResult := s.cli.ContainerWait(ctx, resp.ID, mobyclient.ContainerWaitOptions{Condition: mobycontainer.WaitConditionNotRunning})
+	waitResult := s.cli.ContainerWait(ctx, resp.ID, mobyclient.ContainerWaitOptions{Condition: container.WaitConditionNotRunning})
 	select {
 	case waitResp := <-waitResult.Result:
 		if waitResp.Error != nil {

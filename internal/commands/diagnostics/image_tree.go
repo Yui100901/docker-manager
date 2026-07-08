@@ -14,18 +14,18 @@ import (
 	"docker-manager/internal/parallel"
 	rpt "docker-manager/internal/report"
 
-	containerapi "github.com/moby/moby/api/types/container"
-	imageapi "github.com/moby/moby/api/types/image"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/image"
 	mobyclient "github.com/moby/moby/client"
 	"github.com/spf13/cobra"
 )
 
 type imageTreeDockerService interface {
-	ImageInspect(ctx context.Context, imageRef string) (imageapi.InspectResponse, error)
-	ImageHistory(ctx context.Context, imageRef string) ([]imageapi.HistoryResponseItem, error)
-	ImageList(ctx context.Context) ([]imageapi.Summary, error)
-	ListContainers(ctx context.Context, all bool) ([]containerapi.Summary, error)
-	InspectContainer(ctx context.Context, id string) (containerapi.InspectResponse, error)
+	ImageInspect(ctx context.Context, imageRef string) (image.InspectResponse, error)
+	ImageHistory(ctx context.Context, imageRef string) ([]image.HistoryResponseItem, error)
+	ImageList(ctx context.Context) ([]image.Summary, error)
+	ListContainers(ctx context.Context, all bool) ([]container.Summary, error)
+	InspectContainer(ctx context.Context, id string) (container.InspectResponse, error)
 }
 
 var newImageTreeDockerService = func() (imageTreeDockerService, error) {
@@ -155,8 +155,8 @@ func runImageTree(ctx context.Context, imageRef string, opts ImageTreeOptions) (
 	return report, nil
 }
 
-func inspectImageTreeContainers(ctx context.Context, svc imageTreeDockerService, containers []containerapi.Summary) (map[string]containerapi.InspectResponse, error) {
-	results := make([]containerapi.InspectResponse, len(containers))
+func inspectImageTreeContainers(ctx context.Context, svc imageTreeDockerService, containers []container.Summary) (map[string]container.InspectResponse, error) {
+	results := make([]container.InspectResponse, len(containers))
 	ok := make([]bool, len(containers))
 	parallel.ForEachIndex(ctx, len(containers), diagnosticsInspectConcurrency, func(ctx context.Context, i int) {
 		c := containers[i]
@@ -177,7 +177,7 @@ func inspectImageTreeContainers(ctx context.Context, svc imageTreeDockerService,
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	containerInspects := make(map[string]containerapi.InspectResponse, len(containers))
+	containerInspects := make(map[string]container.InspectResponse, len(containers))
 	for i, inspect := range results {
 		if ok[i] {
 			containerInspects[containers[i].ID] = inspect
@@ -186,7 +186,7 @@ func inspectImageTreeContainers(ctx context.Context, svc imageTreeDockerService,
 	return containerInspects, nil
 }
 
-func buildImageTreeReport(imageRef string, inspect imageapi.InspectResponse, history []imageapi.HistoryResponseItem, opts ImageTreeOptions) ImageTreeReport {
+func buildImageTreeReport(imageRef string, inspect image.InspectResponse, history []image.HistoryResponseItem, opts ImageTreeOptions) ImageTreeReport {
 	report := ImageTreeReport{
 		DockerEndpoint: docker.Endpoint(),
 		ImageRef:       imageRef,
@@ -200,7 +200,7 @@ func buildImageTreeReport(imageRef string, inspect imageapi.InspectResponse, his
 		RootFSLayers:   append([]string(nil), inspect.RootFS.Layers...),
 	}
 
-	ordered := append([]imageapi.HistoryResponseItem(nil), history...)
+	ordered := append([]image.HistoryResponseItem(nil), history...)
 	reverseHistory(ordered)
 	for i, item := range ordered {
 		layer := ImageLayerInfo{
@@ -273,13 +273,13 @@ func printImageTreeReport(w io.Writer, report ImageTreeReport, opts ImageTreeOpt
 	}
 }
 
-func enrichImageTreeUsage(report *ImageTreeReport, images []imageapi.Summary, containers []containerapi.Summary, inspects map[string]containerapi.InspectResponse) {
+func enrichImageTreeUsage(report *ImageTreeReport, images []image.Summary, containers []container.Summary, inspects map[string]container.InspectResponse) {
 	targetID := normalizeImageID(report.ID)
 	report.LocalRefs = imageLocalRefs(targetID, report.RepoTags, report.RepoDigests, images)
 	report.UsedBy = imageUsedByContainers(targetID, containers, inspects)
 }
 
-func imageLocalRefs(targetID string, tags, digests []string, images []imageapi.Summary) ImageLocalRefs {
+func imageLocalRefs(targetID string, tags, digests []string, images []image.Summary) ImageLocalRefs {
 	refs := ImageLocalRefs{
 		ID:          targetID,
 		RepoTags:    append([]string(nil), tags...),
@@ -317,7 +317,7 @@ func imageLocalRefs(targetID string, tags, digests []string, images []imageapi.S
 	return refs
 }
 
-func imageUsedByContainers(targetID string, containers []containerapi.Summary, inspects map[string]containerapi.InspectResponse) []ImageUsageRef {
+func imageUsedByContainers(targetID string, containers []container.Summary, inspects map[string]container.InspectResponse) []ImageUsageRef {
 	var refs []ImageUsageRef
 	seen := map[string]bool{}
 	for _, c := range containers {
@@ -381,7 +381,7 @@ func largestImageLayers(layers []ImageLayerInfo, top int) []ImageLayerInfo {
 	return candidates
 }
 
-func reverseHistory(history []imageapi.HistoryResponseItem) {
+func reverseHistory(history []image.HistoryResponseItem) {
 	for i, j := 0, len(history)-1; i < j; i, j = i+1, j-1 {
 		history[i], history[j] = history[j], history[i]
 	}
@@ -398,7 +398,7 @@ func normalizeImageID(id string) string {
 	return strings.TrimPrefix(strings.TrimSpace(id), "sha256:")
 }
 
-func isMetadataLayer(item imageapi.HistoryResponseItem) bool {
+func isMetadataLayer(item image.HistoryResponseItem) bool {
 	return item.ID == "" || item.ID == "<missing>" || item.Size == 0
 }
 
@@ -412,7 +412,7 @@ func cleanCreatedBy(value string) string {
 	return value
 }
 
-func imagePlatform(inspect imageapi.InspectResponse) string {
+func imagePlatform(inspect image.InspectResponse) string {
 	platform := inspect.Os
 	if platform == "" {
 		platform = "unknown"
@@ -450,42 +450,42 @@ func displayLayerText(value string, noTrunc bool, max int) string {
 	return value[:max-3] + "..."
 }
 
-func (s *dockerImageTreeService) ImageInspect(ctx context.Context, imageRef string) (imageapi.InspectResponse, error) {
+func (s *dockerImageTreeService) ImageInspect(ctx context.Context, imageRef string) (image.InspectResponse, error) {
 	result, err := s.cli.ImageInspect(ctx, imageRef)
 	if err != nil {
-		return imageapi.InspectResponse{}, err
+		return image.InspectResponse{}, err
 	}
-	return docker.ConvertDockerType[imageapi.InspectResponse](result)
+	return docker.ConvertDockerType[image.InspectResponse](result)
 }
 
-func (s *dockerImageTreeService) ImageHistory(ctx context.Context, imageRef string) ([]imageapi.HistoryResponseItem, error) {
+func (s *dockerImageTreeService) ImageHistory(ctx context.Context, imageRef string) ([]image.HistoryResponseItem, error) {
 	result, err := s.cli.ImageHistory(ctx, imageRef)
 	if err != nil {
 		return nil, err
 	}
-	return docker.ConvertDockerType[[]imageapi.HistoryResponseItem](result.Items)
+	return docker.ConvertDockerType[[]image.HistoryResponseItem](result.Items)
 }
 
-func (s *dockerImageTreeService) ImageList(ctx context.Context) ([]imageapi.Summary, error) {
+func (s *dockerImageTreeService) ImageList(ctx context.Context) ([]image.Summary, error) {
 	result, err := s.cli.ImageList(ctx, mobyclient.ImageListOptions{All: true})
 	if err != nil {
 		return nil, err
 	}
-	return docker.ConvertDockerType[[]imageapi.Summary](result.Items)
+	return docker.ConvertDockerType[[]image.Summary](result.Items)
 }
 
-func (s *dockerImageTreeService) ListContainers(ctx context.Context, all bool) ([]containerapi.Summary, error) {
+func (s *dockerImageTreeService) ListContainers(ctx context.Context, all bool) ([]container.Summary, error) {
 	result, err := s.cli.ContainerList(ctx, mobyclient.ContainerListOptions{All: all})
 	if err != nil {
 		return nil, err
 	}
-	return docker.ConvertDockerType[[]containerapi.Summary](result.Items)
+	return docker.ConvertDockerType[[]container.Summary](result.Items)
 }
 
-func (s *dockerImageTreeService) InspectContainer(ctx context.Context, id string) (containerapi.InspectResponse, error) {
+func (s *dockerImageTreeService) InspectContainer(ctx context.Context, id string) (container.InspectResponse, error) {
 	result, err := s.cli.ContainerInspect(ctx, id, mobyclient.ContainerInspectOptions{})
 	if err != nil {
-		return containerapi.InspectResponse{}, err
+		return container.InspectResponse{}, err
 	}
-	return docker.ConvertDockerType[containerapi.InspectResponse](result.Container)
+	return docker.ConvertDockerType[container.InspectResponse](result.Container)
 }

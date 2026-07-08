@@ -8,6 +8,12 @@
 - `github.com/docker/go-connections` and `github.com/docker/go-units` still appear in the module graph only as transitive Moby dependencies.
 - Validation completed locally with `go test ./...`.
 
+## Naming cleanup 2026-07-08
+
+- Migration-era aliases such as `oldcontainer`, `mobycontainer`, `mobynetwork`, `mobyvolume`, `mobyimage`, `mobymount`, `containerapi`, and `imageapi` have been removed from Go source.
+- Moby API type imports now use their package defaults: `container`, `network`, `volume`, `image`, and `mount`.
+- The `mobyclient` alias is intentionally retained for `github.com/moby/moby/client` to distinguish SDK client options/results from this project's Docker wrapper types.
+- Historical references to `github.com/docker/docker` are kept below as migration notes; current source and module files no longer depend on it directly.
 
 本文档记录从旧 Docker Go SDK 迁移到新 Moby 拆分模块时的影响面和执行清单。目标是先明确会导致哪些代码调整，再按阶段实施迁移。
 

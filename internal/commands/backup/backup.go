@@ -16,7 +16,6 @@ import (
 	"docker-manager/internal/version"
 
 	"github.com/moby/moby/api/types/container"
-	mobycontainer "github.com/moby/moby/api/types/container"
 )
 
 func backupContainers(ctx context.Context, patterns []string, opts BackupOptions) (BackupContainersResult, error) {
@@ -190,7 +189,7 @@ func matchBackupContainerTargets(containers []container.Summary, pattern string)
 }
 
 func backupContainerMatchesPattern(c container.Summary, pattern string) bool {
-	converted, err := docker.ConvertDockerType[mobycontainer.Summary](c)
+	converted, err := docker.ConvertDockerType[container.Summary](c)
 	if err != nil {
 		return false
 	}

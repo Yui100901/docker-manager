@@ -8,7 +8,7 @@ import (
 	"io"
 	"os"
 
-	mobyimage "github.com/moby/moby/api/types/image"
+	"github.com/moby/moby/api/types/image"
 	"github.com/moby/moby/client"
 )
 
@@ -28,11 +28,11 @@ func NewImageManager() (*ImageManager, error) {
 	return &ImageManager{cli: cli}, nil
 }
 
-func (im *ImageManager) List(all bool) ([]mobyimage.Summary, error) {
+func (im *ImageManager) List(all bool) ([]image.Summary, error) {
 	return im.ListWithContext(context.Background(), all)
 }
 
-func (im *ImageManager) ListWithContext(ctx context.Context, all bool) ([]mobyimage.Summary, error) {
+func (im *ImageManager) ListWithContext(ctx context.Context, all bool) ([]image.Summary, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}

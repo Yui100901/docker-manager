@@ -7,67 +7,67 @@ import (
 	"sync"
 	"testing"
 
-	containerapi "github.com/moby/moby/api/types/container"
-	imageapi "github.com/moby/moby/api/types/image"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/image"
 )
 
 type fakeImageTreeDockerService struct {
 	mu                sync.Mutex
-	inspect           imageapi.InspectResponse
-	history           []imageapi.HistoryResponseItem
-	images            []imageapi.Summary
-	containers        []containerapi.Summary
-	containerInspects map[string]containerapi.InspectResponse
+	inspect           image.InspectResponse
+	history           []image.HistoryResponseItem
+	images            []image.Summary
+	containers        []container.Summary
+	containerInspects map[string]container.InspectResponse
 	calls             []string
 }
 
-func (f *fakeImageTreeDockerService) ImageInspect(ctx context.Context, imageRef string) (imageapi.InspectResponse, error) {
+func (f *fakeImageTreeDockerService) ImageInspect(ctx context.Context, imageRef string) (image.InspectResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, "inspect:"+imageRef)
 	return f.inspect, nil
 }
 
-func (f *fakeImageTreeDockerService) ImageHistory(ctx context.Context, imageRef string) ([]imageapi.HistoryResponseItem, error) {
+func (f *fakeImageTreeDockerService) ImageHistory(ctx context.Context, imageRef string) ([]image.HistoryResponseItem, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, "history:"+imageRef)
 	return f.history, nil
 }
 
-func (f *fakeImageTreeDockerService) ImageList(ctx context.Context) ([]imageapi.Summary, error) {
+func (f *fakeImageTreeDockerService) ImageList(ctx context.Context) ([]image.Summary, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, "list-images")
 	return f.images, nil
 }
 
-func (f *fakeImageTreeDockerService) ListContainers(ctx context.Context, all bool) ([]containerapi.Summary, error) {
+func (f *fakeImageTreeDockerService) ListContainers(ctx context.Context, all bool) ([]container.Summary, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, "list-containers")
 	return f.containers, nil
 }
 
-func (f *fakeImageTreeDockerService) InspectContainer(ctx context.Context, id string) (containerapi.InspectResponse, error) {
+func (f *fakeImageTreeDockerService) InspectContainer(ctx context.Context, id string) (container.InspectResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, "inspect-container:"+id)
 	if inspect, ok := f.containerInspects[id]; ok {
 		return inspect, nil
 	}
-	return containerapi.InspectResponse{}, nil
+	return container.InspectResponse{}, nil
 }
 
 func TestBuildImageTreeReportOrdersHistoryAndFindsLargestLayers(t *testing.T) {
-	report := buildImageTreeReport("demo:latest", imageapi.InspectResponse{
+	report := buildImageTreeReport("demo:latest", image.InspectResponse{
 		ID:           "sha256:imageid1234567890",
 		RepoTags:     []string{"demo:latest"},
 		Architecture: "amd64",
 		Os:           "linux",
 		Size:         1000,
-		RootFS:       imageapi.RootFS{Type: "layers", Layers: []string{"layer1", "layer2"}},
-	}, []imageapi.HistoryResponseItem{
+		RootFS:       image.RootFS{Type: "layers", Layers: []string{"layer1", "layer2"}},
+	}, []image.HistoryResponseItem{
 		{ID: "sha256:top", CreatedBy: "/bin/sh -c apk add curl", Size: 700},
 		{ID: "<missing>", CreatedBy: "/bin/sh -c #(nop)  ENV A=B", Size: 0},
 		{ID: "sha256:base", CreatedBy: "/bin/sh -c #(nop)  ADD file", Size: 300},
@@ -95,8 +95,8 @@ func TestBuildImageTreeReportOrdersHistoryAndFindsLargestLayers(t *testing.T) {
 
 func TestRunImageTreeCallsInspectAndHistory(t *testing.T) {
 	fake := &fakeImageTreeDockerService{
-		inspect: imageapi.InspectResponse{ID: "sha256:abc", Size: 1},
-		history: []imageapi.HistoryResponseItem{{ID: "sha256:abc", Size: 1}},
+		inspect: image.InspectResponse{ID: "sha256:abc", Size: 1},
+		history: []image.HistoryResponseItem{{ID: "sha256:abc", Size: 1}},
 	}
 	restore := replaceImageTreeServiceFactory(fake)
 	defer restore()
@@ -113,23 +113,23 @@ func TestRunImageTreeCallsInspectAndHistory(t *testing.T) {
 func TestRunImageTreeIncludesLocalRefsAndUsedByContainers(t *testing.T) {
 	imageID := "sha256:abc1234567890"
 	fake := &fakeImageTreeDockerService{
-		inspect: imageapi.InspectResponse{
+		inspect: image.InspectResponse{
 			ID:          imageID,
 			RepoTags:    []string{"demo:latest"},
 			RepoDigests: []string{"demo@sha256:one"},
 			Size:        1,
 		},
-		history: []imageapi.HistoryResponseItem{{ID: imageID, Size: 1}},
-		images: []imageapi.Summary{{
+		history: []image.HistoryResponseItem{{ID: imageID, Size: 1}},
+		images: []image.Summary{{
 			ID:          imageID,
 			RepoTags:    []string{"demo:latest", "demo:stable"},
 			RepoDigests: []string{"demo@sha256:one", "demo@sha256:two"},
 		}},
-		containers: []containerapi.Summary{
+		containers: []container.Summary{
 			{ID: "api-container-id", Names: []string{"/api"}, Image: "demo:stable", ImageID: imageID, State: "running", Status: "Up"},
 			{ID: "other-container-id", Names: []string{"/other"}, Image: "other:latest", ImageID: "sha256:other", State: "exited"},
 		},
-		containerInspects: map[string]containerapi.InspectResponse{
+		containerInspects: map[string]container.InspectResponse{
 			"api-container-id": {
 				ID:    "api-container-id",
 				Name:  "/api",

@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/moby/moby/api/types/container"
-	mobycontainer "github.com/moby/moby/api/types/container"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -18,7 +17,7 @@ import (
 )
 
 func writeComposeFile(path string, inspect container.InspectResponse) error {
-	converted, err := docker.ConvertDockerType[mobycontainer.InspectResponse](inspect)
+	converted, err := docker.ConvertDockerType[container.InspectResponse](inspect)
 	if err != nil {
 		return err
 	}

@@ -10,9 +10,7 @@ import (
 	"docker-manager/internal/resourcefilter"
 
 	"github.com/moby/moby/api/types/container"
-	mobycontainer "github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/volume"
-	mobyvolume "github.com/moby/moby/api/types/volume"
 )
 
 type TargetSelection struct {
@@ -61,7 +59,7 @@ func filterContainerSummaries(containers []container.Summary, filters []string) 
 	}
 	var filtered []container.Summary
 	for _, c := range containers {
-		converted, err := docker.ConvertDockerType[mobycontainer.Summary](c)
+		converted, err := docker.ConvertDockerType[container.Summary](c)
 		if err != nil {
 			continue
 		}
@@ -81,7 +79,7 @@ func filterVolumesByPatterns(volumes []volume.Volume, filters []string) []volume
 	}
 	var filtered []volume.Volume
 	for _, vol := range volumes {
-		converted, err := docker.ConvertDockerType[mobyvolume.Volume](vol)
+		converted, err := docker.ConvertDockerType[volume.Volume](vol)
 		if err != nil {
 			continue
 		}

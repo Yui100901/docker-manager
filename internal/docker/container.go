@@ -6,9 +6,9 @@ import (
 	"log"
 	"time"
 
-	mobycontainer "github.com/moby/moby/api/types/container"
-	mobynetwork "github.com/moby/moby/api/types/network"
-	mobyvolume "github.com/moby/moby/api/types/volume"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/api/types/volume"
 	"github.com/moby/moby/client"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -25,11 +25,11 @@ func NewContainerManager() (*ContainerManager, error) {
 	return &ContainerManager{cli: cli}, nil
 }
 
-func (cm *ContainerManager) ListAll() ([]mobycontainer.Summary, error) {
+func (cm *ContainerManager) ListAll() ([]container.Summary, error) {
 	return cm.ListAllContext(context.Background())
 }
 
-func (cm *ContainerManager) ListAllContext(ctx context.Context) ([]mobycontainer.Summary, error) {
+func (cm *ContainerManager) ListAllContext(ctx context.Context) ([]container.Summary, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	result, err := cm.cli.ContainerList(ctx, client.ContainerListOptions{All: true})
@@ -56,53 +56,53 @@ func (cm *ContainerManager) Remove(containerID string, force, removeVolumes bool
 	return err
 }
 
-func (cm *ContainerManager) Inspect(containerID string) (mobycontainer.InspectResponse, error) {
+func (cm *ContainerManager) Inspect(containerID string) (container.InspectResponse, error) {
 	return cm.InspectContext(context.Background(), containerID)
 }
 
-func (cm *ContainerManager) InspectContext(ctx context.Context, containerID string) (mobycontainer.InspectResponse, error) {
+func (cm *ContainerManager) InspectContext(ctx context.Context, containerID string) (container.InspectResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	result, err := cm.cli.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
 	if err != nil {
-		return mobycontainer.InspectResponse{}, err
+		return container.InspectResponse{}, err
 	}
 	return result.Container, nil
 }
 
-func (cm *ContainerManager) InspectNetwork(name string) (mobynetwork.Inspect, error) {
+func (cm *ContainerManager) InspectNetwork(name string) (network.Inspect, error) {
 	return cm.InspectNetworkContext(context.Background(), name)
 }
 
-func (cm *ContainerManager) InspectNetworkContext(ctx context.Context, name string) (mobynetwork.Inspect, error) {
+func (cm *ContainerManager) InspectNetworkContext(ctx context.Context, name string) (network.Inspect, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	result, err := cm.cli.NetworkInspect(ctx, name, client.NetworkInspectOptions{})
 	if err != nil {
-		return mobynetwork.Inspect{}, err
+		return network.Inspect{}, err
 	}
 	return result.Network, nil
 }
 
-func (cm *ContainerManager) InspectVolume(name string) (mobyvolume.Volume, error) {
+func (cm *ContainerManager) InspectVolume(name string) (volume.Volume, error) {
 	return cm.InspectVolumeContext(context.Background(), name)
 }
 
-func (cm *ContainerManager) InspectVolumeContext(ctx context.Context, name string) (mobyvolume.Volume, error) {
+func (cm *ContainerManager) InspectVolumeContext(ctx context.Context, name string) (volume.Volume, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	result, err := cm.cli.VolumeInspect(ctx, name, client.VolumeInspectOptions{})
 	if err != nil {
-		return mobyvolume.Volume{}, err
+		return volume.Volume{}, err
 	}
 	return result.Volume, nil
 }
 
-func (cm *ContainerManager) Create(config *mobycontainer.Config,
-	hostConfig *mobycontainer.HostConfig,
-	networkingConfig *mobynetwork.NetworkingConfig,
+func (cm *ContainerManager) Create(config *container.Config,
+	hostConfig *container.HostConfig,
+	networkingConfig *network.NetworkingConfig,
 	platform *ocispec.Platform,
-	containerName string) (mobycontainer.CreateResponse, error) {
+	containerName string) (container.CreateResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	result, err := cm.cli.ContainerCreate(ctx, client.ContainerCreateOptions{
@@ -113,9 +113,9 @@ func (cm *ContainerManager) Create(config *mobycontainer.Config,
 		Name:             containerName,
 	})
 	if err != nil {
-		return mobycontainer.CreateResponse{}, err
+		return container.CreateResponse{}, err
 	}
-	return mobycontainer.CreateResponse{ID: result.ID, Warnings: result.Warnings}, nil
+	return container.CreateResponse{ID: result.ID, Warnings: result.Warnings}, nil
 }
 
 func (cm *ContainerManager) Start(containerID string) error {
@@ -125,11 +125,11 @@ func (cm *ContainerManager) Start(containerID string) error {
 	return err
 }
 
-func (cm *ContainerManager) buildNetworkingConfig(inspect mobycontainer.InspectResponse) *mobynetwork.NetworkingConfig {
+func (cm *ContainerManager) buildNetworkingConfig(inspect container.InspectResponse) *network.NetworkingConfig {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	nc := &mobynetwork.NetworkingConfig{
-		EndpointsConfig: make(map[string]*mobynetwork.EndpointSettings),
+	nc := &network.NetworkingConfig{
+		EndpointsConfig: make(map[string]*network.EndpointSettings),
 	}
 
 	result, err := cm.cli.NetworkList(ctx, client.NetworkListOptions{})
@@ -149,7 +149,7 @@ func (cm *ContainerManager) buildNetworkingConfig(inspect mobycontainer.InspectR
 
 	for netName, netSettings := range inspect.NetworkSettings.Networks {
 		if existing[netName] {
-			nc.EndpointsConfig[netName] = &mobynetwork.EndpointSettings{
+			nc.EndpointsConfig[netName] = &network.EndpointSettings{
 				Aliases: netSettings.Aliases,
 			}
 		} else {
