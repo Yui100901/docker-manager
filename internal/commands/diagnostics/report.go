@@ -9,6 +9,7 @@ func NewReportCommand() *cobra.Command {
 	}
 
 	cmd.AddCommand(
+		NewReportAllCommand(),
 		NewHealthCommand(),
 		NewNetworkCommand(),
 		NewLogsScanCommand(),

@@ -222,6 +222,13 @@ func TestRootCommandExposesLeafShortcuts(t *testing.T) {
 	if report == nil || report.Name() != "registry" {
 		t.Fatalf("Find(report registry) = %#v, want registry report command", report)
 	}
+	reportAll, _, err := cmd.Find([]string{"report", "all"})
+	if err != nil {
+		t.Fatalf("Find(report all) error = %v", err)
+	}
+	if reportAll == nil || reportAll.Name() != "all" {
+		t.Fatalf("Find(report all) = %#v, want all report command", reportAll)
+	}
 	imagePull, _, err := cmd.Find([]string{"image", "pull"})
 	if err != nil {
 		t.Fatalf("Find(image pull) error = %v", err)
