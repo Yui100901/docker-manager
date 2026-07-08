@@ -4,10 +4,10 @@ import (
 	"context"
 	"io"
 	"runtime"
-	"sync"
 	"time"
 
 	"docker-manager/internal/commandflags"
+	"docker-manager/internal/parallel"
 	rpt "docker-manager/internal/report"
 
 	"github.com/spf13/cobra"
@@ -113,7 +113,7 @@ func runDoctor(ctx context.Context, opts DoctorOptions) DoctorReport {
 		})
 		nextIndex++
 	}
-	for _, checks := range runDoctorCheckGroups(nextIndex, groups) {
+	for _, checks := range runDoctorCheckGroups(ctx, nextIndex, groups) {
 		report.Checks = append(report.Checks, checks...)
 	}
 	report.OverallStatus = doctorOverallStatus(report.Checks)
@@ -126,17 +126,11 @@ type doctorCheckGroup struct {
 	check func() []DoctorCheck
 }
 
-func runDoctorCheckGroups(total int, groups []doctorCheckGroup) [][]DoctorCheck {
+func runDoctorCheckGroups(ctx context.Context, total int, groups []doctorCheckGroup) [][]DoctorCheck {
 	results := make([][]DoctorCheck, total)
-	var wg sync.WaitGroup
-	wg.Add(len(groups))
-	for _, group := range groups {
-		group := group
-		go func() {
-			defer wg.Done()
-			results[group.index] = group.check()
-		}()
-	}
-	wg.Wait()
+	parallel.ForEachIndex(ctx, len(groups), diagnosticsInspectConcurrency, func(ctx context.Context, i int) {
+		group := groups[i]
+		results[group.index] = group.check()
+	})
 	return results
 }

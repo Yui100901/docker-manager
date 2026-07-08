@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"docker-manager/internal/commandflags"
+	"docker-manager/internal/parallel"
 
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -144,38 +145,18 @@ func runPullBatchWithDeps(ctx context.Context, opts PullBatchOptions, pull pullB
 	}
 
 	var mu sync.Mutex
-	jobs := make(chan int)
-	workerCount := opts.Concurrency
-	if workerCount > len(images) {
-		workerCount = len(images)
-	}
-	var wg sync.WaitGroup
-	for worker := 0; worker < workerCount; worker++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for idx := range jobs {
-				result := runPullBatchItem(ctx, images[idx], opts, resumeState, pull, exists, progressOutput)
-				mu.Lock()
-				report.Items[idx] = result
-				updatePullBatchReportCounts(&report)
-				updatePullBatchStateItem(state, result)
-				if err := writePullBatchState(opts.StateFile, state); err != nil && result.Status != pullBatchStatusFailed {
-					report.Items[idx].Status = pullBatchStatusFailed
-					report.Items[idx].Message = "写入状态文件失败: " + err.Error()
-				}
-				mu.Unlock()
-			}
-		}()
-	}
-	for idx := range images {
-		if err := ctx.Err(); err != nil {
-			break
+	parallel.ForEachIndex(ctx, len(images), opts.Concurrency, func(ctx context.Context, idx int) {
+		result := runPullBatchItem(ctx, images[idx], opts, resumeState, pull, exists, progressOutput)
+		mu.Lock()
+		defer mu.Unlock()
+		report.Items[idx] = result
+		updatePullBatchReportCounts(&report)
+		updatePullBatchStateItem(state, result)
+		if err := writePullBatchState(opts.StateFile, state); err != nil && result.Status != pullBatchStatusFailed {
+			report.Items[idx].Status = pullBatchStatusFailed
+			report.Items[idx].Message = "写入状态文件失败: " + err.Error()
 		}
-		jobs <- idx
-	}
-	close(jobs)
-	wg.Wait()
+	})
 
 	updatePullBatchReportCounts(&report)
 	if err := ctx.Err(); err != nil {

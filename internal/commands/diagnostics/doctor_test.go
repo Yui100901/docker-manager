@@ -144,6 +144,25 @@ func TestRunDoctorReportsDockerFailureAndSkippedRegistry(t *testing.T) {
 	}
 }
 
+func TestRunDoctorCheckGroupsSkipsWorkWhenCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	called := false
+	results := runDoctorCheckGroups(ctx, 1, []doctorCheckGroup{{
+		index: 0,
+		check: func() []DoctorCheck {
+			called = true
+			return []DoctorCheck{{Name: "should-not-run", Status: "failed"}}
+		},
+	}})
+	if called {
+		t.Fatal("doctor check group ran after context was canceled")
+	}
+	if len(results) != 1 || len(results[0]) != 0 {
+		t.Fatalf("results = %#v, want empty result slot", results)
+	}
+}
+
 func TestDoctorCommandSupportsJSON(t *testing.T) {
 	old := newDoctorDockerService
 	newDoctorDockerService = func() (doctorDockerService, error) {

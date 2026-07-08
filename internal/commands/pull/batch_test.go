@@ -7,7 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestLoadPullBatchImagesReadsFileAndDeduplicates(t *testing.T) {
@@ -204,5 +206,59 @@ func TestRunPullBatchSkipExistingSkipsPull(t *testing.T) {
 	}
 	if report.Skipped != 1 || report.Items[0].Status != pullBatchStatusSkipped {
 		t.Fatalf("report = %#v, want skipped", report)
+	}
+}
+
+func TestRunPullBatchRespectsConcurrencyAndCancel(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var active int32
+	var maxActive int32
+	started := make(chan struct{}, 4)
+	release := make(chan struct{})
+	pull := func(image string, opts PullOptions) error {
+		now := atomic.AddInt32(&active, 1)
+		for {
+			previous := atomic.LoadInt32(&maxActive)
+			if now <= previous || atomic.CompareAndSwapInt32(&maxActive, previous, now) {
+				break
+			}
+		}
+		started <- struct{}{}
+		<-release
+		atomic.AddInt32(&active, -1)
+		return nil
+	}
+	exists := func(ctx context.Context, image, target string, opts PullOptions) (bool, error) {
+		return false, nil
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := runPullBatchWithDeps(ctx, PullBatchOptions{
+			Images:      []string{"one:latest", "two:latest", "three:latest", "four:latest"},
+			OutputDir:   dir,
+			Concurrency: 2,
+			Retries:     0,
+		}, pull, exists)
+		done <- err
+	}()
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for initial workers")
+		}
+	}
+	cancel()
+	close(release)
+	err := <-done
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("runPullBatchWithDeps() error = %v, want context.Canceled", err)
+	}
+	if maxActive > 2 {
+		t.Fatalf("max active workers = %d, want <= 2", maxActive)
 	}
 }
