@@ -10,7 +10,7 @@
 - 容器逆向和重建: `dm reverse` 只读输出 `docker run` 或 compose，`dm rerun` 显式确认后重建容器。
 - 容器离线迁移: `dm backup` 和 `dm restore` 支持批量包、合并包、checksum、恢复前计划预览、加密包、分卷包、README 和 restore 脚本。
 - 诊断报告: `dm health`、`dm network`、`dm logs`、`dm diff`、`dm prune`、`dm volumes`、`dm registry`、`dm doctor`。
-- Registry 同步策略: `dm registry sync` 可按 YAML 策略读取源仓库 tag、应用 include/exclude 规则，并生成 dry-run 同步计划。
+- Registry 同步策略: `dm registry sync` 可按 YAML 策略读取源仓库 tag、应用 include/exclude 规则，默认生成 dry-run 计划，显式 `--apply` 后执行同步。
 - 远程 Docker 管理: 支持 Docker 标准环境变量、`.dm.yaml` 和全局参数指定 Docker endpoint。
 - Shell completion: 支持 bash、zsh、fish 和 PowerShell，容器/镜像/volume 候选会按当前 Docker endpoint 查询。
 
@@ -170,7 +170,7 @@ dm completion powershell
 | `dm prune` | 生成可清理资源报告，可通过 `--apply --confirm` 执行 |
 | `dm volumes` | 分析 volume 使用关系、大小和疑似未使用资源 |
 | `dm registry` | 检查 registry 凭据、连通性和 Docker RegistryLogin |
-| `dm registry sync` / `dm report registry-sync` | 按策略生成 registry tag 同步 dry-run 计划，支持多目标和通配符 tag 规则 |
+| `dm registry sync` / `dm report registry-sync` | 按策略生成 registry tag 同步计划，`dm registry sync --apply` 可执行同步 |
 | `dm doctor` | 检查 Docker、registry、代理、磁盘、配置和工具链 |
 | `dm version` | 输出版本、commit、构建时间和平台 |
 
@@ -249,6 +249,7 @@ mirrors:
 
 ```bash
 dm registry sync --file registry-sync.yaml --format markdown
+dm registry sync --file registry-sync.yaml --apply --skip-existing --output-dir ./sync-cache
 dm report registry-sync --file registry-sync.yaml --format json
 ```
 

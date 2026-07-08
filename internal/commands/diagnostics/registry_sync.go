@@ -11,9 +11,12 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"docker-manager/internal/commandflags"
+	"docker-manager/internal/commands/pull"
+	"docker-manager/internal/parallel"
 	"docker-manager/internal/registryauth"
 	rpt "docker-manager/internal/report"
 
@@ -24,15 +27,40 @@ import (
 
 const registrySyncDefaultTagPageSize = 1000
 
+const (
+	registrySyncStatusPlanned = "planned"
+	registrySyncStatusSuccess = "success"
+	registrySyncStatusSkipped = "skipped"
+	registrySyncStatusFailed  = "failed"
+)
+
 var registrySyncHTTPClient httpDoer = http.DefaultClient
 
+type registrySyncPullRunner interface {
+	PullImage(imageName string, opts pull.PullOptions) error
+	TargetManifestExists(ctx context.Context, imageName, target string, opts pull.PullOptions) (bool, error)
+}
+
+var newRegistrySyncPullRunner = func(proxy, targetOS, arch string, timeout time.Duration) (registrySyncPullRunner, error) {
+	return pull.NewPullRunnerWithTimeout(proxy, targetOS, arch, timeout)
+}
+
 type RegistrySyncOptions struct {
-	Config       string
-	DockerConfig string
-	PlainHTTP    bool
-	Timeout      time.Duration
-	DryRun       bool
-	FailOnError  bool
+	Config         string
+	DockerConfig   string
+	PlainHTTP      bool
+	Timeout        time.Duration
+	DryRun         bool
+	Apply          bool
+	FailOnError    bool
+	Proxy          string
+	TargetOS       string
+	Arch           string
+	OutputDir      string
+	Concurrency    int
+	Retries        int
+	SkipExisting   bool
+	ProgressOutput io.Writer
 	commandflags.FormatOptions
 }
 
@@ -67,6 +95,7 @@ type RegistrySyncSummary struct {
 	Targets    int `json:"targets"`
 	TagsListed int `json:"tags_listed"`
 	Planned    int `json:"planned"`
+	Succeeded  int `json:"succeeded"`
 	Skipped    int `json:"skipped"`
 	Failed     int `json:"failed"`
 }
@@ -82,12 +111,14 @@ type RegistrySyncMirrorResult struct {
 }
 
 type RegistrySyncItem struct {
-	Source   string `json:"source"`
-	Target   string `json:"target"`
-	Tag      string `json:"tag"`
-	Platform string `json:"platform,omitempty"`
-	Status   string `json:"status"`
-	Reason   string `json:"reason,omitempty"`
+	Source      string `json:"source"`
+	Target      string `json:"target"`
+	TargetInput string `json:"target_input,omitempty"`
+	Tag         string `json:"tag"`
+	Platform    string `json:"platform,omitempty"`
+	Status      string `json:"status"`
+	Reason      string `json:"reason,omitempty"`
+	Attempts    int    `json:"attempts,omitempty"`
 }
 
 type registrySyncImageRef struct {
@@ -102,19 +133,30 @@ type registrySyncAuth struct {
 }
 
 func NewRegistrySyncReportCommand() *cobra.Command {
-	return newRegistrySyncCommand("registry-sync")
+	return newRegistrySyncCommand("registry-sync", false)
 }
 
-func newRegistrySyncCommand(use string) *cobra.Command {
+func newRegistrySyncCommand(use string, allowApply bool) *cobra.Command {
 	opts := RegistrySyncOptions{
 		Timeout:     30 * time.Second,
 		DryRun:      true,
 		FailOnError: true,
+		TargetOS:    "linux",
+		Arch:        "amd64",
+		OutputDir:   ".",
+		Concurrency: 1,
+		Retries:     0,
 	}
 	cmd := &cobra.Command{
 		Use:   use,
 		Short: "按配置生成 registry 镜像同步计划",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if !allowApply {
+				opts.DryRun = true
+			} else if opts.Apply {
+				opts.DryRun = false
+			}
+			opts.ProgressOutput = cmd.OutOrStdout()
 			report, err := runRegistrySync(cmd.Context(), opts)
 			if err != nil {
 				return err
@@ -131,8 +173,18 @@ func newRegistrySyncCommand(use string) *cobra.Command {
 	cmd.Flags().StringVar(&opts.DockerConfig, "docker-config", "", "Docker config.json 路径，默认使用 DOCKER_CONFIG/config.json 或 ~/.docker/config.json")
 	cmd.Flags().BoolVar(&opts.PlainHTTP, "plain-http", false, "使用 http:// 访问 registry，适用于未启用 TLS 的内网 registry")
 	cmd.Flags().DurationVar(&opts.Timeout, "timeout", opts.Timeout, "registry tag 读取总超时时间")
-	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", opts.DryRun, "只生成同步计划，不执行拉取或推送")
 	cmd.Flags().BoolVar(&opts.FailOnError, "fail-on-error", opts.FailOnError, "同步计划存在失败项时返回非零退出码")
+	if allowApply {
+		cmd.Flags().BoolVar(&opts.DryRun, "dry-run", opts.DryRun, "只生成同步计划，不执行拉取或推送")
+		cmd.Flags().BoolVar(&opts.Apply, "apply", false, "执行同步；未指定时仅生成 dry-run 计划")
+		cmd.Flags().StringVar(&opts.Proxy, "proxy", "", "强制指定 HTTP 代理；为空时使用环境变量代理")
+		cmd.Flags().StringVar(&opts.TargetOS, "os", opts.TargetOS, "执行同步时选择的目标操作系统")
+		cmd.Flags().StringVarP(&opts.Arch, "arch", "a", opts.Arch, "执行同步时选择的目标架构")
+		cmd.Flags().StringVar(&opts.OutputDir, "output-dir", opts.OutputDir, "同步执行时保存中间镜像 tar 的目录")
+		cmd.Flags().IntVar(&opts.Concurrency, "concurrency", opts.Concurrency, "同步执行并发数")
+		cmd.Flags().IntVar(&opts.Retries, "retries", opts.Retries, "同步执行失败后的重试次数")
+		cmd.Flags().BoolVar(&opts.SkipExisting, "skip-existing", false, "目标 registry 已存在同名 manifest 时跳过")
+	}
 	commandflags.AddReportFormatFlag(cmd, &opts.Format)
 	return cmd
 }
@@ -145,10 +197,6 @@ func runRegistrySync(ctx context.Context, opts RegistrySyncOptions) (RegistrySyn
 	}
 	if strings.TrimSpace(opts.Config) == "" {
 		return report, fmt.Errorf("请通过 --file 指定 registry 同步策略文件")
-	}
-	if !opts.DryRun {
-		report.Warnings = append(report.Warnings, "真实同步执行尚未实现，请使用 --dry-run 生成计划")
-		return report, fmt.Errorf("registry sync execute is not implemented")
 	}
 	if opts.Timeout <= 0 {
 		opts.Timeout = 30 * time.Second
@@ -168,21 +216,13 @@ func runRegistrySync(ctx context.Context, opts RegistrySyncOptions) (RegistrySyn
 		result, items := buildRegistrySyncMirrorPlan(ctx, mirror, opts)
 		report.Mirrors = append(report.Mirrors, result)
 		report.Items = append(report.Items, items...)
-		report.Summary.Targets += len(mirror.Targets)
-		report.Summary.TagsListed += result.TagsListed
-		for _, item := range items {
-			switch item.Status {
-			case "planned":
-				report.Summary.Planned++
-			case "skipped":
-				report.Summary.Skipped++
-			case "failed":
-				report.Summary.Failed++
-			}
+	}
+	recalculateRegistrySyncSummary(&report)
+	if !opts.DryRun {
+		if err := executeRegistrySyncPlan(ctx, &report, opts); err != nil {
+			return report, err
 		}
-		if result.Status == "failed" && len(items) == 0 {
-			report.Summary.Failed++
-		}
+		recalculateRegistrySyncSummary(&report)
 	}
 	return report, nil
 }
@@ -256,18 +296,31 @@ func buildRegistrySyncMirrorPlan(ctx context.Context, mirror RegistrySyncMirror,
 				})
 				continue
 			}
+			targetInput := registrySyncTargetInputRef(target, targetRepo, tag)
 			platforms := mirror.Platforms
 			if len(platforms) == 0 {
 				platforms = []string{""}
 			}
+			if !opts.DryRun && len(platforms) > 1 {
+				items = append(items, RegistrySyncItem{
+					Source:      source.Display + ":" + tag,
+					Target:      targetRepo + ":" + tag,
+					TargetInput: targetInput,
+					Tag:         tag,
+					Status:      registrySyncStatusFailed,
+					Reason:      "执行阶段暂不支持将多个 platform 合并推送为 manifest list，请先保留单个平台",
+				})
+				continue
+			}
 			for _, platform := range platforms {
 				items = append(items, RegistrySyncItem{
-					Source:   source.Display + ":" + tag,
-					Target:   targetRepo + ":" + tag,
-					Tag:      tag,
-					Platform: platform,
-					Status:   "planned",
-					Reason:   "dry-run",
+					Source:      source.Display + ":" + tag,
+					Target:      targetRepo + ":" + tag,
+					TargetInput: targetInput,
+					Tag:         tag,
+					Platform:    platform,
+					Status:      registrySyncStatusPlanned,
+					Reason:      registrySyncPlannedReason(opts),
 				})
 			}
 		}
@@ -277,6 +330,172 @@ func buildRegistrySyncMirrorPlan(ctx context.Context, mirror RegistrySyncMirror,
 		result.Message = "tag 规则未匹配任何同步项"
 	}
 	return result, items
+}
+
+func registrySyncTargetInputRef(input, normalizedRepo, tag string) string {
+	value := strings.TrimRight(strings.TrimSpace(input), "/")
+	if strings.Contains(value, "://") {
+		return value + ":" + tag
+	}
+	return normalizedRepo + ":" + tag
+}
+
+func registrySyncPlannedReason(opts RegistrySyncOptions) string {
+	if opts.DryRun {
+		return "dry-run"
+	}
+	return "pending"
+}
+
+func executeRegistrySyncPlan(ctx context.Context, report *RegistrySyncReport, opts RegistrySyncOptions) error {
+	if opts.Concurrency <= 0 {
+		return fmt.Errorf("--concurrency 必须大于 0")
+	}
+	if opts.Retries < 0 {
+		return fmt.Errorf("--retries 不能小于 0")
+	}
+	if opts.OutputDir == "" {
+		opts.OutputDir = "."
+	}
+	var planned []int
+	for i, item := range report.Items {
+		if item.Status == registrySyncStatusPlanned {
+			planned = append(planned, i)
+		}
+	}
+	if len(planned) == 0 {
+		return ctx.Err()
+	}
+	progressOutput := opts.ProgressOutput
+	if progressOutput == nil {
+		progressOutput = io.Discard
+	}
+
+	var mu sync.Mutex
+	parallel.ForEachIndex(ctx, len(planned), opts.Concurrency, func(ctx context.Context, index int) {
+		itemIndex := planned[index]
+		result := executeRegistrySyncItem(ctx, report.Items[itemIndex], opts, progressOutput)
+		mu.Lock()
+		report.Items[itemIndex] = result
+		mu.Unlock()
+	})
+	return ctx.Err()
+}
+
+func executeRegistrySyncItem(ctx context.Context, item RegistrySyncItem, opts RegistrySyncOptions, progressOutput io.Writer) RegistrySyncItem {
+	result := item
+	if err := ctx.Err(); err != nil {
+		result.Status = registrySyncStatusFailed
+		result.Reason = err.Error()
+		return result
+	}
+	targetOS, arch, err := registrySyncExecutionPlatform(item.Platform, opts)
+	if err != nil {
+		result.Status = registrySyncStatusFailed
+		result.Reason = err.Error()
+		return result
+	}
+	runner, err := newRegistrySyncPullRunner(opts.Proxy, targetOS, arch, opts.Timeout)
+	if err != nil {
+		result.Status = registrySyncStatusFailed
+		result.Reason = err.Error()
+		return result
+	}
+	to := registrySyncItemTargetInput(item)
+	pullOpts := pull.PullOptions{
+		Context:        ctx,
+		OutputDir:      opts.OutputDir,
+		To:             to,
+		DockerConfig:   opts.DockerConfig,
+		PlainHTTP:      opts.PlainHTTP,
+		ProgressOutput: progressOutput,
+	}
+	if opts.SkipExisting {
+		found, err := runner.TargetManifestExists(ctx, item.Source, item.Target, pullOpts)
+		if err != nil {
+			result.Status = registrySyncStatusFailed
+			result.Reason = "检查目标 manifest 失败: " + err.Error()
+			return result
+		}
+		if found {
+			result.Status = registrySyncStatusSkipped
+			result.Reason = "target exists"
+			return result
+		}
+	}
+
+	maxAttempts := opts.Retries + 1
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		result.Attempts = attempt
+		if err := ctx.Err(); err != nil {
+			result.Status = registrySyncStatusFailed
+			result.Reason = err.Error()
+			return result
+		}
+		if err := runner.PullImage(item.Source, pullOpts); err != nil {
+			lastErr = err
+			continue
+		}
+		result.Status = registrySyncStatusSuccess
+		result.Reason = "synced"
+		return result
+	}
+	result.Status = registrySyncStatusFailed
+	if lastErr != nil {
+		result.Reason = lastErr.Error()
+	}
+	return result
+}
+
+func registrySyncExecutionPlatform(platform string, opts RegistrySyncOptions) (string, string, error) {
+	if strings.TrimSpace(platform) == "" {
+		targetOS := strings.TrimSpace(opts.TargetOS)
+		arch := strings.TrimSpace(opts.Arch)
+		if targetOS == "" {
+			targetOS = "linux"
+		}
+		if arch == "" {
+			arch = "amd64"
+		}
+		return targetOS, arch, nil
+	}
+	parts := strings.Split(platform, "/")
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+		return "", "", fmt.Errorf("platform %q 格式无效，请使用 os/arch，例如 linux/amd64", platform)
+	}
+	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), nil
+}
+
+func registrySyncItemTargetInput(item RegistrySyncItem) string {
+	if strings.TrimSpace(item.TargetInput) != "" {
+		return item.TargetInput
+	}
+	return item.Target
+}
+
+func recalculateRegistrySyncSummary(report *RegistrySyncReport) {
+	summary := RegistrySyncSummary{Mirrors: len(report.Mirrors)}
+	for _, mirror := range report.Mirrors {
+		summary.Targets += len(mirror.Targets)
+		summary.TagsListed += mirror.TagsListed
+		if mirror.Status == registrySyncStatusFailed && mirror.TagsListed == 0 {
+			summary.Failed++
+		}
+	}
+	for _, item := range report.Items {
+		switch item.Status {
+		case registrySyncStatusPlanned:
+			summary.Planned++
+		case registrySyncStatusSuccess:
+			summary.Succeeded++
+		case registrySyncStatusSkipped:
+			summary.Skipped++
+		case registrySyncStatusFailed:
+			summary.Failed++
+		}
+	}
+	report.Summary = summary
 }
 
 func parseRegistrySyncImageRef(input string) (registrySyncImageRef, error) {
@@ -313,6 +532,12 @@ func registrySyncRepositoryRef(input string) (string, error) {
 	named, err := reference.ParseNormalizedNamed(value)
 	if err != nil {
 		return "", err
+	}
+	if _, ok := named.(reference.Tagged); ok {
+		return "", fmt.Errorf("target 应为 repository，不应包含 tag: %s", input)
+	}
+	if _, ok := named.(reference.Digested); ok {
+		return "", fmt.Errorf("target 应为 repository，不应包含 digest: %s", input)
 	}
 	return reference.Domain(named) + "/" + reference.Path(named), nil
 }
@@ -610,11 +835,12 @@ func registrySyncExitError(report RegistrySyncReport, opts RegistrySyncOptions) 
 func printRegistrySyncReport(w io.Writer, report RegistrySyncReport) {
 	fmt.Fprintf(w, "Registry 同步计划 (%s)\n", report.GeneratedAt)
 	fmt.Fprintf(w, "配置: %s dry-run=%v\n", report.Config, report.DryRun)
-	fmt.Fprintf(w, "摘要: mirrors=%d targets=%d tags=%d planned=%d skipped=%d failed=%d\n\n",
+	fmt.Fprintf(w, "摘要: mirrors=%d targets=%d tags=%d planned=%d success=%d skipped=%d failed=%d\n\n",
 		report.Summary.Mirrors,
 		report.Summary.Targets,
 		report.Summary.TagsListed,
 		report.Summary.Planned,
+		report.Summary.Succeeded,
 		report.Summary.Skipped,
 		report.Summary.Failed,
 	)

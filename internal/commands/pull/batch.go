@@ -287,6 +287,10 @@ func (r *PullRunner) targetManifestExists(ctx context.Context, imageName, target
 	return false, err
 }
 
+func (r *PullRunner) TargetManifestExists(ctx context.Context, imageName, target string, opts PullOptions) (bool, error) {
+	return r.targetManifestExists(ctx, imageName, target, opts)
+}
+
 func resolvePullBatchTarget(imageName, to string) (string, error) {
 	info, err := parseImageInfo(imageName)
 	if err != nil {

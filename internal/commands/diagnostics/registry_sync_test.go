@@ -2,6 +2,8 @@ package diagnostics
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -9,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"docker-manager/internal/commands/pull"
 )
 
 func TestRegistrySyncTagSelected(t *testing.T) {
@@ -29,6 +33,24 @@ func TestRegistrySyncTagSelected(t *testing.T) {
 		if got := registrySyncTagSelected(tt.tag, rules); got != tt.want {
 			t.Fatalf("registrySyncTagSelected(%q) = %v, want %v", tt.tag, got, tt.want)
 		}
+	}
+}
+
+func TestRegistrySyncApplyFlagOnlyOnRegistryCommand(t *testing.T) {
+	registryCmd := NewRegistryCommand()
+	syncCmd, _, err := registryCmd.Find([]string{"sync"})
+	if err != nil {
+		t.Fatalf("Find(sync) error = %v", err)
+	}
+	if syncCmd == nil || syncCmd.Name() != "sync" {
+		t.Fatalf("sync command = %#v, want sync", syncCmd)
+	}
+	if flag := syncCmd.Flags().Lookup("apply"); flag == nil {
+		t.Fatal("dm registry sync missing --apply")
+	}
+	reportSync := NewRegistrySyncReportCommand()
+	if flag := reportSync.Flags().Lookup("apply"); flag != nil {
+		t.Fatal("dm report registry-sync should not expose --apply")
 	}
 }
 
@@ -118,4 +140,182 @@ mirrors:
 	if len(report.Mirrors) != 1 || report.Mirrors[0].Status != "failed" {
 		t.Fatalf("Mirrors = %#v, want failed mirror", report.Mirrors)
 	}
+}
+
+func TestRunRegistrySyncApplyExecutesPlannedItems(t *testing.T) {
+	server := registrySyncTagServer(t, []string{"1.0.0", "1.1.0"})
+	defer server.Close()
+	configPath := writeRegistrySyncConfig(t, server.URL, `
+    tags:
+      include: ["1.1.*"]
+`)
+
+	var calls []registrySyncPullCall
+	restore := stubRegistrySyncRunner(t, &fakeRegistrySyncRunner{
+		pull: func(imageName string, opts pull.PullOptions) error {
+			calls = append(calls, registrySyncPullCall{image: imageName, to: opts.To, outputDir: opts.OutputDir})
+			return nil
+		},
+	})
+	defer restore()
+
+	report, err := runRegistrySync(context.Background(), RegistrySyncOptions{
+		Config:      configPath,
+		PlainHTTP:   true,
+		Timeout:     5 * time.Second,
+		DryRun:      false,
+		OutputDir:   t.TempDir(),
+		Concurrency: 1,
+	})
+	if err != nil {
+		t.Fatalf("runRegistrySync() error = %v", err)
+	}
+	if report.Summary.Succeeded != 1 || report.Summary.Skipped != 1 || report.Summary.Failed != 0 {
+		t.Fatalf("summary = %#v, want one success and one skipped tag", report.Summary)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("calls = %#v, want one pull call", calls)
+	}
+	wantSource := strings.TrimPrefix(server.URL, "http://") + "/team/app:1.1.0"
+	if calls[0].image != wantSource {
+		t.Fatalf("image = %q, want source tag 1.1.0", calls[0].image)
+	}
+	if calls[0].to != "http://registry.local/team/app:1.1.0" {
+		t.Fatalf("to = %q, want tagged http target", calls[0].to)
+	}
+}
+
+func TestRunRegistrySyncApplySkipExisting(t *testing.T) {
+	server := registrySyncTagServer(t, []string{"latest"})
+	defer server.Close()
+	configPath := writeRegistrySyncConfig(t, server.URL, "")
+
+	pullCalled := false
+	restore := stubRegistrySyncRunner(t, &fakeRegistrySyncRunner{
+		exists: func(ctx context.Context, imageName, target string, opts pull.PullOptions) (bool, error) {
+			if target != "registry.local/team/app:latest" {
+				t.Fatalf("target = %q, want normalized target", target)
+			}
+			return true, nil
+		},
+		pull: func(imageName string, opts pull.PullOptions) error {
+			pullCalled = true
+			return nil
+		},
+	})
+	defer restore()
+
+	report, err := runRegistrySync(context.Background(), RegistrySyncOptions{
+		Config:       configPath,
+		PlainHTTP:    true,
+		Timeout:      5 * time.Second,
+		DryRun:       false,
+		OutputDir:    t.TempDir(),
+		Concurrency:  1,
+		SkipExisting: true,
+	})
+	if err != nil {
+		t.Fatalf("runRegistrySync() error = %v", err)
+	}
+	if pullCalled {
+		t.Fatal("PullImage called even though target exists")
+	}
+	if report.Summary.Skipped != 1 || report.Items[0].Reason != "target exists" {
+		t.Fatalf("report = %#v, want target exists skipped", report)
+	}
+}
+
+func TestRunRegistrySyncApplyRejectsMultiplePlatforms(t *testing.T) {
+	server := registrySyncTagServer(t, []string{"latest"})
+	defer server.Close()
+	configPath := writeRegistrySyncConfig(t, server.URL, `
+    platforms:
+      - linux/amd64
+      - linux/arm64
+`)
+
+	report, err := runRegistrySync(context.Background(), RegistrySyncOptions{
+		Config:      configPath,
+		PlainHTTP:   true,
+		Timeout:     5 * time.Second,
+		DryRun:      false,
+		OutputDir:   t.TempDir(),
+		Concurrency: 1,
+	})
+	if err != nil {
+		t.Fatalf("runRegistrySync() error = %v", err)
+	}
+	if report.Summary.Failed != 1 || !strings.Contains(report.Items[0].Reason, "manifest list") {
+		t.Fatalf("report = %#v, want manifest list failure", report)
+	}
+}
+
+type registrySyncPullCall struct {
+	image     string
+	to        string
+	outputDir string
+}
+
+type fakeRegistrySyncRunner struct {
+	pull   func(imageName string, opts pull.PullOptions) error
+	exists func(ctx context.Context, imageName, target string, opts pull.PullOptions) (bool, error)
+}
+
+func (f *fakeRegistrySyncRunner) PullImage(imageName string, opts pull.PullOptions) error {
+	if f.pull != nil {
+		return f.pull(imageName, opts)
+	}
+	return nil
+}
+
+func (f *fakeRegistrySyncRunner) TargetManifestExists(ctx context.Context, imageName, target string, opts pull.PullOptions) (bool, error) {
+	if f.exists != nil {
+		return f.exists(ctx, imageName, target, opts)
+	}
+	return false, nil
+}
+
+func stubRegistrySyncRunner(t *testing.T, runner registrySyncPullRunner) func() {
+	t.Helper()
+	original := newRegistrySyncPullRunner
+	newRegistrySyncPullRunner = func(proxy, targetOS, arch string, timeout time.Duration) (registrySyncPullRunner, error) {
+		if runner == nil {
+			return nil, errors.New("missing fake runner")
+		}
+		return runner, nil
+	}
+	return func() { newRegistrySyncPullRunner = original }
+}
+
+func registrySyncTagServer(t *testing.T, tags []string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/team/app/tags/list" {
+			t.Fatalf("path = %s, want /v2/team/app/tags/list", r.URL.Path)
+		}
+		_, _ = io.WriteString(w, `{"name":"team/app","tags":[`)
+		for i, tag := range tags {
+			if i > 0 {
+				_, _ = io.WriteString(w, ",")
+			}
+			_, _ = io.WriteString(w, `"`+tag+`"`)
+		}
+		_, _ = io.WriteString(w, `]}`)
+	}))
+}
+
+func writeRegistrySyncConfig(t *testing.T, sourceURL string, extra string) string {
+	t.Helper()
+	host := strings.TrimPrefix(sourceURL, "http://")
+	configPath := filepath.Join(t.TempDir(), "sync.yaml")
+	data := []byte(`
+mirrors:
+  - source: http://` + host + `/team/app
+    targets:
+      - http://registry.local/team/app
+` + extra)
+	if err := os.WriteFile(configPath, data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	return configPath
 }

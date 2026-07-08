@@ -29,6 +29,10 @@ func NewPullRunnerWithTimeout(proxy, targetOS, arch string, timeout time.Duratio
 	}, nil
 }
 
+func (r *PullRunner) PullImage(imageName string, opts PullOptions) error {
+	return r.getImage(imageName, opts)
+}
+
 func (r *PullRunner) getImage(imageName string, opts PullOptions) error {
 	ctx := opts.Context
 	if ctx == nil {

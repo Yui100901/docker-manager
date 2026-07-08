@@ -82,7 +82,7 @@ func NewRegistryCommand() *cobra.Command {
 	cmd := newRegistryReportCommand("registry <registry>")
 	cmd.Short = "检查 registry 登录配置，或生成 registry 同步计划"
 	cmd.AddCommand(newRegistryReportCommand("check <registry>"))
-	cmd.AddCommand(newRegistrySyncCommand("sync"))
+	cmd.AddCommand(newRegistrySyncCommand("sync", true))
 	return cmd
 }
 
