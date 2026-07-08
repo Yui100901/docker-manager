@@ -98,7 +98,6 @@ func NewImageCommand() *cobra.Command {
 		Use:   "image",
 		Short: "镜像分析工具",
 	}
-	cmd.AddCommand(NewImageTreeCommand())
 	return cmd
 }
 

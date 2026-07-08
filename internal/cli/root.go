@@ -102,12 +102,13 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 	rootCmd.PersistentFlags().StringVar(&dockerCertPath, "docker-cert-path", "", "Docker TLS 证书目录，默认读取 DOCKER_CERT_PATH")
 	rootCmd.PersistentFlags().StringVar(&dockerAPIVersion, "docker-api-version", "", "Docker API 版本，默认读取 DOCKER_API_VERSION 或自动协商")
 
+	commandSet := newRootCommandSet(cfg)
 	rootCmd.AddCommand(backup.NewBackupCommand())
 	rootCmd.AddCommand(backup.NewRestoreCommand())
-	rootCmd.AddCommand(newImageCommand(cfg))
-	rootCmd.AddCommand(diagnostics.NewReportCommand())
-	rootCmd.AddCommand(newImageShortcutCommands(cfg)...)
-	rootCmd.AddCommand(newReportShortcutCommands()...)
+	rootCmd.AddCommand(commandSet.newImageGroup())
+	rootCmd.AddCommand(commandSet.newReportGroup())
+	rootCmd.AddCommand(commandSet.newImageShortcuts()...)
+	rootCmd.AddCommand(commandSet.newReportShortcuts()...)
 	rootCmd.AddCommand(diagnostics.NewDoctorCommandWithDefaults(func() diagnostics.DoctorDefaults {
 		return diagnostics.DoctorDefaults{ConfigPath: effectiveConfigPath, OutputDir: cfg.OutputDir}
 	}))
@@ -118,47 +119,75 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 	return rootCmd
 }
 
-func newImageShortcutCommands(cfg *appConfig) []*cobra.Command {
-	return []*cobra.Command{
-		pull.NewPullCommandWithDefaults(func() pull.CommandDefaults {
+type commandFactory struct {
+	name string
+	new  func() *cobra.Command
+}
+
+type rootCommandSet struct {
+	image  []commandFactory
+	report []commandFactory
+}
+
+func newRootCommandSet(cfg *appConfig) rootCommandSet {
+	pullCommand := func() *cobra.Command {
+		return pull.NewPullCommandWithDefaults(func() pull.CommandDefaults {
 			return pull.CommandDefaults{
 				Proxy:     cfg.Proxy,
 				TargetOS:  cfg.TargetOS,
 				Arch:      cfg.Arch,
 				OutputDir: cfg.OutputDir,
 			}
-		}),
-		images.NewLoadCommand(),
-		images.NewSaveCommandWithDefaults(func() string { return cfg.OutputDir }),
-		diagnostics.NewImageTreeCommand(),
+		})
+	}
+	saveCommand := func() *cobra.Command {
+		return images.NewSaveCommandWithDefaults(func() string { return cfg.OutputDir })
+	}
+	return rootCommandSet{
+		image: []commandFactory{
+			{name: "pull", new: pullCommand},
+			{name: "save", new: saveCommand},
+			{name: "load", new: images.NewLoadCommand},
+			{name: "tree", new: diagnostics.NewImageTreeCommand},
+		},
+		report: []commandFactory{
+			{name: "health", new: diagnostics.NewHealthCommand},
+			{name: "network", new: diagnostics.NewNetworkCommand},
+			{name: "logs", new: diagnostics.NewLogsScanCommand},
+			{name: "diff", new: diagnostics.NewInspectDiffCommand},
+			{name: "prune", new: diagnostics.NewPruneReportCommand},
+			{name: "volumes", new: diagnostics.NewVolumesReportCommand},
+			{name: "registry", new: diagnostics.NewRegistryReportCommand},
+		},
 	}
 }
 
-func newReportShortcutCommands() []*cobra.Command {
-	return []*cobra.Command{
-		diagnostics.NewHealthCommand(),
-		diagnostics.NewNetworkCommand(),
-		diagnostics.NewLogsScanCommand(),
-		diagnostics.NewInspectDiffCommand(),
-		diagnostics.NewPruneReportCommand(),
-		diagnostics.NewVolumesReportCommand(),
-		diagnostics.NewRegistryReportCommand(),
-	}
+func (set rootCommandSet) newImageShortcuts() []*cobra.Command {
+	return newCommandsFromFactories(set.image)
 }
 
-func newImageCommand(cfg *appConfig) *cobra.Command {
+func (set rootCommandSet) newReportShortcuts() []*cobra.Command {
+	return newCommandsFromFactories(set.report)
+}
+
+func (set rootCommandSet) newImageGroup() *cobra.Command {
 	imageCmd := diagnostics.NewImageCommand()
-	imageCmd.AddCommand(images.NewLoadCommand())
-	imageCmd.AddCommand(images.NewSaveCommandWithDefaults(func() string { return cfg.OutputDir }))
-	imageCmd.AddCommand(pull.NewPullCommandWithDefaults(func() pull.CommandDefaults {
-		return pull.CommandDefaults{
-			Proxy:     cfg.Proxy,
-			TargetOS:  cfg.TargetOS,
-			Arch:      cfg.Arch,
-			OutputDir: cfg.OutputDir,
-		}
-	}))
+	imageCmd.AddCommand(newCommandsFromFactories(set.image)...)
 	return imageCmd
+}
+
+func (set rootCommandSet) newReportGroup() *cobra.Command {
+	reportCmd := diagnostics.NewReportCommand()
+	reportCmd.AddCommand(newCommandsFromFactories(set.report)...)
+	return reportCmd
+}
+
+func newCommandsFromFactories(factories []commandFactory) []*cobra.Command {
+	commands := make([]*cobra.Command, 0, len(factories))
+	for _, factory := range factories {
+		commands = append(commands, factory.new())
+	}
+	return commands
 }
 
 func isDoctorCommand(cmd *cobra.Command) bool {

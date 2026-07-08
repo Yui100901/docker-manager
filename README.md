@@ -206,11 +206,11 @@ dm backup web --dry-run
 dm backup web --bundle --bundle-output web-backup.tar.gz
 dm backup web --bundle --encrypt --passphrase-file ./backup.pass --bundle-output web-backup.tar.gz
 dm backup web --bundle --split-size 2G --bundle-output web-backup.tar.gz
-dm restore web-backup.tar.gz --plan --format html
-dm restore web-backup.tar.gz --plan --format json
-dm restore web-backup.tar.gz.enc --passphrase-file ./backup.pass --plan
-dm restore web-backup.tar.gz.part-001 --plan
 dm restore web-backup.tar.gz --dry-run
+dm restore web-backup.tar.gz --dry-run --format html
+dm restore web-backup.tar.gz --dry-run --format json
+dm restore web-backup.tar.gz.enc --passphrase-file ./backup.pass --dry-run --format html
+dm restore web-backup.tar.gz.part-001 --dry-run --format json
 dm restore web-backup.tar.gz --name web-restored
 ```
 

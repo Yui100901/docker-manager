@@ -31,7 +31,7 @@ func NewDoctorCommandWithDefaults(defaults func() DoctorDefaults) *cobra.Command
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if defaults != nil {
 				cfg := defaults()
-				if cfg.ConfigPath != "" && !cmd.Flags().Changed("dm-config") {
+				if cfg.ConfigPath != "" {
 					opts.ConfigPath = cfg.ConfigPath
 				}
 				if cfg.OutputDir != "" && !cmd.Flags().Changed("output-dir") {
@@ -47,7 +47,6 @@ func NewDoctorCommandWithDefaults(defaults func() DoctorDefaults) *cobra.Command
 	cmd.Flags().StringArrayVar(&opts.Registries, "registry", nil, "检查 registry 连通性和凭据，可重复指定")
 	cmd.Flags().BoolVar(&opts.PlainHTTP, "plain-http", false, "使用 http:// 检查 registry /v2/")
 	cmd.Flags().StringVar(&opts.DockerConfig, "docker-config", "", "Docker config.json 路径，默认使用 DOCKER_CONFIG/config.json 或 ~/.docker/config.json")
-	cmd.Flags().StringVar(&opts.ConfigPath, "dm-config", opts.ConfigPath, "dm 配置文件路径")
 	cmd.Flags().StringVar(&opts.OutputDir, "output-dir", opts.OutputDir, "检查磁盘空间的输出目录")
 	cmd.Flags().DurationVar(&opts.Timeout, "timeout", opts.Timeout, "单项网络/Docker 检查超时时间")
 	cmd.Flags().BoolVar(&opts.CheckE2E, "check-e2e", opts.CheckE2E, "检查 scripts/e2e.sh、Go 和 vendor 前置条件")

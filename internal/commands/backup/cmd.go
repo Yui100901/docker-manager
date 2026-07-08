@@ -65,7 +65,7 @@ func NewRestoreCommand() *cobra.Command {
 			if opts.Name != "" && len(args) > 1 {
 				return fmt.Errorf("--name 只支持恢复单个备份")
 			}
-			if opts.Plan {
+			if opts.DryRun && opts.Format != rpt.FormatText {
 				for _, arg := range args {
 					report, err := buildRestorePlanReport(cmd.Context(), arg, opts)
 					if err != nil {
@@ -98,8 +98,7 @@ func NewRestoreCommand() *cobra.Command {
 	cmd.Flags().StringVar(&opts.Name, "name", "", "恢复为新的容器名，默认使用备份中的容器名")
 	cmd.Flags().BoolVar(&opts.Replace, "replace", false, "如果目标容器已存在则先删除")
 	cmd.Flags().BoolVar(&opts.NoStart, "no-start", false, "只创建容器，不启动")
-	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", false, "只预览恢复动作，不修改 Docker")
-	cmd.Flags().BoolVar(&opts.Plan, "plan", false, "生成恢复前差异预览和恢复计划报告，不修改 Docker")
+	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", false, "只预览恢复动作，不修改 Docker；配合 --format json/markdown/html 可输出结构化恢复计划")
 	cmd.Flags().StringVar(&opts.PassphraseFile, "passphrase-file", "", "解密加密备份包使用的口令文件")
 	cmd.Flags().BoolVar(&opts.SkipChecksum, "skip-checksum", false, "跳过 checksums.txt 完整性校验")
 	commandflags.AddReportFormatFlag(cmd, &opts.Format)

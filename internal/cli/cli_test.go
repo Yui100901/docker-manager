@@ -10,6 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 func TestLoadAppConfig(t *testing.T) {
@@ -236,6 +239,72 @@ func TestRootCommandExposesLeafShortcuts(t *testing.T) {
 	if imagePull == nil || imagePull.Name() != "pull" {
 		t.Fatalf("Find(image pull) = %#v, want pull command", imagePull)
 	}
+}
+
+func TestShortcutCommandsMatchGroupedCommandFlags(t *testing.T) {
+	cfg := appConfig{}
+	opts := outputOptions{}
+	root := newRootCommand(&cfg, &opts)
+
+	tests := []struct {
+		shortcut []string
+		grouped  []string
+	}{
+		{shortcut: []string{"pull"}, grouped: []string{"image", "pull"}},
+		{shortcut: []string{"save"}, grouped: []string{"image", "save"}},
+		{shortcut: []string{"load"}, grouped: []string{"image", "load"}},
+		{shortcut: []string{"tree"}, grouped: []string{"image", "tree"}},
+		{shortcut: []string{"health"}, grouped: []string{"report", "health"}},
+		{shortcut: []string{"network"}, grouped: []string{"report", "network"}},
+		{shortcut: []string{"logs"}, grouped: []string{"report", "logs"}},
+		{shortcut: []string{"diff"}, grouped: []string{"report", "diff"}},
+		{shortcut: []string{"prune"}, grouped: []string{"report", "prune"}},
+		{shortcut: []string{"volumes"}, grouped: []string{"report", "volumes"}},
+		{shortcut: []string{"registry"}, grouped: []string{"report", "registry"}},
+	}
+	for _, tt := range tests {
+		t.Run(strings.Join(tt.shortcut, " "), func(t *testing.T) {
+			shortcut := mustFindCommand(t, root, tt.shortcut)
+			grouped := mustFindCommand(t, root, tt.grouped)
+			got := commandFlagSignatures(shortcut)
+			want := commandFlagSignatures(grouped)
+			if !equalStringMaps(got, want) {
+				t.Fatalf("flag signatures differ\nshortcut %v: %#v\ngrouped %v: %#v", tt.shortcut, got, tt.grouped, want)
+			}
+		})
+	}
+}
+
+func mustFindCommand(t *testing.T, root *cobra.Command, args []string) *cobra.Command {
+	t.Helper()
+	cmd, _, err := root.Find(args)
+	if err != nil {
+		t.Fatalf("Find(%v) error = %v", args, err)
+	}
+	if cmd == nil {
+		t.Fatalf("Find(%v) = nil", args)
+	}
+	return cmd
+}
+
+func commandFlagSignatures(cmd *cobra.Command) map[string]string {
+	result := map[string]string{}
+	cmd.Flags().VisitAll(func(flag *pflag.Flag) {
+		result[flag.Name] = strings.Join([]string{flag.Shorthand, flag.DefValue, flag.Value.Type()}, "\x00")
+	})
+	return result
+}
+
+func equalStringMaps(left, right map[string]string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for key, leftValue := range left {
+		if right[key] != leftValue {
+			return false
+		}
+	}
+	return true
 }
 
 func TestPreseedJSONErrorMode(t *testing.T) {

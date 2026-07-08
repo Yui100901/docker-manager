@@ -174,7 +174,7 @@ func TestDoctorCommandSupportsJSON(t *testing.T) {
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"--format", "json", "--dm-config", t.TempDir() + "/missing.yaml", "--output-dir", t.TempDir(), "--check-e2e=false"})
+	cmd.SetArgs([]string{"--format", "json", "--output-dir", t.TempDir(), "--check-e2e=false"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
@@ -185,6 +185,13 @@ func TestDoctorCommandSupportsJSON(t *testing.T) {
 	}
 	if report.OverallStatus == "" || len(report.Checks) == 0 {
 		t.Fatalf("report = %#v, want status and checks", report)
+	}
+}
+
+func TestDoctorCommandDoesNotExposeDMConfigFlag(t *testing.T) {
+	cmd := NewDoctorCommand()
+	if flag := cmd.Flags().Lookup("dm-config"); flag != nil {
+		t.Fatal("doctor command should use global --config instead of local --dm-config")
 	}
 }
 

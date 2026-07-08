@@ -8,15 +8,6 @@ func NewReportCommand() *cobra.Command {
 		Short: "Docker 诊断报告工具",
 	}
 
-	cmd.AddCommand(
-		NewReportAllCommand(),
-		NewHealthCommand(),
-		NewNetworkCommand(),
-		NewLogsScanCommand(),
-		NewInspectDiffCommand(),
-		NewPruneReportCommand(),
-		NewVolumesReportCommand(),
-		NewRegistryReportCommand(),
-	)
+	cmd.AddCommand(NewReportAllCommand())
 	return cmd
 }

@@ -67,7 +67,6 @@ type RestoreOptions struct {
 	Replace        bool
 	NoStart        bool
 	DryRun         bool
-	Plan           bool
 	Format         string
 	PassphraseFile string
 	SkipChecksum   bool

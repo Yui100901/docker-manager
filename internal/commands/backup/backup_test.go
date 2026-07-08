@@ -1041,9 +1041,54 @@ func TestBuildRestorePlanReportPreviewsDiffsWithoutMutations(t *testing.T) {
 	}
 }
 
-func TestRestoreCommandExposesPlanAndFormatFlags(t *testing.T) {
+func TestRestoreCommandDryRunJSONPrintsPlanReport(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJSON(t, filepath.Join(dir, backupManifestName), BackupManifest{
+		Version: 1,
+		Containers: []BackupContainerManifest{{
+			ContainerName: "web",
+			Image:         "nginx:latest",
+			InspectFile:   backupInspectName,
+		}},
+	})
+	writeTestJSON(t, filepath.Join(dir, backupInspectName), container.InspectResponse{
+		Name:   "/web",
+		Config: &container.Config{Image: "nginx:latest"},
+	})
+
+	fake := &fakeBackupDockerService{}
+	restoreFactory := replaceBackupServiceFactory(fake)
+	defer restoreFactory()
+
 	cmd := NewRestoreCommand()
-	for _, name := range []string{"plan", "format"} {
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{dir, "--dry-run", "--format", "json", "--skip-checksum"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	var report RestorePlanReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v output=%q", err, out.String())
+	}
+	if report.Source != dir || report.ContainerCount != 1 || len(report.Containers) != 1 {
+		t.Fatalf("report = %#v, want one-container restore plan", report)
+	}
+	for _, forbidden := range []string{"load-image:", "create-network:", "create-volume:", "remove-container:", "create-container:", "start-container:"} {
+		if hasCallPrefix(fake.calls, forbidden) {
+			t.Fatalf("calls = %#v, dry-run JSON plan should not call %s", fake.calls, forbidden)
+		}
+	}
+}
+
+func TestRestoreCommandUsesDryRunFormatForPlanOutput(t *testing.T) {
+	cmd := NewRestoreCommand()
+	if flag := cmd.Flags().Lookup("plan"); flag != nil {
+		t.Fatal("restore command should use --dry-run with --format instead of --plan")
+	}
+	for _, name := range []string{"dry-run", "format"} {
 		if cmd.Flags().Lookup(name) == nil {
 			t.Fatalf("restore command missing --%s", name)
 		}
