@@ -7,11 +7,11 @@ import (
 	"os"
 
 	cerrdefs "github.com/containerd/errdefs"
+	mobycontainer "github.com/moby/moby/api/types/container"
 	oldcontainer "github.com/moby/moby/api/types/container"
+	mobynetwork "github.com/moby/moby/api/types/network"
 	oldnetwork "github.com/moby/moby/api/types/network"
 	oldvolume "github.com/moby/moby/api/types/volume"
-	mobycontainer "github.com/moby/moby/api/types/container"
-	mobynetwork "github.com/moby/moby/api/types/network"
 	mobyclient "github.com/moby/moby/client"
 
 	"docker-manager/internal/docker"
