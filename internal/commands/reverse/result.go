@@ -605,13 +605,26 @@ func isReverseCustomNetwork(name string) bool {
 }
 
 func backupContainerInspect(name, backupDir string) (string, error) {
-	inspect, err := containerManager.Inspect(name)
+	return backupContainerInspectContext(context.Background(), name, backupDir)
+}
+
+func backupContainerInspectContext(ctx context.Context, name, backupDir string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	inspect, err := containerManager.InspectContext(ctx, name)
 	if err != nil {
+		return "", err
+	}
+	if err := ctx.Err(); err != nil {
 		return "", err
 	}
 
 	data, err := json.MarshalIndent(inspect, "", "  ")
 	if err != nil {
+		return "", err
+	}
+	if err := ctx.Err(); err != nil {
 		return "", err
 	}
 
@@ -620,6 +633,9 @@ func backupContainerInspect(name, backupDir string) (string, error) {
 	}
 
 	backupPath := inspectBackupPath(backupDir, name)
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if err := os.WriteFile(backupPath, append(data, '\n'), 0644); err != nil {
 		return "", err
 	}

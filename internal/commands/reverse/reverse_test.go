@@ -95,6 +95,19 @@ func TestReverseCommandReturnsCanceledContext(t *testing.T) {
 	}
 }
 
+func TestRerunCommandReturnsCanceledContext(t *testing.T) {
+	cmd := NewRerunCommand()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{"--dry-run", "demo"})
+
+	err := cmd.Execute()
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Execute() error = %v, want context.Canceled", err)
+	}
+}
+
 func TestRunningContainerNamesFiltersAndSortsRunningContainers(t *testing.T) {
 	got := runningContainerNames([]container.Summary{
 		{ID: "id-c", Names: []string{"/worker"}, State: "running"},

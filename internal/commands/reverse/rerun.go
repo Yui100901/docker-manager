@@ -1,6 +1,7 @@
 package reverse
 
 import (
+	"context"
 	"docker-manager/internal/docker"
 	"fmt"
 	"io"
@@ -30,14 +31,15 @@ func NewRerunCommand() *cobra.Command {
 				return fmt.Errorf("%s；如确认执行，请添加 --confirm；如仅审计，请使用 --dry-run", destructiveDockerMessage("rerun 会停止、删除并重建容器"))
 			}
 			targetFilters := append(append([]string(nil), filters...), args...)
-			targets, err := resolveReverseContainerTargets(targetFilters, running)
+			ctx := cmd.Context()
+			targets, err := resolveReverseContainerTargetsContext(ctx, targetFilters, running)
 			if err != nil {
 				return err
 			}
 			if !dryRun {
 				printDestructiveDockerTarget(cmd.OutOrStdout())
 			}
-			return rerunContainers(targets, rerunOptions{
+			return rerunContainers(ctx, targets, rerunOptions{
 				DryRun: dryRun,
 				Output: cmd.OutOrStdout(),
 			})
@@ -70,10 +72,13 @@ type rerunOptions struct {
 	Output io.Writer
 }
 
-func rerunContainers(names []string, opts rerunOptions) error {
+func rerunContainers(ctx context.Context, names []string, opts rerunOptions) error {
 	output := opts.Output
 	if output == nil {
 		output = io.Discard
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if err := ensureContainerManager(); err != nil {
 		return err
@@ -81,12 +86,15 @@ func rerunContainers(names []string, opts rerunOptions) error {
 	var firstErr error
 	backupDir := inspectBackupDir(time.Now())
 	for _, name := range names {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if opts.DryRun {
 			fmt.Fprintf(output, "Dry run: backup inspect for %s to %s\n", name, inspectBackupPath(backupDir, name))
 			fmt.Fprintf(output, "Dry run: stop, remove and recreate container %s via Docker API\n", name)
 			continue
 		}
-		backupPath, err := backupContainerInspect(name, backupDir)
+		backupPath, err := backupContainerInspectContext(ctx, name, backupDir)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = fmt.Errorf("备份容器 %s inspect 失败: %w", name, err)
@@ -95,7 +103,7 @@ func rerunContainers(names []string, opts rerunOptions) error {
 		}
 		fmt.Fprintf(output, "Backup inspect %s to %s\n", name, backupPath)
 
-		containerID, err := containerManager.RecreateContainer(name, name)
+		containerID, err := containerManager.RecreateContainerContext(ctx, name, name)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = fmt.Errorf("重建容器 %s 失败: %w", name, err)

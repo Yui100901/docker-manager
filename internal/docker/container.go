@@ -17,6 +17,13 @@ type ContainerManager struct {
 	cli *client.Client
 }
 
+func contextWithTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
 func NewContainerManager() (*ContainerManager, error) {
 	cli, err := initMobyClient()
 	if err != nil {
@@ -30,7 +37,7 @@ func (cm *ContainerManager) ListAll() ([]container.Summary, error) {
 }
 
 func (cm *ContainerManager) ListAllContext(ctx context.Context) ([]container.Summary, error) {
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	ctx, cancel := contextWithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	result, err := cm.cli.ContainerList(ctx, client.ContainerListOptions{All: true})
 	if err != nil {
@@ -40,14 +47,22 @@ func (cm *ContainerManager) ListAllContext(ctx context.Context) ([]container.Sum
 }
 
 func (cm *ContainerManager) Stop(containerID string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	return cm.StopContext(context.Background(), containerID)
+}
+
+func (cm *ContainerManager) StopContext(ctx context.Context, containerID string) error {
+	ctx, cancel := contextWithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	_, err := cm.cli.ContainerStop(ctx, containerID, client.ContainerStopOptions{})
 	return err
 }
 
 func (cm *ContainerManager) Remove(containerID string, force, removeVolumes bool) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	return cm.RemoveContext(context.Background(), containerID, force, removeVolumes)
+}
+
+func (cm *ContainerManager) RemoveContext(ctx context.Context, containerID string, force, removeVolumes bool) error {
+	ctx, cancel := contextWithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	_, err := cm.cli.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{
 		Force:         force,
@@ -61,7 +76,7 @@ func (cm *ContainerManager) Inspect(containerID string) (container.InspectRespon
 }
 
 func (cm *ContainerManager) InspectContext(ctx context.Context, containerID string) (container.InspectResponse, error) {
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	ctx, cancel := contextWithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	result, err := cm.cli.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
 	if err != nil {
@@ -75,7 +90,7 @@ func (cm *ContainerManager) InspectNetwork(name string) (network.Inspect, error)
 }
 
 func (cm *ContainerManager) InspectNetworkContext(ctx context.Context, name string) (network.Inspect, error) {
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	ctx, cancel := contextWithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	result, err := cm.cli.NetworkInspect(ctx, name, client.NetworkInspectOptions{})
 	if err != nil {
@@ -89,7 +104,7 @@ func (cm *ContainerManager) InspectVolume(name string) (volume.Volume, error) {
 }
 
 func (cm *ContainerManager) InspectVolumeContext(ctx context.Context, name string) (volume.Volume, error) {
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	ctx, cancel := contextWithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	result, err := cm.cli.VolumeInspect(ctx, name, client.VolumeInspectOptions{})
 	if err != nil {
@@ -103,7 +118,16 @@ func (cm *ContainerManager) Create(config *container.Config,
 	networkingConfig *network.NetworkingConfig,
 	platform *ocispec.Platform,
 	containerName string) (container.CreateResponse, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	return cm.CreateContext(context.Background(), config, hostConfig, networkingConfig, platform, containerName)
+}
+
+func (cm *ContainerManager) CreateContext(ctx context.Context,
+	config *container.Config,
+	hostConfig *container.HostConfig,
+	networkingConfig *network.NetworkingConfig,
+	platform *ocispec.Platform,
+	containerName string) (container.CreateResponse, error) {
+	ctx, cancel := contextWithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	result, err := cm.cli.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Config:           config,
@@ -119,14 +143,22 @@ func (cm *ContainerManager) Create(config *container.Config,
 }
 
 func (cm *ContainerManager) Start(containerID string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	return cm.StartContext(context.Background(), containerID)
+}
+
+func (cm *ContainerManager) StartContext(ctx context.Context, containerID string) error {
+	ctx, cancel := contextWithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	_, err := cm.cli.ContainerStart(ctx, containerID, client.ContainerStartOptions{})
 	return err
 }
 
 func (cm *ContainerManager) buildNetworkingConfig(inspect container.InspectResponse) *network.NetworkingConfig {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	return cm.buildNetworkingConfigContext(context.Background(), inspect)
+}
+
+func (cm *ContainerManager) buildNetworkingConfigContext(ctx context.Context, inspect container.InspectResponse) *network.NetworkingConfig {
+	ctx, cancel := contextWithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	nc := &network.NetworkingConfig{
 		EndpointsConfig: make(map[string]*network.EndpointSettings),
@@ -161,16 +193,26 @@ func (cm *ContainerManager) buildNetworkingConfig(inspect container.InspectRespo
 }
 
 func (cm *ContainerManager) RecreateContainer(containerID, newName string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	return cm.RecreateContainerContext(context.Background(), containerID, newName)
+}
+
+func (cm *ContainerManager) RecreateContainerContext(ctx context.Context, containerID, newName string) (string, error) {
+	ctx, cancel := contextWithTimeout(ctx, 180*time.Second)
 	defer cancel()
 
-	inspect, err := cm.Inspect(containerID)
+	inspect, err := cm.InspectContext(ctx, containerID)
 	if err != nil {
 		return "", fmt.Errorf("inspect failed: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
 	}
 
 	if _, stopErr := cm.cli.ContainerStop(ctx, containerID, client.ContainerStopOptions{}); stopErr != nil {
 		log.Printf("warning: stop container %s failed: %v", containerID, stopErr)
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
 	}
 
 	if _, rmErr := cm.cli.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{
@@ -179,10 +221,16 @@ func (cm *ContainerManager) RecreateContainer(containerID, newName string) (stri
 	}); rmErr != nil {
 		log.Printf("warning: remove container %s failed: %v", containerID, rmErr)
 	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 
-	resp, err := cm.Create(inspect.Config, inspect.HostConfig, cm.buildNetworkingConfig(inspect), nil, newName)
+	resp, err := cm.CreateContext(ctx, inspect.Config, inspect.HostConfig, cm.buildNetworkingConfigContext(ctx, inspect), nil, newName)
 	if err != nil {
 		return "", fmt.Errorf("create container failed: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
 	}
 
 	if _, err := cm.cli.ContainerStart(ctx, resp.ID, client.ContainerStartOptions{}); err != nil {
