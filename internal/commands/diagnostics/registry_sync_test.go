@@ -329,6 +329,152 @@ func TestRunRegistrySyncApplyRejectsMultiplePlatforms(t *testing.T) {
 	}
 }
 
+func TestRunRegistrySyncValidatePlatforms(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v2/team/app/tags/list":
+			_, _ = io.WriteString(w, `{"name":"team/app","tags":["latest"]}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/v2/team/app/manifests/latest":
+			_, _ = io.WriteString(w, `{"manifests":[{"platform":{"os":"linux","architecture":"amd64"}}]}`)
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	host := strings.TrimPrefix(server.URL, "http://")
+	configPath := filepath.Join(t.TempDir(), "sync.yaml")
+	if err := os.WriteFile(configPath, []byte(`
+mirrors:
+  - source: http://`+host+`/team/app
+    targets:
+      - registry.local/team/app
+    validate_platforms: true
+    platforms:
+      - linux/amd64
+      - linux/arm64
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := runRegistrySync(context.Background(), RegistrySyncOptions{
+		Config:    configPath,
+		PlainHTTP: true,
+		Timeout:   5 * time.Second,
+		DryRun:    true,
+	})
+	if err != nil {
+		t.Fatalf("runRegistrySync() error = %v", err)
+	}
+	if report.Summary.Planned != 1 || report.Summary.Failed != 1 {
+		t.Fatalf("summary = %#v, want one planned and one failed platform", report.Summary)
+	}
+	if report.Items[1].Platform != "linux/arm64" || report.Items[1].Reason != "platform not found" {
+		t.Fatalf("items = %#v, want arm64 platform failure", report.Items)
+	}
+}
+
+func TestRunRegistrySyncBuildsCleanupPlan(t *testing.T) {
+	server := registrySyncTagServer(t, []string{"1.0.0", "2.0.0", "latest"})
+	defer server.Close()
+	configPath := writeRegistrySyncConfigWithTarget(t, server.URL, server.URL, `
+    cleanup:
+      enabled: true
+      keep:
+        keep_latest: 1
+`)
+
+	report, err := runRegistrySync(context.Background(), RegistrySyncOptions{
+		Config:    configPath,
+		PlainHTTP: true,
+		Timeout:   5 * time.Second,
+		DryRun:    true,
+	})
+	if err != nil {
+		t.Fatalf("runRegistrySync() error = %v", err)
+	}
+	if report.Summary.CleanupPlanned != 2 {
+		t.Fatalf("CleanupPlanned = %d, want 2", report.Summary.CleanupPlanned)
+	}
+	var targets []string
+	for _, item := range report.Cleanup {
+		targets = append(targets, item.Target)
+		if item.Status != registrySyncStatusPlanned || item.Reason != "keep_latest" {
+			t.Fatalf("cleanup item = %#v, want planned keep_latest", item)
+		}
+	}
+	if strings.Join(targets, ",") != strings.TrimPrefix(server.URL, "http://")+"/team/app:1.0.0,"+strings.TrimPrefix(server.URL, "http://")+"/team/app:latest" {
+		t.Fatalf("cleanup targets = %#v, want old semver and latest", targets)
+	}
+}
+
+func TestRunRegistrySyncApplyCleanupDeletesManifest(t *testing.T) {
+	deleted := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v2/team/app/tags/list":
+			_, _ = io.WriteString(w, `{"name":"team/app","tags":["1.0.0","2.0.0"]}`)
+		case r.Method == http.MethodHead && r.URL.Path == "/v2/team/app/manifests/1.0.0":
+			w.Header().Set("Docker-Content-Digest", "sha256:old")
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodDelete && r.URL.Path == "/v2/team/app/manifests/sha256:old":
+			deleted = true
+			w.WriteHeader(http.StatusAccepted)
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configPath := writeRegistrySyncConfigWithTarget(t, server.URL, server.URL, `
+    tags:
+      include: ["2.0.0"]
+    cleanup:
+      enabled: true
+      keep:
+        keep_latest: 1
+`)
+	restore := stubRegistrySyncRunner(t, &fakeRegistrySyncRunner{})
+	defer restore()
+
+	report, err := runRegistrySync(context.Background(), RegistrySyncOptions{
+		Config:       configPath,
+		PlainHTTP:    true,
+		Timeout:      5 * time.Second,
+		DryRun:       false,
+		OutputDir:    t.TempDir(),
+		Concurrency:  1,
+		ApplyCleanup: true,
+	})
+	if err != nil {
+		t.Fatalf("runRegistrySync() error = %v", err)
+	}
+	if !deleted {
+		t.Fatal("DELETE manifest was not called")
+	}
+	if report.Summary.CleanupDeleted != 1 || report.Cleanup[0].Digest != "sha256:old" || report.Cleanup[0].HTTPStatus != http.StatusAccepted {
+		t.Fatalf("cleanup report = %#v, want deleted digest/status", report.Cleanup)
+	}
+}
+
+func TestRunRegistrySyncScheduleReport(t *testing.T) {
+	server := registrySyncTagServer(t, []string{"latest"})
+	defer server.Close()
+	configPath := writeRegistrySyncConfig(t, server.URL, "")
+
+	report, err := runRegistrySync(context.Background(), RegistrySyncOptions{
+		Config:    configPath,
+		PlainHTTP: true,
+		Timeout:   5 * time.Second,
+		DryRun:    true,
+		Schedule:  "cron",
+	})
+	if err != nil {
+		t.Fatalf("runRegistrySync() error = %v", err)
+	}
+	if report.Schedule == nil || report.Schedule.Kind != "cron" || !strings.Contains(report.Schedule.Content, "dm registry sync --file") {
+		t.Fatalf("schedule = %#v, want cron command", report.Schedule)
+	}
+}
+
 type registrySyncPullCall struct {
 	image     string
 	to        string
@@ -384,14 +530,19 @@ func registrySyncTagServer(t *testing.T, tags []string) *httptest.Server {
 }
 
 func writeRegistrySyncConfig(t *testing.T, sourceURL string, extra string) string {
+	return writeRegistrySyncConfigWithTarget(t, sourceURL, "http://registry.local", extra)
+}
+
+func writeRegistrySyncConfigWithTarget(t *testing.T, sourceURL string, targetURL string, extra string) string {
 	t.Helper()
 	host := strings.TrimPrefix(sourceURL, "http://")
+	targetHost := strings.TrimPrefix(targetURL, "http://")
 	configPath := filepath.Join(t.TempDir(), "sync.yaml")
 	data := []byte(`
 mirrors:
   - source: http://` + host + `/team/app
     targets:
-      - http://registry.local/team/app
+      - http://` + targetHost + `/team/app
 ` + extra)
 	if err := os.WriteFile(configPath, data, 0644); err != nil {
 		t.Fatal(err)

@@ -32,6 +32,7 @@ const (
 	registrySyncStatusSuccess = "success"
 	registrySyncStatusSkipped = "skipped"
 	registrySyncStatusFailed  = "failed"
+	registrySyncStatusDeleted = "deleted"
 )
 
 var registrySyncHTTPClient httpDoer = http.DefaultClient
@@ -46,21 +47,24 @@ var newRegistrySyncPullRunner = func(proxy, targetOS, arch string, timeout time.
 }
 
 type RegistrySyncOptions struct {
-	Config         string
-	DockerConfig   string
-	PlainHTTP      bool
-	Timeout        time.Duration
-	DryRun         bool
-	Apply          bool
-	FailOnError    bool
-	Proxy          string
-	TargetOS       string
-	Arch           string
-	OutputDir      string
-	Concurrency    int
-	Retries        int
-	SkipExisting   bool
-	ProgressOutput io.Writer
+	Config          string
+	DockerConfig    string
+	PlainHTTP       bool
+	Timeout         time.Duration
+	DryRun          bool
+	Apply           bool
+	FailOnError     bool
+	Proxy           string
+	TargetOS        string
+	Arch            string
+	OutputDir       string
+	Concurrency     int
+	Retries         int
+	SkipExisting    bool
+	ApplyCleanup    bool
+	Schedule        string
+	ScheduleCommand string
+	ProgressOutput  io.Writer
 	commandflags.FormatOptions
 }
 
@@ -69,10 +73,12 @@ type RegistrySyncConfig struct {
 }
 
 type RegistrySyncMirror struct {
-	Source    string               `json:"source" yaml:"source"`
-	Targets   []string             `json:"targets" yaml:"targets"`
-	Tags      RegistrySyncTagRules `json:"tags" yaml:"tags"`
-	Platforms []string             `json:"platforms,omitempty" yaml:"platforms"`
+	Source            string               `json:"source" yaml:"source"`
+	Targets           []string             `json:"targets" yaml:"targets"`
+	Tags              RegistrySyncTagRules `json:"tags" yaml:"tags"`
+	Platforms         []string             `json:"platforms,omitempty" yaml:"platforms"`
+	ValidatePlatforms bool                 `json:"validate_platforms,omitempty" yaml:"validate_platforms"`
+	Cleanup           RegistrySyncCleanup  `json:"cleanup,omitempty" yaml:"cleanup"`
 }
 
 type RegistrySyncTagRules struct {
@@ -83,6 +89,11 @@ type RegistrySyncTagRules struct {
 	KeepLatest int      `json:"keep_latest,omitempty" yaml:"keep_latest"`
 }
 
+type RegistrySyncCleanup struct {
+	Enabled bool                 `json:"enabled,omitempty" yaml:"enabled"`
+	Keep    RegistrySyncTagRules `json:"keep,omitempty" yaml:"keep"`
+}
+
 type RegistrySyncReport struct {
 	GeneratedAt string                     `json:"generated_at"`
 	Config      string                     `json:"config"`
@@ -90,17 +101,22 @@ type RegistrySyncReport struct {
 	Summary     RegistrySyncSummary        `json:"summary"`
 	Mirrors     []RegistrySyncMirrorResult `json:"mirrors"`
 	Items       []RegistrySyncItem         `json:"items"`
+	Cleanup     []RegistrySyncCleanupItem  `json:"cleanup,omitempty"`
+	Schedule    *RegistrySyncSchedule      `json:"schedule,omitempty"`
 	Warnings    []string                   `json:"warnings,omitempty"`
 }
 
 type RegistrySyncSummary struct {
-	Mirrors    int `json:"mirrors"`
-	Targets    int `json:"targets"`
-	TagsListed int `json:"tags_listed"`
-	Planned    int `json:"planned"`
-	Succeeded  int `json:"succeeded"`
-	Skipped    int `json:"skipped"`
-	Failed     int `json:"failed"`
+	Mirrors        int `json:"mirrors"`
+	Targets        int `json:"targets"`
+	TagsListed     int `json:"tags_listed"`
+	Planned        int `json:"planned"`
+	Succeeded      int `json:"succeeded"`
+	Skipped        int `json:"skipped"`
+	Failed         int `json:"failed"`
+	CleanupPlanned int `json:"cleanup_planned"`
+	CleanupDeleted int `json:"cleanup_deleted"`
+	CleanupFailed  int `json:"cleanup_failed"`
 }
 
 type RegistrySyncMirrorResult struct {
@@ -126,9 +142,28 @@ type RegistrySyncItem struct {
 }
 
 type RegistrySyncAttempt struct {
-	Attempt int    `json:"attempt"`
-	Status  string `json:"status"`
-	Message string `json:"message,omitempty"`
+	Attempt    int    `json:"attempt"`
+	Stage      string `json:"stage,omitempty"`
+	Status     string `json:"status"`
+	Message    string `json:"message,omitempty"`
+	HTTPStatus int    `json:"http_status,omitempty"`
+}
+
+type RegistrySyncCleanupItem struct {
+	Target         string                `json:"target"`
+	TargetInput    string                `json:"target_input,omitempty"`
+	Tag            string                `json:"tag"`
+	Status         string                `json:"status"`
+	Reason         string                `json:"reason,omitempty"`
+	Digest         string                `json:"digest,omitempty"`
+	HTTPStatus     int                   `json:"http_status,omitempty"`
+	AttemptDetails []RegistrySyncAttempt `json:"attempt_details,omitempty"`
+}
+
+type RegistrySyncSchedule struct {
+	Kind    string `json:"kind"`
+	Command string `json:"command"`
+	Content string `json:"content"`
 }
 
 type registrySyncImageRef struct {
@@ -194,6 +229,9 @@ func newRegistrySyncCommand(use string, allowApply bool) *cobra.Command {
 		cmd.Flags().IntVar(&opts.Concurrency, "concurrency", opts.Concurrency, "同步执行并发数")
 		cmd.Flags().IntVar(&opts.Retries, "retries", opts.Retries, "同步执行失败后的重试次数")
 		cmd.Flags().BoolVar(&opts.SkipExisting, "skip-existing", false, "目标 registry 已存在同名 manifest 时跳过")
+		cmd.Flags().BoolVar(&opts.ApplyCleanup, "apply-cleanup", false, "执行 cleanup 删除计划；必须同时指定 --apply")
+		cmd.Flags().StringVar(&opts.Schedule, "schedule", "", "生成定时任务配置: cron | systemd | github-actions")
+		cmd.Flags().StringVar(&opts.ScheduleCommand, "schedule-command", "", "生成定时任务时使用的命令，默认根据当前 --file 生成")
 	}
 	commandflags.AddReportFormatFlag(cmd, &opts.Format)
 	return cmd
@@ -226,13 +264,27 @@ func runRegistrySync(ctx context.Context, opts RegistrySyncOptions) (RegistrySyn
 		result, items := buildRegistrySyncMirrorPlan(ctx, mirror, opts)
 		report.Mirrors = append(report.Mirrors, result)
 		report.Items = append(report.Items, items...)
+		cleanupItems := buildRegistrySyncCleanupPlan(ctx, mirror, opts)
+		report.Cleanup = append(report.Cleanup, cleanupItems...)
+	}
+	if schedule := buildRegistrySyncSchedule(opts); schedule != nil {
+		report.Schedule = schedule
 	}
 	recalculateRegistrySyncSummary(&report)
 	if !opts.DryRun {
 		if err := executeRegistrySyncPlan(ctx, &report, opts); err != nil {
 			return report, err
 		}
+		if opts.ApplyCleanup {
+			if err := executeRegistrySyncCleanup(ctx, &report, opts); err != nil {
+				return report, err
+			}
+		} else if len(report.Cleanup) > 0 {
+			report.Warnings = append(report.Warnings, "cleanup 仅生成计划；如需真实删除目标 manifest，请同时指定 --apply --apply-cleanup")
+		}
 		recalculateRegistrySyncSummary(&report)
+	} else if opts.ApplyCleanup {
+		report.Warnings = append(report.Warnings, "--apply-cleanup 在 dry-run 模式下不会删除目标 manifest")
 	}
 	return report, nil
 }
@@ -323,6 +375,33 @@ func buildRegistrySyncMirrorPlan(ctx context.Context, mirror RegistrySyncMirror,
 				continue
 			}
 			for _, platform := range platforms {
+				if mirror.ValidatePlatforms && platform != "" {
+					available, err := registrySyncPlatformAvailable(ctx, source, tag, platform, opts)
+					if err != nil {
+						items = append(items, RegistrySyncItem{
+							Source:      source.Display + ":" + tag,
+							Target:      targetRepo + ":" + tag,
+							TargetInput: targetInput,
+							Tag:         tag,
+							Platform:    platform,
+							Status:      registrySyncStatusFailed,
+							Reason:      "platform validation failed: " + err.Error(),
+						})
+						continue
+					}
+					if !available {
+						items = append(items, RegistrySyncItem{
+							Source:      source.Display + ":" + tag,
+							Target:      targetRepo + ":" + tag,
+							TargetInput: targetInput,
+							Tag:         tag,
+							Platform:    platform,
+							Status:      registrySyncStatusFailed,
+							Reason:      "platform not found",
+						})
+						continue
+					}
+				}
 				items = append(items, RegistrySyncItem{
 					Source:      source.Display + ":" + tag,
 					Target:      targetRepo + ":" + tag,
@@ -350,11 +429,196 @@ func registrySyncTargetInputRef(input, normalizedRepo, tag string) string {
 	return normalizedRepo + ":" + tag
 }
 
+func registrySyncPlatformAvailable(ctx context.Context, source registrySyncImageRef, tag string, platform string, opts RegistrySyncOptions) (bool, error) {
+	rawURL := registrySyncManifestURL(source, tag, opts)
+	headers := map[string]string{
+		"Accept": strings.Join([]string{
+			"application/vnd.docker.distribution.manifest.v2+json",
+			"application/vnd.docker.distribution.manifest.list.v2+json",
+			"application/vnd.oci.image.manifest.v1+json",
+			"application/vnd.oci.image.index.v1+json",
+		}, ", "),
+	}
+	body, _, _, err := registrySyncRequestWithAuth(ctx, http.MethodGet, rawURL, headers, source, opts, nil)
+	if err != nil {
+		return false, err
+	}
+	return registrySyncManifestContainsPlatform(body, platform)
+}
+
+func registrySyncManifestContainsPlatform(data []byte, platform string) (bool, error) {
+	targetOS, targetArch, err := parseRegistrySyncPlatform(platform)
+	if err != nil {
+		return false, err
+	}
+	var probe struct {
+		Manifests []struct {
+			Platform *struct {
+				OS           string `json:"os"`
+				Architecture string `json:"architecture"`
+			} `json:"platform"`
+		} `json:"manifests"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return false, err
+	}
+	if len(probe.Manifests) == 0 {
+		return true, nil
+	}
+	for _, manifest := range probe.Manifests {
+		if manifest.Platform == nil {
+			continue
+		}
+		if manifest.Platform.OS == targetOS && manifest.Platform.Architecture == targetArch {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func registrySyncPlannedReason(opts RegistrySyncOptions) string {
 	if opts.DryRun {
 		return "dry-run"
 	}
 	return "pending"
+}
+
+func buildRegistrySyncSchedule(opts RegistrySyncOptions) *RegistrySyncSchedule {
+	kind := strings.ToLower(strings.TrimSpace(opts.Schedule))
+	if kind == "" {
+		return nil
+	}
+	command := strings.TrimSpace(opts.ScheduleCommand)
+	if command == "" {
+		command = "dm registry sync --file " + shellQuoteRegistrySync(opts.Config) + " --apply"
+	}
+	switch kind {
+	case "cron":
+		return &RegistrySyncSchedule{
+			Kind:    kind,
+			Command: command,
+			Content: "0 2 * * * " + command,
+		}
+	case "systemd":
+		service := "[Unit]\nDescription=docker-manager registry sync\n\n[Service]\nType=oneshot\nExecStart=" + command + "\n"
+		timer := "[Unit]\nDescription=docker-manager registry sync timer\n\n[Timer]\nOnCalendar=*-*-* 02:00:00\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n"
+		return &RegistrySyncSchedule{
+			Kind:    kind,
+			Command: command,
+			Content: "# dm-registry-sync.service\n" + service + "\n# dm-registry-sync.timer\n" + timer,
+		}
+	case "github-actions", "github":
+		return &RegistrySyncSchedule{
+			Kind:    "github-actions",
+			Command: command,
+			Content: "name: registry-sync\non:\n  schedule:\n    - cron: '0 18 * * *'\n  workflow_dispatch:\njobs:\n  sync:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - name: Run registry sync\n        run: " + shellQuoteRegistrySync(command) + "\n",
+		}
+	default:
+		return &RegistrySyncSchedule{
+			Kind:    kind,
+			Command: command,
+			Content: "unsupported schedule kind: " + kind,
+		}
+	}
+}
+
+func shellQuoteRegistrySync(value string) string {
+	if value == "" {
+		return "''"
+	}
+	if strings.IndexFunc(value, func(r rune) bool {
+		return !(r >= 'A' && r <= 'Z') &&
+			!(r >= 'a' && r <= 'z') &&
+			!(r >= '0' && r <= '9') &&
+			!strings.ContainsRune("-_./:=@+", r)
+	}) < 0 {
+		return value
+	}
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
+func buildRegistrySyncCleanupPlan(ctx context.Context, mirror RegistrySyncMirror, opts RegistrySyncOptions) []RegistrySyncCleanupItem {
+	if !mirror.Cleanup.Enabled {
+		return nil
+	}
+	if registrySyncTagRulesEmpty(mirror.Cleanup.Keep) {
+		return []RegistrySyncCleanupItem{{
+			Target: "",
+			Status: registrySyncStatusFailed,
+			Reason: "cleanup.enabled=true 需要配置 cleanup.keep，避免误删全部目标 tag",
+		}}
+	}
+	var items []RegistrySyncCleanupItem
+	for _, target := range mirror.Targets {
+		if err := ctx.Err(); err != nil {
+			items = append(items, RegistrySyncCleanupItem{Target: target, Status: registrySyncStatusFailed, Reason: err.Error()})
+			continue
+		}
+		targetRef, err := parseRegistrySyncImageRef(target)
+		if err != nil {
+			items = append(items, RegistrySyncCleanupItem{Target: target, Status: registrySyncStatusFailed, Reason: err.Error()})
+			continue
+		}
+		targetOpts := opts
+		targetOpts.PlainHTTP = registrySyncTargetUsesPlainHTTP(target, opts)
+		tags, err := listRegistrySyncTags(ctx, targetRef, targetOpts)
+		if err != nil {
+			items = append(items, RegistrySyncCleanupItem{
+				Target: targetRef.Display,
+				Status: registrySyncStatusFailed,
+				Reason: "读取目标 tag 失败: " + err.Error(),
+			})
+			continue
+		}
+		for _, decision := range selectRegistrySyncTags(tags, mirror.Cleanup.Keep) {
+			if decision.Selected {
+				continue
+			}
+			targetRepo, err := registrySyncRepositoryRef(target)
+			if err != nil {
+				items = append(items, RegistrySyncCleanupItem{Target: target, Tag: decision.Tag, Status: registrySyncStatusFailed, Reason: err.Error()})
+				continue
+			}
+			items = append(items, RegistrySyncCleanupItem{
+				Target:      targetRepo + ":" + decision.Tag,
+				TargetInput: registrySyncTargetInputRef(target, targetRepo, decision.Tag),
+				Tag:         decision.Tag,
+				Status:      registrySyncStatusPlanned,
+				Reason:      decision.Reason,
+			})
+		}
+	}
+	return items
+}
+
+func registrySyncTagRulesEmpty(rules RegistrySyncTagRules) bool {
+	return len(rules.Include) == 0 &&
+		len(rules.Exclude) == 0 &&
+		strings.TrimSpace(rules.Sort) == "" &&
+		rules.Limit <= 0 &&
+		rules.KeepLatest <= 0
+}
+
+func registrySyncTargetUsesPlainHTTP(target string, opts RegistrySyncOptions) bool {
+	switch registrySyncScheme(target) {
+	case "http":
+		return true
+	case "https":
+		return false
+	default:
+		return opts.PlainHTTP
+	}
+}
+
+func registrySyncScheme(value string) string {
+	if !strings.Contains(value, "://") {
+		return ""
+	}
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(parsed.Scheme)
 }
 
 func executeRegistrySyncPlan(ctx context.Context, report *RegistrySyncReport, opts RegistrySyncOptions) error {
@@ -390,6 +654,111 @@ func executeRegistrySyncPlan(ctx context.Context, report *RegistrySyncReport, op
 		mu.Unlock()
 	})
 	return ctx.Err()
+}
+
+func executeRegistrySyncCleanup(ctx context.Context, report *RegistrySyncReport, opts RegistrySyncOptions) error {
+	for i, item := range report.Cleanup {
+		if item.Status != registrySyncStatusPlanned {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			report.Cleanup[i].Status = registrySyncStatusFailed
+			report.Cleanup[i].Reason = err.Error()
+			return err
+		}
+		report.Cleanup[i] = executeRegistrySyncCleanupItem(ctx, item, opts)
+	}
+	return ctx.Err()
+}
+
+func executeRegistrySyncCleanupItem(ctx context.Context, item RegistrySyncCleanupItem, opts RegistrySyncOptions) RegistrySyncCleanupItem {
+	result := item
+	targetRef, err := parseRegistrySyncImageRef(registrySyncItemTargetInputForCleanup(item))
+	if err != nil {
+		result.Status = registrySyncStatusFailed
+		result.Reason = err.Error()
+		return result
+	}
+	targetOpts := opts
+	targetOpts.PlainHTTP = registrySyncTargetUsesPlainHTTP(registrySyncItemTargetInputForCleanup(item), opts)
+	digest, httpStatus, err := registrySyncManifestDigest(ctx, targetRef, item.Tag, targetOpts)
+	result.HTTPStatus = httpStatus
+	if err != nil {
+		result.Status = registrySyncStatusFailed
+		result.Reason = err.Error()
+		result.AttemptDetails = append(result.AttemptDetails, registrySyncAttemptFromError(1, "head-manifest", err))
+		return result
+	}
+	result.Digest = digest
+	if digest == "" {
+		result.Status = registrySyncStatusFailed
+		result.Reason = "目标 manifest 响应缺少 Docker-Content-Digest"
+		result.AttemptDetails = append(result.AttemptDetails, RegistrySyncAttempt{Attempt: 1, Stage: "head-manifest", Status: registrySyncStatusFailed, HTTPStatus: httpStatus, Message: result.Reason})
+		return result
+	}
+	httpStatus, err = registrySyncDeleteManifest(ctx, targetRef, digest, targetOpts)
+	result.HTTPStatus = httpStatus
+	if err != nil {
+		result.Status = registrySyncStatusFailed
+		result.Reason = err.Error()
+		result.AttemptDetails = append(result.AttemptDetails, registrySyncAttemptFromError(1, "delete-manifest", err))
+		return result
+	}
+	result.Status = registrySyncStatusDeleted
+	result.Reason = "deleted"
+	result.AttemptDetails = append(result.AttemptDetails, RegistrySyncAttempt{Attempt: 1, Stage: "delete-manifest", Status: registrySyncStatusDeleted, HTTPStatus: httpStatus})
+	return result
+}
+
+func registrySyncItemTargetInputForCleanup(item RegistrySyncCleanupItem) string {
+	if strings.TrimSpace(item.TargetInput) != "" {
+		return item.TargetInput
+	}
+	return item.Target
+}
+
+func registrySyncAttemptFromError(attempt int, stage string, err error) RegistrySyncAttempt {
+	detail := RegistrySyncAttempt{
+		Attempt: attempt,
+		Stage:   stage,
+		Status:  registrySyncStatusFailed,
+		Message: err.Error(),
+	}
+	if httpErr, ok := err.(*registrySyncHTTPError); ok {
+		detail.HTTPStatus = httpErr.StatusCode
+	}
+	return detail
+}
+
+func registrySyncManifestDigest(ctx context.Context, ref registrySyncImageRef, tag string, opts RegistrySyncOptions) (string, int, error) {
+	rawURL := registrySyncManifestURL(ref, tag, opts)
+	headers := map[string]string{
+		"Accept": strings.Join([]string{
+			"application/vnd.docker.distribution.manifest.v2+json",
+			"application/vnd.docker.distribution.manifest.list.v2+json",
+			"application/vnd.oci.image.manifest.v1+json",
+			"application/vnd.oci.image.index.v1+json",
+		}, ", "),
+	}
+	_, header, status, err := registrySyncRequestWithAuth(ctx, http.MethodHead, rawURL, headers, ref, opts, nil)
+	if err != nil {
+		return "", status, err
+	}
+	return header.Get("Docker-Content-Digest"), status, nil
+}
+
+func registrySyncDeleteManifest(ctx context.Context, ref registrySyncImageRef, digest string, opts RegistrySyncOptions) (int, error) {
+	rawURL := registrySyncManifestURL(ref, digest, opts)
+	_, _, status, err := registrySyncRequestWithAuth(ctx, http.MethodDelete, rawURL, nil, ref, opts, nil)
+	return status, err
+}
+
+func registrySyncManifestURL(ref registrySyncImageRef, value string, opts RegistrySyncOptions) string {
+	scheme := "https"
+	if opts.PlainHTTP {
+		scheme = "http"
+	}
+	return fmt.Sprintf("%s://%s/v2/%s/manifests/%s", scheme, ref.Registry, ref.Repository, value)
 }
 
 func executeRegistrySyncItem(ctx context.Context, item RegistrySyncItem, opts RegistrySyncOptions, progressOutput io.Writer) RegistrySyncItem {
@@ -484,6 +853,10 @@ func registrySyncExecutionPlatform(platform string, opts RegistrySyncOptions) (s
 		}
 		return targetOS, arch, nil
 	}
+	return parseRegistrySyncPlatform(platform)
+}
+
+func parseRegistrySyncPlatform(platform string) (string, string, error) {
 	parts := strings.Split(platform, "/")
 	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
 		return "", "", fmt.Errorf("platform %q 格式无效，请使用 os/arch，例如 linux/amd64", platform)
@@ -517,6 +890,16 @@ func recalculateRegistrySyncSummary(report *RegistrySyncReport) {
 			summary.Skipped++
 		case registrySyncStatusFailed:
 			summary.Failed++
+		}
+	}
+	for _, item := range report.Cleanup {
+		switch item.Status {
+		case registrySyncStatusPlanned:
+			summary.CleanupPlanned++
+		case registrySyncStatusDeleted:
+			summary.CleanupDeleted++
+		case registrySyncStatusFailed:
+			summary.CleanupFailed++
 		}
 	}
 	report.Summary = summary
@@ -799,9 +1182,43 @@ func fetchRegistrySyncBytes(ctx context.Context, rawURL string, source registryS
 }
 
 func registrySyncGET(ctx context.Context, rawURL string, auth *registrySyncAuth) ([]byte, http.Header, int, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	body, header, status, err := registrySyncRequest(ctx, http.MethodGet, rawURL, nil, auth)
+	return body, header, status, err
+}
+
+type registrySyncHTTPError struct {
+	StatusCode int
+	Status     string
+	Header     http.Header
+}
+
+func (e *registrySyncHTTPError) Error() string {
+	return fmt.Sprintf("HTTP %s", e.Status)
+}
+
+func registrySyncRequestWithAuth(ctx context.Context, method, rawURL string, headers map[string]string, source registrySyncImageRef, opts RegistrySyncOptions, auth *registrySyncAuth) ([]byte, http.Header, int, error) {
+	body, header, status, err := registrySyncRequest(ctx, method, rawURL, headers, auth)
+	if err == nil {
+		return body, header, status, nil
+	}
+	if status != http.StatusUnauthorized {
+		return nil, header, status, err
+	}
+	nextAuth, authErr := resolveRegistrySyncAuth(ctx, header.Get("WWW-Authenticate"), source, opts)
+	if authErr != nil {
+		return nil, header, status, authErr
+	}
+	body, header, status, err = registrySyncRequest(ctx, method, rawURL, headers, nextAuth)
+	return body, header, status, err
+}
+
+func registrySyncRequest(ctx context.Context, method, rawURL string, headers map[string]string, auth *registrySyncAuth) ([]byte, http.Header, int, error) {
+	req, err := http.NewRequestWithContext(ctx, method, rawURL, nil)
 	if err != nil {
 		return nil, nil, 0, err
+	}
+	for key, value := range headers {
+		req.Header.Set(key, value)
 	}
 	if auth != nil && auth.Authorization != "" {
 		req.Header.Set("Authorization", auth.Authorization)
@@ -816,7 +1233,7 @@ func registrySyncGET(ctx context.Context, rawURL string, auth *registrySyncAuth)
 		return nil, resp.Header.Clone(), resp.StatusCode, readErr
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, resp.Header.Clone(), resp.StatusCode, fmt.Errorf("HTTP %s", resp.Status)
+		return nil, resp.Header.Clone(), resp.StatusCode, &registrySyncHTTPError{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone()}
 	}
 	return body, resp.Header.Clone(), resp.StatusCode, nil
 }
@@ -1011,7 +1428,7 @@ func registrySyncExitError(report RegistrySyncReport, opts RegistrySyncOptions) 
 func printRegistrySyncReport(w io.Writer, report RegistrySyncReport) {
 	fmt.Fprintf(w, "Registry 同步计划 (%s)\n", report.GeneratedAt)
 	fmt.Fprintf(w, "配置: %s dry-run=%v\n", report.Config, report.DryRun)
-	fmt.Fprintf(w, "摘要: mirrors=%d targets=%d tags=%d planned=%d success=%d skipped=%d failed=%d\n\n",
+	fmt.Fprintf(w, "摘要: mirrors=%d targets=%d tags=%d planned=%d success=%d skipped=%d failed=%d cleanup_planned=%d cleanup_deleted=%d cleanup_failed=%d\n\n",
 		report.Summary.Mirrors,
 		report.Summary.Targets,
 		report.Summary.TagsListed,
@@ -1019,6 +1436,9 @@ func printRegistrySyncReport(w io.Writer, report RegistrySyncReport) {
 		report.Summary.Succeeded,
 		report.Summary.Skipped,
 		report.Summary.Failed,
+		report.Summary.CleanupPlanned,
+		report.Summary.CleanupDeleted,
+		report.Summary.CleanupFailed,
 	)
 	if len(report.Warnings) > 0 {
 		fmt.Fprintln(w, "警告:")
@@ -1061,5 +1481,24 @@ func printRegistrySyncReport(w io.Writer, report RegistrySyncReport) {
 			fmt.Fprintf(w, " 原因=%s", item.Reason)
 		}
 		fmt.Fprintln(w)
+	}
+	if len(report.Cleanup) > 0 {
+		fmt.Fprintln(w, "\nCleanup:")
+		for _, item := range report.Cleanup {
+			fmt.Fprintf(w, "  - [%s] %s", item.Status, item.Target)
+			if item.Digest != "" {
+				fmt.Fprintf(w, " digest=%s", item.Digest)
+			}
+			if item.HTTPStatus != 0 {
+				fmt.Fprintf(w, " http=%d", item.HTTPStatus)
+			}
+			if item.Reason != "" {
+				fmt.Fprintf(w, " reason=%s", item.Reason)
+			}
+			fmt.Fprintln(w)
+		}
+	}
+	if report.Schedule != nil {
+		fmt.Fprintf(w, "\nSchedule (%s):\n%s\n", report.Schedule.Kind, report.Schedule.Content)
 	}
 }

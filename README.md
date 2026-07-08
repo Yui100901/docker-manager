@@ -247,15 +247,24 @@ mirrors:
       sort: semver-desc
     platforms:
       - linux/amd64
+    validate_platforms: true
+    cleanup:
+      enabled: true
+      keep:
+        keep_latest: 10
+        sort: semver-desc
 ```
 
 ```bash
 dm registry sync --file registry-sync.yaml --format markdown
 dm registry sync --file registry-sync.yaml --apply --skip-existing --output-dir ./sync-cache
+dm registry sync --file registry-sync.yaml --apply --apply-cleanup
+dm registry sync --file registry-sync.yaml --schedule cron --format markdown
 dm report registry-sync --file registry-sync.yaml --format json
 ```
 
 `tags.include/exclude` 先决定候选 tag，`tags.keep_latest` 或 `tags.limit` 再按 `tags.sort` 排序后截取；`sort` 支持 `name-asc`、`name-desc`、`semver-asc` 和 `semver-desc`。
+`cleanup` 默认只生成计划，真实删除目标 manifest 需要同时指定 `--apply --apply-cleanup`。
 
 ## 项目结构
 
