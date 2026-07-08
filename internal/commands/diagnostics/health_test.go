@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"docker-manager/internal/docker"
+	"errors"
 	"io"
 	"net/netip"
 	"strings"
@@ -99,11 +100,14 @@ func TestBuildHealthReportDetectsContainerIssues(t *testing.T) {
 		},
 	}
 
-	report := buildHealthReport(context.Background(), fake, fake.containers, HealthOptions{
+	report, err := buildHealthReport(context.Background(), fake, fake.containers, HealthOptions{
 		LogTail:          100,
 		RestartThreshold: 3,
 		Keywords:         []string{"panic", "oom"},
 	})
+	if err != nil {
+		t.Fatalf("buildHealthReport() error = %v", err)
+	}
 
 	if report.Summary.Total != 2 || report.Summary.Running != 1 || report.Summary.Stopped != 1 {
 		t.Fatalf("Summary = %#v, want total=2 running=1 stopped=1", report.Summary)
@@ -128,6 +132,21 @@ func TestRunHealthReportRunningOnlyPassesContainerListFlag(t *testing.T) {
 	}
 	if fake.allFlag {
 		t.Fatal("ListContainers all = true, want false for running-only")
+	}
+}
+
+func TestRunHealthReportReturnsCanceledContext(t *testing.T) {
+	fake := &fakeHealthDockerService{
+		containers: []container.Summary{{ID: "api-id", Names: []string{"/api"}, State: "running"}},
+	}
+	restore := replaceHealthServiceFactory(fake)
+	defer restore()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := runHealthReport(ctx, HealthOptions{NoLogs: true})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("runHealthReport() error = %v, want context.Canceled", err)
 	}
 }
 
@@ -220,10 +239,13 @@ func TestBuildHealthReportIncludesResourceDependenciesFromInspect(t *testing.T) 
 		logs: map[string]string{"api-id": "ok\n"},
 	}
 
-	report := buildHealthReport(context.Background(), fake, fake.containers, HealthOptions{
+	report, err := buildHealthReport(context.Background(), fake, fake.containers, HealthOptions{
 		NoLogs:           true,
 		RestartThreshold: 3,
 	})
+	if err != nil {
+		t.Fatalf("buildHealthReport() error = %v", err)
+	}
 
 	if len(report.Containers) != 1 {
 		t.Fatalf("Containers = %#v, want one container", report.Containers)
@@ -270,11 +292,14 @@ func TestBuildHealthReportReportsUnsupportedLogDriver(t *testing.T) {
 		logs: map[string]string{"api-id": "ERROR should not be read\n"},
 	}
 
-	report := buildHealthReport(context.Background(), fake, fake.containers, HealthOptions{
+	report, err := buildHealthReport(context.Background(), fake, fake.containers, HealthOptions{
 		LogTail:          100,
 		RestartThreshold: 3,
 		Keywords:         []string{"error"},
 	})
+	if err != nil {
+		t.Fatalf("buildHealthReport() error = %v", err)
+	}
 
 	if len(fake.logOptions) != 0 {
 		t.Fatalf("ContainerLogs called %#v, want skipped for awslogs", fake.logOptions)
@@ -335,12 +360,15 @@ func TestBuildHealthReportRedactsLogSecretsWhenRequested(t *testing.T) {
 		},
 	}
 
-	report := buildHealthReport(context.Background(), fake, fake.containers, HealthOptions{
+	report, err := buildHealthReport(context.Background(), fake, fake.containers, HealthOptions{
 		LogTail:          100,
 		RestartThreshold: 3,
 		Keywords:         []string{"error"},
 		RedactSecrets:    true,
 	})
+	if err != nil {
+		t.Fatalf("buildHealthReport() error = %v", err)
+	}
 
 	if len(report.Containers) != 1 || len(report.Containers[0].LogMatches) != 1 {
 		t.Fatalf("Containers = %#v, want one log match", report.Containers)

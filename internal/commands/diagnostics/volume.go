@@ -180,10 +180,15 @@ func runVolumeReport(ctx context.Context, opts VolumeOptions) (VolumeReport, err
 	if err != nil {
 		return VolumeReport{}, err
 	}
-	refsByVolume, warnings := inspectVolumeContainerRefs(ctx, svc, containers)
+	refsByVolume, warnings, err := inspectVolumeContainerRefs(ctx, svc, containers)
+	if err != nil {
+		return VolumeReport{}, err
+	}
 	report := buildVolumeReportWithRefs(volumes, refsByVolume, warnings, opts)
 	if opts.SizeMode != volumeSizeModeAPI {
-		probeVolumeSizes(ctx, svc, &report, opts)
+		if err := probeVolumeSizes(ctx, svc, &report, opts); err != nil {
+			return VolumeReport{}, err
+		}
 	}
 	return report, nil
 }
@@ -248,7 +253,7 @@ func buildVolumeReportWithRefs(volumes volume.ListResponse, refsByVolume map[str
 	return report
 }
 
-func probeVolumeSizes(ctx context.Context, svc volumeDockerService, report *VolumeReport, opts VolumeOptions) {
+func probeVolumeSizes(ctx context.Context, svc volumeDockerService, report *VolumeReport, opts VolumeOptions) error {
 	type sizeResult struct {
 		index  int
 		size   int64
@@ -268,8 +273,7 @@ func probeVolumeSizes(ctx context.Context, svc volumeDockerService, report *Volu
 		results[i] = sizeResult{index: i, size: size, source: source, err: err}
 	})
 	if err := ctx.Err(); err != nil {
-		report.Warnings = append(report.Warnings, fmt.Sprintf("volume ???????: %v", err))
-		return
+		return err
 	}
 	for _, result := range results {
 		vol := &report.Volumes[result.index]
@@ -290,6 +294,7 @@ func probeVolumeSizes(ctx context.Context, svc volumeDockerService, report *Volu
 			report.Summary.ReclaimableSize += result.size
 		}
 	}
+	return nil
 }
 
 func measureVolumeSize(ctx context.Context, svc volumeDockerService, vol *VolumeRef, opts VolumeOptions) (int64, string, error) {
@@ -356,7 +361,7 @@ func measureLocalVolumeSizeWithGo(ctx context.Context, vol *VolumeRef) (int64, e
 	return total, nil
 }
 
-func inspectVolumeContainerRefs(ctx context.Context, svc containerInspectService, containers []container.Summary) (map[string][]VolumeContainerRef, []string) {
+func inspectVolumeContainerRefs(ctx context.Context, svc containerInspectService, containers []container.Summary) (map[string][]VolumeContainerRef, []string, error) {
 	refs := make(map[string][]VolumeContainerRef)
 	refsByIndex := make([]map[string][]VolumeContainerRef, len(containers))
 	warningsByIndex := make([]string, len(containers))
@@ -375,10 +380,10 @@ func inspectVolumeContainerRefs(ctx context.Context, svc containerInspectService
 		appendInspectVolumeRefs(localRefs, c, inspect)
 		refsByIndex[i] = localRefs
 	})
-	var warnings []string
 	if err := ctx.Err(); err != nil {
-		warnings = append(warnings, fmt.Sprintf("?? inspect ???: %v", err))
+		return nil, nil, err
 	}
+	var warnings []string
 	for i := range containers {
 		if warningsByIndex[i] != "" {
 			warnings = append(warnings, warningsByIndex[i])
@@ -388,7 +393,7 @@ func inspectVolumeContainerRefs(ctx context.Context, svc containerInspectService
 		}
 	}
 	sortVolumeContainerRefs(refs)
-	return refs, warnings
+	return refs, warnings, nil
 }
 
 func volumeContainerRefs(containers []container.Summary) map[string][]VolumeContainerRef {

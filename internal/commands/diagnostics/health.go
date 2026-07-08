@@ -182,7 +182,10 @@ func runHealthReport(ctx context.Context, opts HealthOptions) (HealthReport, err
 		return HealthReport{}, err
 	}
 	containers = filterContainerSummaries(containers, opts.ContainerFilters)
-	report := buildHealthReport(ctx, svc, containers, opts)
+	report, err := buildHealthReport(ctx, svc, containers, opts)
+	if err != nil {
+		return HealthReport{}, err
+	}
 	report.Target = buildContainerTargetSelection("检查", len(containers), opts.RunningOnly, opts.ContainerFilters)
 	return report, nil
 }
@@ -193,13 +196,16 @@ type healthContainerBuildResult struct {
 	issues  []HealthIssue
 }
 
-func buildHealthReport(ctx context.Context, svc healthDockerService, containers []container.Summary, opts HealthOptions) HealthReport {
+func buildHealthReport(ctx context.Context, svc healthDockerService, containers []container.Summary, opts HealthOptions) (HealthReport, error) {
 	report := HealthReport{GeneratedAt: time.Now().Format(time.RFC3339), DockerEndpoint: docker.Endpoint()}
 	keywords := normalizeKeywords(opts.Keywords)
 	results := make([]healthContainerBuildResult, len(containers))
 	runDiagnosticsParallel(ctx, len(containers), diagnosticsInspectConcurrency, func(ctx context.Context, i int) {
 		results[i] = buildHealthContainerResult(ctx, svc, containers[i], opts, keywords)
 	})
+	if err := ctx.Err(); err != nil {
+		return report, err
+	}
 	for _, result := range results {
 		if result.item.Name == "" && result.item.ID == "" {
 			continue
@@ -217,7 +223,7 @@ func buildHealthReport(ctx context.Context, svc healthDockerService, containers 
 		report.Containers = append(report.Containers, result.item)
 	}
 	sortHealthReport(&report)
-	return report
+	return report, nil
 }
 
 func buildHealthContainerResult(ctx context.Context, svc healthDockerService, summary container.Summary, opts HealthOptions, keywords []string) healthContainerBuildResult {

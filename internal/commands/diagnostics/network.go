@@ -165,7 +165,10 @@ func runNetworkReport(ctx context.Context, opts NetworkOptions) (NetworkReport, 
 	}
 	hasContainerFilter := len(opts.ContainerFilters) > 0
 	containers = filterContainerSummaries(containers, opts.ContainerFilters)
-	inspectByID, inspectWarnings := inspectNetworkContainers(ctx, svc, containers)
+	inspectByID, inspectWarnings, err := inspectNetworkContainers(ctx, svc, containers)
+	if err != nil {
+		return NetworkReport{}, err
+	}
 	networks, err := svc.ListNetworks(ctx)
 	if err != nil {
 		return NetworkReport{}, err
@@ -173,7 +176,10 @@ func runNetworkReport(ctx context.Context, opts NetworkOptions) (NetworkReport, 
 	if hasContainerFilter {
 		networks = filterNetworksForContainersWithInspect(networks, containers, inspectByID)
 	}
-	inspectedNetworks, networkWarnings := inspectNetworks(ctx, svc, networks)
+	inspectedNetworks, networkWarnings, err := inspectNetworks(ctx, svc, networks)
+	if err != nil {
+		return NetworkReport{}, err
+	}
 	report := buildNetworkReportDetailed(containers, inspectByID, inspectedNetworks)
 	report.DockerEndpoint = docker.Endpoint()
 	report.Target = buildContainerTargetSelection("查看", len(containers), opts.RunningOnly, opts.ContainerFilters)
@@ -294,7 +300,7 @@ func buildNetworkReportDetailed(containers []container.Summary, inspectByID map[
 	return report
 }
 
-func inspectNetworkContainers(ctx context.Context, svc networkDockerService, containers []container.Summary) (map[string]container.InspectResponse, []string) {
+func inspectNetworkContainers(ctx context.Context, svc networkDockerService, containers []container.Summary) (map[string]container.InspectResponse, []string, error) {
 	inspects := make(map[string]container.InspectResponse, len(containers))
 	warningsByIndex := make([]string, len(containers))
 	inspectsByIndex := make([]container.InspectResponse, len(containers))
@@ -315,10 +321,10 @@ func inspectNetworkContainers(ctx context.Context, svc networkDockerService, con
 		inspectsByIndex[i] = inspect
 		okByIndex[i] = true
 	})
-	var warnings []string
 	if err := ctx.Err(); err != nil {
-		warnings = append(warnings, fmt.Sprintf("?? inspect ???: %v", err))
+		return nil, nil, err
 	}
+	var warnings []string
 	for i, c := range containers {
 		if warningsByIndex[i] != "" {
 			warnings = append(warnings, warningsByIndex[i])
@@ -327,10 +333,10 @@ func inspectNetworkContainers(ctx context.Context, svc networkDockerService, con
 			inspects[c.ID] = inspectsByIndex[i]
 		}
 	}
-	return inspects, warnings
+	return inspects, warnings, nil
 }
 
-func inspectNetworks(ctx context.Context, svc networkDockerService, networks []network.Summary) ([]network.Inspect, []string) {
+func inspectNetworks(ctx context.Context, svc networkDockerService, networks []network.Summary) ([]network.Inspect, []string, error) {
 	inspects := make([]network.Inspect, len(networks))
 	warningsByIndex := make([]string, len(networks))
 	runDiagnosticsParallel(ctx, len(networks), diagnosticsInspectConcurrency, func(ctx context.Context, i int) {
@@ -345,16 +351,16 @@ func inspectNetworks(ctx context.Context, svc networkDockerService, networks []n
 		}
 		inspects[i] = inspect
 	})
-	var warnings []string
 	if err := ctx.Err(); err != nil {
-		warnings = append(warnings, fmt.Sprintf("network inspect ???: %v", err))
+		return nil, nil, err
 	}
+	var warnings []string
 	for _, warning := range warningsByIndex {
 		if warning != "" {
 			warnings = append(warnings, warning)
 		}
 	}
-	return inspects, warnings
+	return inspects, warnings, nil
 }
 
 func selectedNetworkContainers(containers []container.Summary) map[string]bool {

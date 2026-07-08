@@ -251,6 +251,22 @@ func TestRunNetworkReportRunningOnlyPassesContainerListFlag(t *testing.T) {
 	}
 }
 
+func TestRunNetworkReportReturnsCanceledContext(t *testing.T) {
+	fake := &fakeNetworkDockerService{
+		containers: []container.Summary{{ID: "api-id", Names: []string{"/api"}, State: "running"}},
+		networks:   []network.Summary{{Network: network.Network{Name: "app_net"}}},
+	}
+	restore := replaceNetworkServiceFactory(fake)
+	defer restore()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := runNetworkReport(ctx, NetworkOptions{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("runNetworkReport() error = %v, want context.Canceled", err)
+	}
+}
+
 func TestNetworkCommandRemovesRunningOnlyCompatibilityFlag(t *testing.T) {
 	cmd := NewNetworkCommand()
 	if flag := cmd.Flags().Lookup("running-only"); flag != nil {

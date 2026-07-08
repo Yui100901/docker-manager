@@ -297,6 +297,26 @@ func TestRunVolumeReportListsAllContainers(t *testing.T) {
 	}
 }
 
+func TestRunVolumeReportReturnsCanceledContext(t *testing.T) {
+	fake := &fakeVolumeDockerService{
+		volumes: volume.ListResponse{Volumes: []volume.Volume{{Name: "db_data", Driver: "local"}}},
+		containers: []container.Summary{{
+			ID:    "container-db",
+			Names: []string{"/db"},
+			State: "running",
+		}},
+	}
+	restore := replaceVolumeServiceFactory(fake)
+	defer restore()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := runVolumeReport(ctx, VolumeOptions{All: true, SizeMode: volumeSizeModeAPI})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("runVolumeReport() error = %v, want context.Canceled", err)
+	}
+}
+
 func TestPrintVolumeReportIncludesSummaryAndContainers(t *testing.T) {
 	var out bytes.Buffer
 	printVolumeReport(&out, VolumeReport{

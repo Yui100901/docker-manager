@@ -27,6 +27,7 @@ type fakePruneDockerService struct {
 	inspects         map[string]container.InspectResponse
 	calls            []string
 	diskUsageOptions []mobyclient.DiskUsageOptions
+	diskUsageHook    func()
 }
 
 func (f *fakePruneDockerService) DiskUsage(ctx context.Context, opts mobyclient.DiskUsageOptions) (pruneDiskUsage, error) {
@@ -34,6 +35,9 @@ func (f *fakePruneDockerService) DiskUsage(ctx context.Context, opts mobyclient.
 	f.diskUsageOptions = append(f.diskUsageOptions, opts)
 	if err := ctx.Err(); err != nil {
 		return pruneDiskUsage{}, err
+	}
+	if f.diskUsageHook != nil {
+		f.diskUsageHook()
 	}
 	return f.usage, nil
 }
@@ -248,6 +252,26 @@ func TestRunPruneReportApplyRequiresConfirmMentionsRemoteDocker(t *testing.T) {
 func TestRunPruneReportReturnsCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
+	_, err := runPruneReport(ctx, PruneReportOptions{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("runPruneReport() error = %v, want context.Canceled", err)
+	}
+}
+
+func TestRunPruneReportReturnsCanceledContextDuringVolumeRefs(t *testing.T) {
+	fake := &fakePruneDockerService{
+		usage: pruneDiskUsage{
+			Volumes: []*volume.Volume{
+				{Name: "data", Driver: "local", UsageData: &volume.UsageData{RefCount: 0, Size: 500}},
+			},
+		},
+		containers: []container.Summary{{ID: "container-db", Names: []string{"/db"}}},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	fake.diskUsageHook = cancel
+	restoreFactory := replacePruneServiceFactory(fake)
+	defer restoreFactory()
+
 	_, err := runPruneReport(ctx, PruneReportOptions{})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("runPruneReport() error = %v, want context.Canceled", err)
