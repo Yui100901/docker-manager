@@ -142,7 +142,7 @@ func newReportShortcutCommands() []*cobra.Command {
 		diagnostics.NewInspectDiffCommand(),
 		diagnostics.NewPruneReportCommand(),
 		diagnostics.NewVolumesReportCommand(),
-		diagnostics.NewRegistryCommand(),
+		diagnostics.NewRegistryReportCommand(),
 	}
 }
 

@@ -203,7 +203,7 @@ func TestRootCommandExposesLeafShortcuts(t *testing.T) {
 	opts := outputOptions{}
 	cmd := newRootCommand(&cfg, &opts)
 
-	for _, name := range []string{"pull", "load", "save", "tree", "health", "network", "logs", "diff", "prune", "volumes"} {
+	for _, name := range []string{"pull", "load", "save", "tree", "health", "network", "logs", "diff", "prune", "volumes", "registry"} {
 		sub, _, err := cmd.Find([]string{name})
 		if err != nil {
 			t.Fatalf("Find(%s) error = %v", name, err)
@@ -215,33 +215,12 @@ func TestRootCommandExposesLeafShortcuts(t *testing.T) {
 			t.Fatalf("%s should be a leaf shortcut, got subcommands %#v", name, sub.Commands())
 		}
 	}
-	registry, _, err := cmd.Find([]string{"registry"})
-	if err != nil {
-		t.Fatalf("Find(registry) error = %v", err)
-	}
-	if registry == nil || registry.Name() != "registry" {
-		t.Fatalf("Find(registry) = %#v, want registry command", registry)
-	}
-	registrySync, _, err := cmd.Find([]string{"registry", "sync"})
-	if err != nil {
-		t.Fatalf("Find(registry sync) error = %v", err)
-	}
-	if registrySync == nil || registrySync.Name() != "sync" {
-		t.Fatalf("Find(registry sync) = %#v, want sync subcommand", registrySync)
-	}
 	report, _, err := cmd.Find([]string{"report", "registry"})
 	if err != nil {
 		t.Fatalf("Find(report registry) error = %v", err)
 	}
 	if report == nil || report.Name() != "registry" {
 		t.Fatalf("Find(report registry) = %#v, want registry report command", report)
-	}
-	reportSync, _, err := cmd.Find([]string{"report", "registry-sync"})
-	if err != nil {
-		t.Fatalf("Find(report registry-sync) error = %v", err)
-	}
-	if reportSync == nil || reportSync.Name() != "registry-sync" {
-		t.Fatalf("Find(report registry-sync) = %#v, want registry sync report command", reportSync)
 	}
 	reportAll, _, err := cmd.Find([]string{"report", "all"})
 	if err != nil {

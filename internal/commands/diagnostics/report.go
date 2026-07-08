@@ -17,7 +17,6 @@ func NewReportCommand() *cobra.Command {
 		NewPruneReportCommand(),
 		NewVolumesReportCommand(),
 		NewRegistryReportCommand(),
-		NewRegistrySyncReportCommand(),
 	)
 	return cmd
 }

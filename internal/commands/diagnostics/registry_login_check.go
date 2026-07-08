@@ -78,22 +78,10 @@ type dockerConfigFile = registryauth.Config
 type dockerAuthEntry = registryauth.AuthEntry
 type registryCredential = registryauth.Credential
 
-func NewRegistryCommand() *cobra.Command {
-	cmd := newRegistryReportCommand("registry <registry>")
-	cmd.Short = "检查 registry 登录配置，或生成 registry 同步计划"
-	cmd.AddCommand(newRegistryReportCommand("check <registry>"))
-	cmd.AddCommand(newRegistrySyncCommand("sync", true))
-	return cmd
-}
-
 func NewRegistryReportCommand() *cobra.Command {
-	return newRegistryReportCommand("registry <registry>")
-}
-
-func newRegistryReportCommand(use string) *cobra.Command {
 	opts := RegistryLoginCheckOptions{Timeout: 5 * time.Second, FailOnError: true}
 	cmd := &cobra.Command{
-		Use:   use,
+		Use:   "registry <registry>",
 		Short: "检查 Docker registry 登录配置、凭据和连通性",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
