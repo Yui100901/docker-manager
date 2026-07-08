@@ -71,6 +71,20 @@ func (s *dockerBackupService) LoadImage(ctx context.Context, inputFile string, o
 	return backupCopyWithContext(ctx, output, resp)
 }
 
+func (s *dockerBackupService) ImageExists(ctx context.Context, ref string) (bool, error) {
+	if ref == "" {
+		return false, nil
+	}
+	_, err := s.cli.ImageInspect(ctx, ref)
+	if err == nil {
+		return true, nil
+	}
+	if cerrdefs.IsNotFound(err) {
+		return false, nil
+	}
+	return false, err
+}
+
 func backupCopyWithContext(ctx context.Context, dst io.Writer, src io.Reader) error {
 	if ctx == nil {
 		ctx = context.Background()

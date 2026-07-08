@@ -26,6 +26,7 @@ type fakeBackupDockerService struct {
 	network         network.Inspect
 	volume          volume.Volume
 	containerExists bool
+	imageExists     bool
 	calls           []string
 	loadOutput      io.Writer
 }
@@ -55,6 +56,11 @@ func (f *fakeBackupDockerService) LoadImage(ctx context.Context, inputFile strin
 	f.calls = append(f.calls, "load-image:"+filepath.Base(inputFile))
 	f.loadOutput = output
 	return nil
+}
+
+func (f *fakeBackupDockerService) ImageExists(ctx context.Context, ref string) (bool, error) {
+	f.calls = append(f.calls, "image-exists:"+ref)
+	return f.imageExists, nil
 }
 
 func (f *fakeBackupDockerService) InspectNetwork(ctx context.Context, name string) (network.Inspect, error) {
@@ -866,6 +872,92 @@ func TestRestoreBackupDryRunPrintsPlanWithoutDockerMutations(t *testing.T) {
 	for _, want := range []string{"恢复 dry-run 计划", "已校验 checksums.txt", "将导入镜像归档", "demo_net", "demo_data", "0.0.0.0:8080->80/tcp", "存在覆盖冲突"} {
 		if !strings.Contains(gotOutput, want) {
 			t.Fatalf("output = %q, want %q", gotOutput, want)
+		}
+	}
+}
+
+func TestBuildRestorePlanReportPreviewsDiffsWithoutMutations(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJSON(t, filepath.Join(dir, backupManifestName), BackupManifest{
+		Version: 1,
+		Containers: []BackupContainerManifest{{
+			ContainerName: "web",
+			Image:         "nginx:latest",
+			ImageArchive:  filepath.ToSlash(filepath.Join("images", "nginx.tar")),
+			InspectFile:   backupInspectName,
+			Networks:      []BackupResourceRef{{Name: "web_net", File: filepath.ToSlash(filepath.Join("networks", "web_net.json"))}},
+			Volumes:       []BackupResourceRef{{Name: "web_data", File: filepath.ToSlash(filepath.Join("volumes", "web_data.json"))}},
+		}},
+	})
+	writeTestJSON(t, filepath.Join(dir, backupInspectName), container.InspectResponse{
+		Name: "/web",
+		Config: &container.Config{
+			Image: "nginx:latest",
+		},
+		HostConfig: &container.HostConfig{
+			PortBindings: network.PortMap{
+				network.MustParsePort("80/tcp"): []network.PortBinding{{HostIP: netip.MustParseAddr("0.0.0.0"), HostPort: "8080"}},
+			},
+		},
+	})
+	if err := os.MkdirAll(filepath.Join(dir, "images"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "images", "nginx.tar"), []byte("image"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	writeTestJSON(t, filepath.Join(dir, "networks", "web_net.json"), network.Inspect{Network: network.Network{Name: "web_net", Driver: "bridge"}})
+	writeTestJSON(t, filepath.Join(dir, "volumes", "web_data.json"), volume.Volume{Name: "web_data", Driver: "local"})
+
+	fake := &fakeBackupDockerService{
+		containerExists: true,
+		imageExists:     false,
+		containers:      []container.Summary{{ID: "existing-id", Names: []string{"/old-web"}}},
+		inspects: map[string]container.InspectResponse{
+			"existing-id": {
+				Name: "/old-web",
+				HostConfig: &container.HostConfig{
+					PortBindings: network.PortMap{
+						network.MustParsePort("80/tcp"): []network.PortBinding{{HostIP: netip.MustParseAddr("0.0.0.0"), HostPort: "8080"}},
+					},
+				},
+			},
+		},
+		network: network.Inspect{Network: network.Network{Name: "web_net", Driver: "overlay"}},
+		volume:  volume.Volume{Name: "web_data", Driver: "local"},
+	}
+	restoreFactory := replaceBackupServiceFactory(fake)
+	defer restoreFactory()
+
+	report, err := buildRestorePlanReport(context.Background(), dir, RestoreOptions{Replace: true, NoStart: true, SkipChecksum: true})
+	if err != nil {
+		t.Fatalf("buildRestorePlanReport() error = %v", err)
+	}
+	if report.ContainerCount != 1 || len(report.Containers) != 1 {
+		t.Fatalf("report = %#v, want one container", report)
+	}
+	plan := report.Containers[0]
+	if plan.Container.Action != "replace" || plan.Image.Action != "load-archive" {
+		t.Fatalf("plan actions = container:%s image:%s, want replace/load-archive", plan.Container.Action, plan.Image.Action)
+	}
+	if len(plan.Networks) != 1 || !plan.Networks[0].Different {
+		t.Fatalf("network plan = %#v, want existing different network", plan.Networks)
+	}
+	if len(plan.PortConflicts) != 1 || plan.PortConflicts[0].Container != "old-web" {
+		t.Fatalf("port conflicts = %#v, want old-web conflict", plan.PortConflicts)
+	}
+	for _, forbidden := range []string{"load-image", "create-network", "create-volume", "remove-container", "create-container", "start-container"} {
+		if hasCallPrefix(fake.calls, forbidden) {
+			t.Fatalf("plan calls = %#v, should not call %s", fake.calls, forbidden)
+		}
+	}
+}
+
+func TestRestoreCommandExposesPlanAndFormatFlags(t *testing.T) {
+	cmd := NewRestoreCommand()
+	for _, name := range []string{"plan", "format"} {
+		if cmd.Flags().Lookup(name) == nil {
+			t.Fatalf("restore command missing --%s", name)
 		}
 	}
 }

@@ -8,7 +8,7 @@
 
 - 镜像拉取、归档、导入和重新推送: `dm pull`、`dm save`、`dm load`、`dm tree`。
 - 容器逆向和重建: `dm reverse` 只读输出 `docker run` 或 compose，`dm rerun` 显式确认后重建容器。
-- 容器离线迁移: `dm backup` 和 `dm restore` 支持批量包、合并包、checksum、README 和 restore 脚本。
+- 容器离线迁移: `dm backup` 和 `dm restore` 支持批量包、合并包、checksum、恢复前计划预览、README 和 restore 脚本。
 - 诊断报告: `dm health`、`dm network`、`dm logs`、`dm diff`、`dm prune`、`dm volumes`、`dm registry`、`dm doctor`。
 - 远程 Docker 管理: 支持 Docker 标准环境变量、`.dm.yaml` 和全局参数指定 Docker endpoint。
 - Shell completion: 支持 bash、zsh、fish 和 PowerShell，容器/镜像/volume 候选会按当前 Docker endpoint 查询。
@@ -161,7 +161,7 @@ dm completion powershell
 | `dm reverse` | 从容器 inspect 生成 `docker run` 或 compose，只读输出 |
 | `dm rerun` | 基于 inspect 执行容器重建，实际执行必须传 `--confirm` |
 | `dm backup` | 备份容器 inspect、镜像、compose、volume/network 元数据和迁移包 |
-| `dm restore` | 从备份目录或 tar.gz 离线包恢复镜像、网络、volume 和容器 |
+| `dm restore` | 从备份目录或 tar.gz 离线包恢复镜像、网络、volume 和容器，支持恢复前计划导出 |
 | `dm health` | 输出容器健康、重启、日志、端口和挂载风险报告 |
 | `dm network` | 输出网络、端口映射、endpoint、IPAM 和暴露端口风险报告 |
 | `dm logs` | 扫描容器日志关键字，支持上下文和 `none/basic/strict` 脱敏策略 |
@@ -204,6 +204,8 @@ dm rerun web --confirm
 ```bash
 dm backup web --dry-run
 dm backup web --bundle --bundle-output web-backup.tar.gz
+dm restore web-backup.tar.gz --plan --format html
+dm restore web-backup.tar.gz --plan --format json
 dm restore web-backup.tar.gz --dry-run
 dm restore web-backup.tar.gz --name web-restored
 ```

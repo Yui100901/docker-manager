@@ -26,6 +26,7 @@ type backupDockerService interface {
 	InspectContainer(ctx context.Context, name string) (container.InspectResponse, error)
 	SaveImage(ctx context.Context, refs []string, outputFile string) error
 	LoadImage(ctx context.Context, inputFile string, output io.Writer) error
+	ImageExists(ctx context.Context, ref string) (bool, error)
 	InspectNetwork(ctx context.Context, name string) (network.Inspect, error)
 	CreateNetwork(ctx context.Context, inspect network.Inspect) error
 	InspectVolume(ctx context.Context, name string) (volume.Volume, error)
@@ -63,6 +64,8 @@ type RestoreOptions struct {
 	Replace      bool
 	NoStart      bool
 	DryRun       bool
+	Plan         bool
+	Format       string
 	SkipChecksum bool
 	Output       io.Writer
 }
@@ -144,6 +147,82 @@ type restoreDryRunPlan struct {
 	Replace       bool
 	NoStart       bool
 	Conflicts     []string
+}
+
+type RestorePlanReport struct {
+	Source         string                 `json:"source"`
+	DockerEndpoint string                 `json:"docker_endpoint"`
+	Checksum       string                 `json:"checksum"`
+	ContainerCount int                    `json:"container_count"`
+	Options        RestorePlanOptions     `json:"options"`
+	Containers     []RestoreContainerPlan `json:"containers"`
+	Summary        RestorePlanSummary     `json:"summary"`
+	Warnings       []string               `json:"warnings,omitempty"`
+}
+
+type RestorePlanOptions struct {
+	Replace bool   `json:"replace"`
+	NoStart bool   `json:"no_start"`
+	Name    string `json:"name,omitempty"`
+}
+
+type RestorePlanSummary struct {
+	ImagesToLoad        int `json:"images_to_load"`
+	ImagesPresent       int `json:"images_present"`
+	NetworksToCreate    int `json:"networks_to_create"`
+	NetworksPresent     int `json:"networks_present"`
+	NetworksDifferent   int `json:"networks_different"`
+	VolumesToCreate     int `json:"volumes_to_create"`
+	VolumesPresent      int `json:"volumes_present"`
+	VolumesDifferent    int `json:"volumes_different"`
+	ContainersToCreate  int `json:"containers_to_create"`
+	ContainersToReplace int `json:"containers_to_replace"`
+	ContainerConflicts  int `json:"container_conflicts"`
+	PortConflicts       int `json:"port_conflicts"`
+	Warnings            int `json:"warnings"`
+}
+
+type RestoreContainerPlan struct {
+	ContainerName string                `json:"container_name"`
+	SourceName    string                `json:"source_name,omitempty"`
+	EntryDir      string                `json:"entry_dir"`
+	Image         RestoreImagePlan      `json:"image"`
+	Networks      []RestoreResourcePlan `json:"networks,omitempty"`
+	Volumes       []RestoreResourcePlan `json:"volumes,omitempty"`
+	Ports         []string              `json:"ports,omitempty"`
+	PortConflicts []RestorePortConflict `json:"port_conflicts,omitempty"`
+	Container     RestoreTargetPlan     `json:"container"`
+	Actions       []string              `json:"actions,omitempty"`
+	Warnings      []string              `json:"warnings,omitempty"`
+}
+
+type RestoreImagePlan struct {
+	Ref         string `json:"ref,omitempty"`
+	Archive     string `json:"archive,omitempty"`
+	Exists      bool   `json:"exists"`
+	Action      string `json:"action"`
+	Error       string `json:"error,omitempty"`
+	ArchivePath string `json:"archive_path,omitempty"`
+}
+
+type RestoreResourcePlan struct {
+	Name        string   `json:"name"`
+	File        string   `json:"file,omitempty"`
+	Exists      bool     `json:"exists"`
+	Different   bool     `json:"different,omitempty"`
+	Action      string   `json:"action"`
+	Differences []string `json:"differences,omitempty"`
+	Error       string   `json:"error,omitempty"`
+}
+
+type RestoreTargetPlan struct {
+	Exists bool   `json:"exists"`
+	Action string `json:"action"`
+}
+
+type RestorePortConflict struct {
+	Port      string `json:"port"`
+	Container string `json:"container"`
 }
 
 type BackupContainersResult struct {

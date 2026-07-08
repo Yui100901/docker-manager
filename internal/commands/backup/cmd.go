@@ -1,10 +1,13 @@
 package backup
 
 import (
-	"docker-manager/internal/completion"
-	"docker-manager/internal/docker"
 	"fmt"
 	"io"
+
+	"docker-manager/internal/commandflags"
+	"docker-manager/internal/completion"
+	"docker-manager/internal/docker"
+	rpt "docker-manager/internal/report"
 
 	"github.com/spf13/cobra"
 )
@@ -59,6 +62,20 @@ func NewRestoreCommand() *cobra.Command {
 			if opts.Name != "" && len(args) > 1 {
 				return fmt.Errorf("--name 只支持恢复单个备份")
 			}
+			if opts.Plan {
+				for _, arg := range args {
+					report, err := buildRestorePlanReport(cmd.Context(), arg, opts)
+					if err != nil {
+						return fmt.Errorf("生成恢复计划失败: %w", err)
+					}
+					if err := rpt.Print(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
+						printRestorePlanReport(w, report)
+					}); err != nil {
+						return err
+					}
+				}
+				return nil
+			}
 			if !opts.DryRun {
 				printRestoreDockerTarget(cmd.OutOrStdout())
 			}
@@ -79,7 +96,9 @@ func NewRestoreCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&opts.Replace, "replace", false, "如果目标容器已存在则先删除")
 	cmd.Flags().BoolVar(&opts.NoStart, "no-start", false, "只创建容器，不启动")
 	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", false, "只预览恢复动作，不修改 Docker")
+	cmd.Flags().BoolVar(&opts.Plan, "plan", false, "生成恢复前差异预览和恢复计划报告，不修改 Docker")
 	cmd.Flags().BoolVar(&opts.SkipChecksum, "skip-checksum", false, "跳过 checksums.txt 完整性校验")
+	commandflags.AddReportFormatFlag(cmd, &opts.Format)
 	return cmd
 }
 
