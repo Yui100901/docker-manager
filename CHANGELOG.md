@@ -1,8 +1,123 @@
 ﻿# Changelog
 
-本文档记录 `docker-manager` 当前发布候选版本的功能、修复、结构调整、已完成优化和已知非阻断项。临时优化清单已归档到本文档，后续不再维护 `OPTIMIZATION_AND_EXTENSIONS.md`。
+本文档记录 `docker-manager` 已发布版本的功能、修复、结构调整、已完成优化和已知非阻断项。临时优化清单已归档到本文档，后续不再维护 `OPTIMIZATION_AND_EXTENSIONS.md`。
 
-## v2.0.0 - 2026-07-03
+## v2.2 - 2026-07-09
+
+GitHub Release:
+
+- Tag: `v2.2`
+- Commit: `23b8b34737c398c08af76fa75c6f8ae36b1ed326`
+- GitHub 发布时间: `2026-07-09T01:28:26Z`
+- Release 摘要: 完整迁移 Docker API，整理代码，部分耗时命令进行并发化优化。
+
+提交范围: `v2.1..v2.2`
+
+### 重点变化
+
+- 完成只读报告类和预览类路径的并发优化:
+  - `dm report all` 并发执行 health、network、logs、volumes 和 prune 子报告，最终仍按用户选择顺序聚合输出。
+  - `dm reverse` 的容器 inspect、volume/network metadata inspect 接入 context 和有界并发。
+  - `dm tree` / image tree 对关联容器 inspect 使用有界并发。
+  - `dm backup --dry-run` 的 network/volume metadata 检查改为有界并发。
+  - `dm restore --dry-run` / 结构化恢复计划中，多容器计划、端口冲突扫描、network/volume 差异预览改为有界并发。
+- 保持下载、导入、导出类命令的保守并发策略:
+  - 未扩大 `pull/save/load` 默认并发。
+  - `pull` 仍保留单镜像 layer 下载并发和批量模式显式 `--concurrency`。
+  - `save/load` 与实际 `restore` 默认保持串行，避免磁盘 IO、Docker daemon 和破坏性操作风险。
+- `dm prune` 增强:
+  - 支持 `--only container|image|volume|build-cache` 限定资源类型。
+  - prune 预览和 apply 路径继续保留安全边界，`--apply` 必须配合 `--confirm`。
+- 统一并发和取消行为:
+  - 新增并复用 `internal/parallel` 的 error-returning 有界并发 helper。
+  - 补齐 context 传递，取消时尽量停止剩余只读任务并返回清晰错误。
+  - e2e 增加取消测试模式，覆盖 pull、backup、restore、logs、prune dry-run、reverse 等路径。
+- 报告输出增强:
+  - 新增 `dm report all` 聚合报告。
+  - 报告聚合输出支持 text/json/markdown/html。
+  - 敏感信息脱敏策略扩展为 `none|basic|strict`，管理员场景默认不脱敏，显式开启时再处理。
+- 备份包能力增强:
+  - 恢复前差异预览和结构化恢复计划输出。
+  - 支持恢复计划中检查目标镜像、network、volume、端口冲突和容器冲突。
+  - 支持备份包可选加密、zstd 压缩相关归档支持和分卷归档选项。
+- 代码结构继续收敛:
+  - 拆分 `backup`、`diagnostics`、`reverse` 中的大文件，降低单文件复杂度。
+  - 抽取共享 command flag、target selection、docker config merge、敏感信息处理和 report defaults。
+  - 收敛快捷命令与完整命令的构造方式，避免 flag 漂移。
+- Registry sync 扩展曾在开发过程中尝试实现，但已通过 revert 撤回:
+  - 当前主线继续保留 `dm pull --to` 的轻量镜像搬运能力。
+  - 保留 `dm registry` / `dm report registry` / `dm doctor --registry` 的检查能力。
+  - 不在 v2.2 主线保留完整 registry sync 产品化命令，避免偏离工具核心边界。
+
+### 验证
+
+- `go test ./...` 通过。
+- `go vet ./...` 通过。
+- `CGO_ENABLED=1 go test -race ./...` 通过。
+- 使用真实 Docker VM 对 `report all`、`backup --dry-run`、`backup --bundle`、`restore --dry-run` 完成定向验证。
+- 先前 VM full/destructive、install、cancel、completion 和 Windows 远程 Docker API 验收继续作为 v2.2 基线。
+
+### 主要提交
+
+- `23b8b34` 扩大只读命令并发范围。
+- `9b009c2` 拆分文件。
+- `ba754ea` 部分代码复用和文件整理。
+- `c3d91fa` 收敛命令入口，统一创建命令实例。
+- `7902297` Revert registry sync expansion。
+- `2211467` 可选加密或分卷归档。
+- `f4df638` 备份恢复冲突检查和计划输出。
+- `e1a7b75` 报告输出聚合，给出所有报告。
+- `197b0dd` 添加 zstd 压缩支持。
+- `124ad11` 统一命令的 context 传递。
+- `1cb87fa` 进一步统一并发命令的取消行为。
+- `91985fd` 优化 prune，允许通过 `--only` 指定资源。
+
+## v2.1 - 2026-07-07
+
+GitHub Release:
+
+- Tag: `v2.1`
+- Commit: `e76bb086e8599ea1725603f8ec15cd1fd83c5025`
+- GitHub 发布时间: `2026-07-07T07:29:56Z`
+- Release 摘要: 迁移 Docker API 调用到新版本 `docker/docker -> moby/moby`。
+
+提交范围: `v2.0..v2.1`
+
+### 重点变化
+
+- 完成 Docker API 依赖迁移:
+  - 将业务代码从旧 `github.com/docker/docker` SDK 直接依赖迁移到 Moby 拆分 API/client 模块。
+  - 统一 Docker client 工厂和类型转换入口。
+  - backup、restore、diagnostics、reverse/rerun、completion、image save/load 等本地 Docker API 调用均完成迁移。
+- 从 `go.mod` 中移除旧 Docker SDK 的直接依赖，减少依赖冲突和未来升级风险。
+- 补齐迁移文档:
+  - 新增并完善 [docs/DOCKER_API_MIGRATION.md](docs/DOCKER_API_MIGRATION.md)。
+  - 记录阶段 1-6 的迁移范围、类型变化、验证路径和已知注意事项。
+- 修复网络报告中的 IP 输出问题，适配 Moby API 类型变化后的网络/IPAM 字段解析。
+- 完成迁移后的测试和验收:
+  - 本地单元测试通过。
+  - VM full/destructive 测试通过。
+  - Windows 侧远程 Docker API 路径验证通过。
+
+### 主要提交
+
+- `e76bb08` 测试，并修复网络 IP 输出问题。
+- `1fca504` 修改大量代码，从 mod 文件中删除旧的直接依赖。
+- `e302e51` 完成大量的类型、API 迁移。
+- `109f991` 同步修改部分 type 以及验证测试。
+- `a27269e` 完成大部分命令调用的迁移。
+- `b0a0b5b` 进一步迁移 API 封装层。
+- `a83a2fa` 添加新依赖替换部分旧的依赖。
+- `fc03d37` 列出文档，计划将 `docker/docker` 迁移至 `moby/moby`。
+
+## v2.0 - 2026-07-03
+
+GitHub Release:
+
+- Tag: `v2.0`
+- Commit: `dc5c3ac169e3a3dbffcc1407d8c5917c78c494c9`
+- GitHub 发布时间: `2026-07-03T03:06:41Z`
+- Release 摘要: 优化并添加大量功能，包括镜像操作、资源报告等。
 
 ### 发布状态
 
