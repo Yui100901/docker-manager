@@ -97,7 +97,9 @@ func buildNetworkReportDetailed(containers []container.Summary, inspectByID map[
 					networkByName[netName] = netIndex
 				}
 				ep := endpointRefFromSettings(name, c.ID, endpoint)
+				ep.Network = netName
 				upsertEndpointRef(&report.Networks[netIndex].Containers, ep)
+				containerRef.Endpoints = append(containerRef.Endpoints, ep)
 			}
 		} else if c.NetworkSettings != nil {
 			for netName, endpoint := range c.NetworkSettings.Networks {
@@ -109,7 +111,9 @@ func buildNetworkReportDetailed(containers []container.Summary, inspectByID map[
 					networkByName[netName] = netIndex
 				}
 				ep := endpointRefFromSettings(name, c.ID, endpoint)
+				ep.Network = netName
 				upsertEndpointRef(&report.Networks[netIndex].Containers, ep)
+				containerRef.Endpoints = append(containerRef.Endpoints, ep)
 			}
 		}
 		sort.Strings(containerRef.Networks)
@@ -121,6 +125,7 @@ func buildNetworkReportDetailed(containers []container.Summary, inspectByID map[
 	}
 
 	addPortConflictRisks(&report)
+	groupNetworkReportByContainer(&report)
 	sortNetworkReport(&report)
 	return report
 }
@@ -236,6 +241,7 @@ func networkRefFromInspect(net network.Inspect, selected map[string]bool) Networ
 		}
 		ep := EndpointRef{
 			Container:   endpoint.Name,
+			Network:     net.Name,
 			ID:          shortID(containerID),
 			EndpointID:  endpoint.EndpointID,
 			MacAddress:  formatNetworkValue(endpoint.MacAddress),
@@ -339,6 +345,9 @@ func upsertEndpointRef(items *[]EndpointRef, incoming EndpointRef) {
 		}
 		if incoming.ID != "" {
 			existing.ID = incoming.ID
+		}
+		if incoming.Network != "" {
+			existing.Network = incoming.Network
 		}
 		if incoming.EndpointID != "" {
 			existing.EndpointID = incoming.EndpointID

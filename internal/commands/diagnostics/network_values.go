@@ -12,25 +12,85 @@ func sortNetworkReport(report *NetworkReport) {
 		return report.Networks[i].Name < report.Networks[j].Name
 	})
 	for i := range report.Networks {
-		sort.Slice(report.Networks[i].Containers, func(a, b int) bool {
-			return report.Networks[i].Containers[a].Container < report.Networks[i].Containers[b].Container
-		})
+		sortEndpointRefs(report.Networks[i].Containers)
 	}
 	sort.Slice(report.Containers, func(i, j int) bool {
 		return report.Containers[i].Name < report.Containers[j].Name
 	})
-	sort.Slice(report.Ports, func(i, j int) bool {
-		if report.Ports[i].HostPort == report.Ports[j].HostPort {
-			return report.Ports[i].Container < report.Ports[j].Container
+	for i := range report.Containers {
+		sortEndpointRefs(report.Containers[i].Endpoints)
+		sortPortMappingRefs(report.Containers[i].Ports)
+		sortNetworkRisks(report.Containers[i].Risks)
+	}
+	sortPortMappingRefs(report.Ports)
+	sortNetworkRisks(report.Risks)
+}
+
+func sortEndpointRefs(endpoints []EndpointRef) {
+	sort.Slice(endpoints, func(i, j int) bool {
+		if endpoints[i].Network == endpoints[j].Network {
+			return endpoints[i].Container < endpoints[j].Container
 		}
-		return report.Ports[i].HostPort < report.Ports[j].HostPort
+		return endpoints[i].Network < endpoints[j].Network
 	})
-	sort.Slice(report.Risks, func(i, j int) bool {
-		if report.Risks[i].Type == report.Risks[j].Type {
-			return report.Risks[i].Message < report.Risks[j].Message
+}
+
+func sortPortMappingRefs(ports []PortMappingRef) {
+	sort.Slice(ports, func(i, j int) bool {
+		if ports[i].Container != ports[j].Container {
+			return ports[i].Container < ports[j].Container
 		}
-		return report.Risks[i].Type < report.Risks[j].Type
+		if ports[i].Published != ports[j].Published {
+			return ports[i].Published
+		}
+		if ports[i].HostIP != ports[j].HostIP {
+			return ports[i].HostIP < ports[j].HostIP
+		}
+		if ports[i].Protocol != ports[j].Protocol {
+			return ports[i].Protocol < ports[j].Protocol
+		}
+		if ports[i].HostPort != ports[j].HostPort {
+			return ports[i].HostPort < ports[j].HostPort
+		}
+		return ports[i].ContainerPort < ports[j].ContainerPort
 	})
+}
+
+func sortNetworkRisks(risks []NetworkRisk) {
+	sort.Slice(risks, func(i, j int) bool {
+		if risks[i].Type == risks[j].Type {
+			return risks[i].Message < risks[j].Message
+		}
+		return risks[i].Type < risks[j].Type
+	})
+}
+
+func groupNetworkReportByContainer(report *NetworkReport) {
+	containerIndexes := make(map[string]int, len(report.Containers)*2)
+	for i := range report.Containers {
+		ref := &report.Containers[i]
+		containerIndexes[ref.Name] = i
+		if ref.ID != "" {
+			containerIndexes[ref.ID] = i
+		}
+		for _, endpoint := range ref.Endpoints {
+			if endpoint.Container != "" {
+				containerIndexes[endpoint.Container] = i
+			}
+		}
+	}
+	for _, port := range report.Ports {
+		if i, ok := containerIndexes[port.Container]; ok {
+			report.Containers[i].Ports = append(report.Containers[i].Ports, port)
+		}
+	}
+	for _, risk := range report.Risks {
+		for _, containerName := range risk.Containers {
+			if i, ok := containerIndexes[containerName]; ok {
+				report.Containers[i].Risks = append(report.Containers[i].Risks, risk)
+			}
+		}
+	}
 }
 
 func normalizeHostIP(ip any) string {

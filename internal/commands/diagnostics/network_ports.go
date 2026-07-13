@@ -142,8 +142,9 @@ func addNetworkPortMapping(report *NetworkReport, mapping PortMappingRef) {
 	if mapping.Published && isPublicHostIP(mapping.HostIP) {
 		mapping.Risks = append(mapping.Risks, "public-bind")
 		report.Risks = append(report.Risks, NetworkRisk{
-			Type:    "public-bind",
-			Message: fmt.Sprintf("%s 暴露 %s:%d/%s 到公网监听地址", mapping.Container, mapping.HostIP, mapping.HostPort, mapping.Protocol),
+			Type:       "public-bind",
+			Message:    fmt.Sprintf("%s 暴露 %s:%d/%s 到公网监听地址", mapping.Container, mapping.HostIP, mapping.HostPort, mapping.Protocol),
+			Containers: []string{mapping.Container},
 		})
 	}
 	report.Ports = append(report.Ports, mapping)
@@ -174,8 +175,9 @@ func addPortConflictRisks(report *NetworkReport) {
 		}
 		sort.Strings(containers)
 		report.Risks = append(report.Risks, NetworkRisk{
-			Type:    "port-conflict",
-			Message: fmt.Sprintf("%s:%d/%s 被多个容器使用: %s", k.ip, k.port, k.proto, strings.Join(containers, ",")),
+			Type:       "port-conflict",
+			Message:    fmt.Sprintf("%s:%d/%s 被多个容器使用: %s", k.ip, k.port, k.proto, strings.Join(containers, ",")),
+			Containers: containers,
 		})
 	}
 
@@ -197,8 +199,9 @@ func addPortConflictRisks(report *NetworkReport) {
 				report.Ports[i].Risks = appendUnique(report.Ports[i].Risks, "wildcard-overlap")
 				report.Ports[j].Risks = appendUnique(report.Ports[j].Risks, "wildcard-overlap")
 				report.Risks = append(report.Risks, NetworkRisk{
-					Type:    "wildcard-overlap",
-					Message: fmt.Sprintf("%d/%s 同时存在通配监听和指定地址监听: %s,%s", report.Ports[i].HostPort, report.Ports[i].Protocol, report.Ports[i].Container, report.Ports[j].Container),
+					Type:       "wildcard-overlap",
+					Message:    fmt.Sprintf("%d/%s 同时存在通配监听和指定地址监听: %s,%s", report.Ports[i].HostPort, report.Ports[i].Protocol, report.Ports[i].Container, report.Ports[j].Container),
+					Containers: []string{report.Ports[i].Container, report.Ports[j].Container},
 				})
 			}
 		}

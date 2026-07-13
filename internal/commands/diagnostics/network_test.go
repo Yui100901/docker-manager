@@ -121,11 +121,52 @@ func TestBuildNetworkReportCombinesNetworksPortsAndRisks(t *testing.T) {
 	if len(report.Ports) != 3 {
 		t.Fatalf("Ports = %#v, want 3 mappings", report.Ports)
 	}
+	api := findNetworkContainer(report, "api")
+	if api == nil || len(api.Ports) != 1 || len(api.Endpoints) != 1 || len(api.Risks) == 0 {
+		t.Fatalf("api container grouping = %#v, want endpoint, port and risk", api)
+	}
+	web := findNetworkContainer(report, "web")
+	if web == nil || len(web.Ports) != 2 || len(web.Endpoints) != 1 || len(web.Risks) == 0 {
+		t.Fatalf("web container grouping = %#v, want endpoint, ports and risk", web)
+	}
 	if !hasNetworkRisk(report, "public-bind") {
 		t.Fatalf("Risks = %#v, want public-bind", report.Risks)
 	}
 	if !hasNetworkRisk(report, "port-conflict") {
 		t.Fatalf("Risks = %#v, want port-conflict", report.Risks)
+	}
+}
+
+func TestNetworkPortConflictRiskIsGroupedIntoEachConflictingContainer(t *testing.T) {
+	report := buildNetworkReport([]container.Summary{
+		{
+			ID:    "container-api",
+			Names: []string{"/api"},
+			Ports: []container.PortSummary{
+				{IP: netip.MustParseAddr("0.0.0.0"), PublicPort: 8080, PrivatePort: 80, Type: "tcp"},
+				{PrivatePort: 9090, Type: "tcp"},
+			},
+		},
+		{
+			ID:    "container-web",
+			Names: []string{"/web"},
+			Ports: []container.PortSummary{
+				{IP: netip.MustParseAddr("0.0.0.0"), PublicPort: 8080, PrivatePort: 80, Type: "tcp"},
+				{PrivatePort: 9090, Type: "tcp"},
+			},
+		},
+	}, nil)
+
+	api := findNetworkContainer(report, "api")
+	web := findNetworkContainer(report, "web")
+	if api == nil || web == nil {
+		t.Fatalf("containers = %#v, want api and web", report.Containers)
+	}
+	if !hasGroupedNetworkRisk(*api, "port-conflict") || !hasGroupedNetworkRisk(*web, "port-conflict") {
+		t.Fatalf("api risks=%#v web risks=%#v, want conflict risk in both containers", api.Risks, web.Risks)
+	}
+	if len(report.Risks) != 3 {
+		t.Fatalf("Risks = %#v, want 2 public-bind + 1 published port-conflict only", report.Risks)
 	}
 }
 
@@ -203,6 +244,9 @@ func TestRunNetworkReportUsesInspectForNetworkMetadataAndPorts(t *testing.T) {
 	}
 	if len(report.Ports) != 2 {
 		t.Fatalf("Ports = %#v, want published 80 and exposed 443", report.Ports)
+	}
+	if len(report.Containers) != 1 || len(report.Containers[0].Endpoints) != 1 || len(report.Containers[0].Ports) != 2 {
+		t.Fatalf("Container grouping = %#v, want inspect endpoint and ports", report.Containers)
 	}
 	if !hasNetworkRisk(report, "public-bind") {
 		t.Fatalf("Risks = %#v, want public-bind", report.Risks)
@@ -322,21 +366,73 @@ func TestRunNetworkReportFiltersContainersAndRelatedNetworks(t *testing.T) {
 func TestPrintNetworkReportIncludesSections(t *testing.T) {
 	var out bytes.Buffer
 	printNetworkReport(&out, NetworkReport{
-		Networks: []NetworkRef{{Name: "app_net", Driver: "bridge", Scope: "local", Containers: []EndpointRef{{Container: "api", IPAddress: "172.20.0.2"}}}},
-		Ports:    []PortMappingRef{{Container: "api", HostIP: "0.0.0.0", HostPort: 8080, ContainerPort: 80, Protocol: "tcp", Risks: []string{"public-bind"}}},
-		Risks:    []NetworkRisk{{Type: "public-bind", Message: "api exposes 0.0.0.0:8080/tcp to public interfaces"}},
+		Networks:   []NetworkRef{{Name: "app_net", Driver: "bridge", Scope: "local", Containers: []EndpointRef{{Container: "api", Network: "app_net", IPAddress: "172.20.0.2"}}}},
+		Containers: []NetworkContainerRef{{Name: "api", Image: "nginx", State: "running", Networks: []string{"app_net"}, Endpoints: []EndpointRef{{Container: "api", Network: "app_net", IPAddress: "172.20.0.2"}}, Ports: []PortMappingRef{{Container: "api", HostIP: "0.0.0.0", HostPort: 8080, ContainerPort: 80, Protocol: "tcp", Published: true, Risks: []string{"public-bind"}}}, Risks: []NetworkRisk{{Type: "public-bind", Message: "api exposes 0.0.0.0:8080/tcp to public interfaces", Containers: []string{"api"}}}}},
+		Ports:      []PortMappingRef{{Container: "api", HostIP: "0.0.0.0", HostPort: 8080, ContainerPort: 80, Protocol: "tcp", Published: true, Risks: []string{"public-bind"}}},
+		Risks:      []NetworkRisk{{Type: "public-bind", Message: "api exposes 0.0.0.0:8080/tcp to public interfaces", Containers: []string{"api"}}},
 	})
 
 	got := out.String()
-	for _, want := range []string{"Docker 网络报告", "网络=1", "端口映射:", "风险:", "public-bind"} {
+	for _, want := range []string{"Docker 网络报告", "网络=1", "容器:", "网络=app_net", "端口:", "风险:", "public-bind"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("output = %q, want %q", got, want)
 		}
+	}
+	for _, unwanted := range []string{"端口映射:", "\n网络:"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("output = %q, should not include global section %q", got, unwanted)
+		}
+	}
+}
+
+func TestCompactNetworkPortMappingsMergesSequentialPorts(t *testing.T) {
+	groups := compactNetworkPortMappings([]PortMappingRef{
+		{Container: "media", HostIP: "0.0.0.0", HostPort: 30000, ContainerPort: 30000, Protocol: "tcp", Published: true, Source: "network-settings", Risks: []string{"public-bind"}},
+		{Container: "media", HostIP: "0.0.0.0", HostPort: 30001, ContainerPort: 30001, Protocol: "tcp", Published: true, Source: "network-settings", Risks: []string{"public-bind"}},
+		{Container: "media", HostIP: "0.0.0.0", HostPort: 30003, ContainerPort: 30003, Protocol: "tcp", Published: true, Source: "network-settings", Risks: []string{"public-bind"}},
+	})
+	if len(groups) != 2 {
+		t.Fatalf("groups = %#v, want 2 compacted groups", groups)
+	}
+	if groups[0].HostPortStart != 30000 || groups[0].HostPortEnd != 30001 || groups[0].ContainerStart != 30000 || groups[0].ContainerEnd != 30001 {
+		t.Fatalf("first group = %#v, want 30000-30001", groups[0])
+	}
+}
+
+func TestCompactNetworkPortRiskGroupsMergesSequentialPortRisks(t *testing.T) {
+	groups := compactNetworkPortRiskGroups([]PortMappingRef{
+		{Container: "media", HostIP: "0.0.0.0", HostPort: 30000, ContainerPort: 30000, Protocol: "tcp", Published: true, Source: "network-settings", Risks: []string{"public-bind"}},
+		{Container: "media", HostIP: "0.0.0.0", HostPort: 30001, ContainerPort: 30001, Protocol: "tcp", Published: true, Source: "network-settings", Risks: []string{"public-bind"}},
+		{Container: "media", HostIP: "0.0.0.0", HostPort: 30002, ContainerPort: 30002, Protocol: "udp", Published: true, Source: "network-settings", Risks: []string{"public-bind"}},
+	}, []NetworkRisk{{Type: "public-bind", Containers: []string{"media"}, Message: "media 暴露 0.0.0.0:30000/tcp 到公网监听地址"}})
+	if len(groups) != 2 {
+		t.Fatalf("groups = %#v, want tcp compact group and udp group", groups)
+	}
+	if groups[0].Type != "public-bind" || groups[0].HostPortStart != 30000 || groups[0].HostPortEnd != 30001 {
+		t.Fatalf("first group = %#v, want compacted public-bind 30000-30001/tcp", groups[0])
 	}
 }
 
 func hasNetworkRisk(report NetworkReport, riskType string) bool {
 	for _, risk := range report.Risks {
+		if risk.Type == riskType {
+			return true
+		}
+	}
+	return false
+}
+
+func findNetworkContainer(report NetworkReport, name string) *NetworkContainerRef {
+	for i := range report.Containers {
+		if report.Containers[i].Name == name {
+			return &report.Containers[i]
+		}
+	}
+	return nil
+}
+
+func hasGroupedNetworkRisk(container NetworkContainerRef, riskType string) bool {
+	for _, risk := range container.Risks {
 		if risk.Type == riskType {
 			return true
 		}

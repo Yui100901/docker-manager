@@ -41,8 +41,8 @@ type NetworkReport struct {
 	Target         TargetSelection       `json:"target"`
 	Networks       []NetworkRef          `json:"networks"`
 	Containers     []NetworkContainerRef `json:"containers"`
-	Ports          []PortMappingRef      `json:"ports"`
-	Risks          []NetworkRisk         `json:"risks"`
+	Ports          []PortMappingRef      `json:"-"`
+	Risks          []NetworkRisk         `json:"-"`
 	Warnings       []string              `json:"warnings,omitempty"`
 }
 
@@ -79,6 +79,7 @@ type NetworkIPAMConfigRef struct {
 
 type EndpointRef struct {
 	Container   string            `json:"container"`
+	Network     string            `json:"network,omitempty"`
 	ID          string            `json:"id,omitempty"`
 	EndpointID  string            `json:"endpoint_id,omitempty"`
 	NetworkID   string            `json:"network_id,omitempty"`
@@ -95,12 +96,15 @@ type EndpointRef struct {
 }
 
 type NetworkContainerRef struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	Image       string   `json:"image,omitempty"`
-	State       string   `json:"state,omitempty"`
-	NetworkMode string   `json:"network_mode,omitempty"`
-	Networks    []string `json:"networks,omitempty"`
+	ID          string           `json:"id"`
+	Name        string           `json:"name"`
+	Image       string           `json:"image,omitempty"`
+	State       string           `json:"state,omitempty"`
+	NetworkMode string           `json:"network_mode,omitempty"`
+	Networks    []string         `json:"networks,omitempty"`
+	Endpoints   []EndpointRef    `json:"endpoints,omitempty"`
+	Ports       []PortMappingRef `json:"ports,omitempty"`
+	Risks       []NetworkRisk    `json:"risks,omitempty"`
 }
 
 type PortMappingRef struct {
@@ -115,6 +119,7 @@ type PortMappingRef struct {
 }
 
 type NetworkRisk struct {
-	Type    string `json:"type"`
-	Message string `json:"message"`
+	Type       string   `json:"type"`
+	Message    string   `json:"message"`
+	Containers []string `json:"containers,omitempty"`
 }
