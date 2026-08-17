@@ -46,15 +46,23 @@ func (r *PullRunner) downloadLayers(ctx context.Context, info *ImageInfo, manife
 }
 
 func (r *PullRunner) downloadConfig(ctx context.Context, info *ImageInfo, manifest *ocispec.Manifest, auth *pullRegistryAuth, opts PullOptions, tempDir string) error {
-	configURL := registryAPIURL(opts, info, "blobs", string(manifest.Config.Digest))
-	digest := strings.TrimPrefix(string(manifest.Config.Digest), "sha256:")
-	if digest == string(manifest.Config.Digest) {
-		digest = strings.TrimPrefix(digest, "sha:")
+	configFileName, err := configBlobFileName(manifest.Config)
+	if err != nil {
+		return err
 	}
-	configPath := filepath.Join(tempDir, digest+".json")
 
-	_, err := r.saveRegistryFileWithRetry(ctx, configURL, nil, nil, info, opts, auth, configPath)
-	return err
+	configURL := registryAPIURL(opts, info, "blobs", manifest.Config.Digest.String())
+	data, _, err := r.fetchRegistryBytesWithRetryLimit(ctx, configURL, nil, nil, info, opts, auth, boundedReadLimit(manifest.Config.Size, maxConfigBlobSize))
+	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := verifyDescriptorBytes(data, manifest.Config, "镜像 config"); err != nil {
+		return err
+	}
+	return writeFileWithinRoot(tempDir, configFileName, data, 0644)
 }
 
 func (r *PullRunner) downloadLayer(ctx context.Context, info *ImageInfo, layer ocispec.Descriptor, auth *pullRegistryAuth, opts PullOptions, tempDir string) error {

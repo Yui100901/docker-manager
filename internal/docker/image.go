@@ -8,7 +8,9 @@ import (
 	"io"
 	"os"
 
+	"github.com/moby/moby/api/pkg/authconfig"
 	"github.com/moby/moby/api/types/image"
+	"github.com/moby/moby/api/types/registry"
 	"github.com/moby/moby/client"
 )
 
@@ -18,6 +20,11 @@ type ImageManager struct {
 
 type readOnlyReader struct {
 	io.Reader
+}
+
+// EncodeRegistryAuth serializes Docker registry credentials for X-Registry-Auth.
+func EncodeRegistryAuth(config registry.AuthConfig) (string, error) {
+	return authconfig.Encode(config)
 }
 
 func NewImageManager() (*ImageManager, error) {
@@ -130,6 +137,13 @@ func (im *ImageManager) PushWithAuthOutput(ctx context.Context, ref, registryAut
 	}
 	if output == nil {
 		output = io.Discard
+	}
+	if registryAuth == "" {
+		var err error
+		registryAuth, err = EncodeRegistryAuth(registry.AuthConfig{})
+		if err != nil {
+			return fmt.Errorf("encode anonymous registry auth: %w", err)
+		}
 	}
 	resp, err := im.cli.ImagePush(ctx, ref, client.ImagePushOptions{RegistryAuth: registryAuth})
 	if err != nil {

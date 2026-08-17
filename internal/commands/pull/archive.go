@@ -18,13 +18,17 @@ import (
 
 func prepareWorkspace(info *ImageInfo) (string, error) {
 	pattern := fmt.Sprintf("%s_%s", info.Image, info.Tag)
-	return os.MkdirTemp(".", pattern)
+	return os.MkdirTemp("", pattern)
 }
 
 func createManifestFile(info *ImageInfo, manifest *ocispec.Manifest, tempDir string) error {
+	configFileName, err := configBlobFileName(manifest.Config)
+	if err != nil {
+		return err
+	}
 	manifestContent := []*ImageManifest{
 		{
-			Config:   strings.TrimPrefix(string(manifest.Config.Digest), "sha256:") + ".json",
+			Config:   configFileName,
 			Layers:   getLayerPaths(manifest.Layers),
 			RepoTags: []string{fmt.Sprintf("%s:%s", imagePath(info), info.Tag)},
 		},
@@ -35,7 +39,7 @@ func createManifestFile(info *ImageInfo, manifest *ocispec.Manifest, tempDir str
 		return fmt.Errorf("序列化清单失败: %w", err)
 	}
 
-	return os.WriteFile(filepath.Join(tempDir, "manifest.json"), data, 0644)
+	return writeFileWithinRoot(tempDir, "manifest.json", data, 0644)
 }
 
 func getLayerPaths(layers []ocispec.Descriptor) []string {

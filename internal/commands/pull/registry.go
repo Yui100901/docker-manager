@@ -13,6 +13,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	digest "github.com/opencontainers/go-digest"
 )
 
 type registryPingStatus string
@@ -107,6 +109,15 @@ func parseImageInfo(imageName string) (*ImageInfo, error) {
 }
 
 func (r *PullRunner) fetchManifest(ctx context.Context, info *ImageInfo, opts PullOptions) (*ocispec.Manifest, *pullRegistryAuth, error) {
+	var expectedManifestDigest digest.Digest
+	if info.Digest != "" {
+		parsed, err := digest.Parse(info.Digest)
+		if err != nil {
+			return nil, nil, fmt.Errorf("镜像 manifest digest 无效: %w", err)
+		}
+		expectedManifestDigest = parsed
+	}
+
 	manifestURL := registryAPIURL(opts, info, "manifests", getReference(info))
 	headers := map[string]string{
 		"Accept": strings.Join([]string{
@@ -117,9 +128,14 @@ func (r *PullRunner) fetchManifest(ctx context.Context, info *ImageInfo, opts Pu
 		}, ", "),
 	}
 
-	respBytes, auth, err := r.fetchRegistryBytesWithRetry(ctx, manifestURL, headers, nil, info, opts, nil)
+	respBytes, auth, err := r.fetchRegistryBytesWithRetryLimit(ctx, manifestURL, headers, nil, info, opts, nil, maxManifestBlobSize)
 	if err != nil {
 		return nil, auth, fmt.Errorf("获取清单失败: %w", err)
+	}
+	if expectedManifestDigest != "" {
+		if err := verifyBytesDigest(respBytes, expectedManifestDigest, "镜像 manifest"); err != nil {
+			return nil, auth, err
+		}
 	}
 
 	isIndex, err := isManifestIndex(respBytes)
@@ -134,7 +150,7 @@ func (r *PullRunner) fetchManifest(ctx context.Context, info *ImageInfo, opts Pu
 		return r.handleOCIIndex(ctx, info, index, auth, opts)
 	}
 
-	manifest, err := struct_utils.UnmarshalData[ocispec.Manifest](respBytes, struct_utils.JSON)
+	manifest, err := decodeImageManifest(respBytes)
 	return manifest, auth, err
 }
 
@@ -147,22 +163,26 @@ func getReference(info *ImageInfo) string {
 
 func (r *PullRunner) handleOCIIndex(ctx context.Context, info *ImageInfo, index *ocispec.Index, auth *pullRegistryAuth, opts PullOptions) (*ocispec.Manifest, *pullRegistryAuth, error) {
 	log.Println("[+] 检测到多架构镜像索引")
-	var selectedDigest string
+	var selected *ocispec.Descriptor
 
-	for _, m := range index.Manifests {
+	for i := range index.Manifests {
+		m := &index.Manifests[i]
 		if m.Platform != nil &&
 			m.Platform.OS == r.platform.targetOS &&
 			m.Platform.Architecture == r.platform.targetArch {
-			selectedDigest = string(m.Digest)
+			selected = m
 			break
 		}
 	}
 
-	if selectedDigest == "" {
+	if selected == nil {
 		return nil, auth, fmt.Errorf("未找到匹配的平台: %s/%s", r.platform.targetOS, r.platform.targetArch)
 	}
+	if err := validateManifestDescriptor(*selected); err != nil {
+		return nil, auth, err
+	}
 
-	manifestURL := registryAPIURL(opts, info, "manifests", selectedDigest)
+	manifestURL := registryAPIURL(opts, info, "manifests", selected.Digest.String())
 	headers := map[string]string{
 		"Accept": strings.Join([]string{
 			dockerManifestV2,
@@ -170,13 +190,27 @@ func (r *PullRunner) handleOCIIndex(ctx context.Context, info *ImageInfo, index 
 		}, ", "),
 	}
 
-	resp, auth, err := r.fetchRegistryBytesWithRetry(ctx, manifestURL, headers, nil, info, opts, auth)
+	resp, auth, err := r.fetchRegistryBytesWithRetryLimit(ctx, manifestURL, headers, nil, info, opts, auth, boundedReadLimit(selected.Size, maxManifestBlobSize))
 	if err != nil {
 		return nil, auth, fmt.Errorf("获取架构清单失败: %w", err)
 	}
+	if err := verifyDescriptorBytes(resp, *selected, "平台 manifest"); err != nil {
+		return nil, auth, err
+	}
 
-	manifest, err := struct_utils.UnmarshalData[ocispec.Manifest](resp, struct_utils.JSON)
+	manifest, err := decodeImageManifest(resp)
 	return manifest, auth, err
+}
+
+func decodeImageManifest(data []byte) (*ocispec.Manifest, error) {
+	manifest, err := struct_utils.UnmarshalData[ocispec.Manifest](data, struct_utils.JSON)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateConfigDescriptor(manifest.Config); err != nil {
+		return nil, err
+	}
+	return manifest, nil
 }
 
 func registryAPIURL(opts PullOptions, info *ImageInfo, kind, ref string) string {
@@ -187,7 +221,7 @@ func registryAPIURL(opts PullOptions, info *ImageInfo, kind, ref string) string 
 	return fmt.Sprintf("%s://%s/v2/%s/%s/%s", scheme, info.Registry, imagePath(info), kind, ref)
 }
 
-func (r *PullRunner) fetchRegistryBytesWithRetry(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, info *ImageInfo, opts PullOptions, auth *pullRegistryAuth) ([]byte, *pullRegistryAuth, error) {
+func (r *PullRunner) fetchRegistryBytesWithRetryLimit(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, info *ImageInfo, opts PullOptions, auth *pullRegistryAuth, maxBytes int64) ([]byte, *pullRegistryAuth, error) {
 	var lastErr error
 	currentAuth := auth
 	backoff := initialBackoff
@@ -195,12 +229,12 @@ func (r *PullRunner) fetchRegistryBytesWithRetry(ctx context.Context, rawURL str
 		if err := ctx.Err(); err != nil {
 			return nil, currentAuth, err
 		}
-		body, nextAuth, err := r.fetchRegistryBytesOnce(ctx, rawURL, headers, query, info, opts, currentAuth)
+		body, nextAuth, err := r.fetchRegistryBytesOnceLimit(ctx, rawURL, headers, query, info, opts, currentAuth, maxBytes)
 		if err == nil {
 			return body, nextAuth, nil
 		}
 		currentAuth = nextAuth
-		if errors.Is(err, context.Canceled) {
+		if errors.Is(err, context.Canceled) || errors.Is(err, errRegistryResponseTooLarge) {
 			return nil, currentAuth, err
 		}
 		lastErr = err
@@ -214,7 +248,15 @@ func (r *PullRunner) fetchRegistryBytesWithRetry(ctx context.Context, rawURL str
 }
 
 func (r *PullRunner) fetchRegistryBytesOnce(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, info *ImageInfo, opts PullOptions, auth *pullRegistryAuth) ([]byte, *pullRegistryAuth, error) {
-	body, err := r.httpGetBytesWithStatus(ctx, rawURL, authHeaders(headers, auth), query)
+	return r.fetchRegistryBytesOnceLimit(ctx, rawURL, headers, query, info, opts, auth, 0)
+}
+
+func (r *PullRunner) fetchRegistryBytesOnceLimit(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, info *ImageInfo, opts PullOptions, auth *pullRegistryAuth, maxBytes int64) ([]byte, *pullRegistryAuth, error) {
+	var progressOutput io.Writer
+	if maxBytes > 0 {
+		progressOutput = opts.ProgressOutput
+	}
+	body, err := r.httpGetBytesWithStatusLimit(ctx, rawURL, authHeaders(headers, auth), query, maxBytes, progressOutput)
 	if err == nil {
 		return body, auth, nil
 	}
@@ -226,7 +268,7 @@ func (r *PullRunner) fetchRegistryBytesOnce(ctx context.Context, rawURL string, 
 	if err != nil {
 		return nil, auth, err
 	}
-	body, err = r.httpGetBytesWithStatus(ctx, rawURL, authHeaders(headers, nextAuth), query)
+	body, err = r.httpGetBytesWithStatusLimit(ctx, rawURL, authHeaders(headers, nextAuth), query, maxBytes, progressOutput)
 	if err != nil {
 		return nil, nextAuth, err
 	}
@@ -307,6 +349,10 @@ func (r *PullRunner) httpGetBytes(ctx context.Context, rawURL string, headers ma
 }
 
 func (r *PullRunner) httpGetBytesWithStatus(ctx context.Context, rawURL string, headers map[string]string, query map[string]string) ([]byte, error) {
+	return r.httpGetBytesWithStatusLimit(ctx, rawURL, headers, query, 0, nil)
+}
+
+func (r *PullRunner) httpGetBytesWithStatusLimit(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, maxBytes int64, progressOutput io.Writer) ([]byte, error) {
 	req, err := buildGETRequest(ctx, rawURL, headers, query)
 	if err != nil {
 		return nil, err
@@ -323,7 +369,28 @@ func (r *PullRunner) httpGetBytesWithStatus(ctx context.Context, rawURL string, 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return nil, &httpStatusError{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone()}
 	}
-	return io.ReadAll(resp.Body)
+	if maxBytes > 0 && resp.ContentLength > maxBytes {
+		return nil, fmt.Errorf("%w: 最大 %d 字节", errRegistryResponseTooLarge, maxBytes)
+	}
+	var reader io.Reader = resp.Body
+	if progressOutput != nil {
+		reader = newDownloadProgressReader(resp.Body, progressOutput, downloadProgressLabel(rawURL, ""), resp.ContentLength)
+	}
+	if maxBytes <= 0 {
+		return io.ReadAll(reader)
+	}
+	readLimit := maxBytes
+	if maxBytes < (1<<63 - 1) {
+		readLimit++
+	}
+	body, err := io.ReadAll(io.LimitReader(reader, readLimit))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > maxBytes {
+		return nil, fmt.Errorf("%w: 最大 %d 字节", errRegistryResponseTooLarge, maxBytes)
+	}
+	return body, nil
 }
 
 func buildGETRequest(ctx context.Context, rawURL string, headers map[string]string, query map[string]string) (*http.Request, error) {

@@ -2,8 +2,6 @@ package pull
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -13,6 +11,7 @@ import (
 	"docker-manager/internal/docker"
 
 	"github.com/distribution/reference"
+	"github.com/moby/moby/api/types/registry"
 )
 
 // completePulledImage is the post-download pipeline. A plain pull stops after
@@ -119,22 +118,18 @@ func (r *PullRunner) dockerPushRegistryAuth(ctx context.Context, target string, 
 		return "", err
 	}
 	if !cred.Found {
-		return "", nil
+		return docker.EncodeRegistryAuth(registry.AuthConfig{})
 	}
-	payload := map[string]string{
-		"serveraddress": info.Registry,
+	payload := registry.AuthConfig{
+		ServerAddress: info.Registry,
 	}
 	if cred.IdentityToken != "" {
-		payload["identitytoken"] = cred.IdentityToken
+		payload.IdentityToken = cred.IdentityToken
 	} else {
-		payload["username"] = cred.Username
-		payload["password"] = cred.Password
+		payload.Username = cred.Username
+		payload.Password = cred.Password
 	}
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return "", err
-	}
-	return base64.URLEncoding.EncodeToString(data), nil
+	return docker.EncodeRegistryAuth(payload)
 }
 
 func localImageRef(info *ImageInfo) string {

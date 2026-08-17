@@ -833,6 +833,65 @@ func TestCompletePulledImageMirrorsWhenToSet(t *testing.T) {
 	}
 }
 
+func TestDockerPushRegistryAuthUsesAnonymousEmptyObject(t *testing.T) {
+	runner := newTestPullRunner()
+	auth, err := runner.dockerPushRegistryAuth(
+		context.Background(),
+		"registry.example.com/team/app:v1",
+		PullOptions{DockerConfig: filepath.Join(t.TempDir(), "missing-config.json")},
+	)
+	if err != nil {
+		t.Fatalf("dockerPushRegistryAuth() error = %v", err)
+	}
+
+	payload := decodeDockerRegistryAuth(t, auth)
+	if len(payload) != 0 {
+		t.Fatalf("anonymous registry auth = %#v, want empty JSON object", payload)
+	}
+}
+
+func TestDockerPushRegistryAuthPreservesBasicCredentials(t *testing.T) {
+	const registryName = "registry.example.com"
+	runner := newTestPullRunner()
+	auth, err := runner.dockerPushRegistryAuth(
+		context.Background(),
+		registryName+"/team/app:v1",
+		PullOptions{DockerConfig: writePullDockerConfig(t, registryName, "demo", "secret")},
+	)
+	if err != nil {
+		t.Fatalf("dockerPushRegistryAuth() error = %v", err)
+	}
+
+	payload := decodeDockerRegistryAuth(t, auth)
+	if len(payload) != 3 || payload["serveraddress"] != registryName || payload["username"] != "demo" || payload["password"] != "secret" {
+		t.Fatalf("registry auth = %#v, want server address and Basic credentials", payload)
+	}
+}
+
+func TestDockerPushRegistryAuthPreservesIdentityToken(t *testing.T) {
+	const registryName = "registry.example.com"
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	config := `{"auths":{"registry.example.com":{"identitytoken":"test-token"}}}`
+	if err := os.WriteFile(configPath, []byte(config), 0600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	runner := newTestPullRunner()
+	auth, err := runner.dockerPushRegistryAuth(
+		context.Background(),
+		registryName+"/team/app:v1",
+		PullOptions{DockerConfig: configPath},
+	)
+	if err != nil {
+		t.Fatalf("dockerPushRegistryAuth() error = %v", err)
+	}
+
+	payload := decodeDockerRegistryAuth(t, auth)
+	if len(payload) != 2 || payload["serveraddress"] != registryName || payload["identitytoken"] != "test-token" {
+		t.Fatalf("registry auth = %#v, want server address and identity token", payload)
+	}
+}
+
 func TestCompletePulledImageUsesHTTPToSchemeForTargetPreflight(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v2/" {
@@ -852,9 +911,17 @@ func TestCompletePulledImageUsesHTTPToSchemeForTargetPreflight(t *testing.T) {
 		}
 		return nil
 	}
-	runner.pushPulledImage = func(ctx context.Context, target, registryAuth string, output io.Writer) error { return nil }
+	runner.pushPulledImage = func(ctx context.Context, target, registryAuth string, output io.Writer) error {
+		if payload := decodeDockerRegistryAuth(t, registryAuth); len(payload) != 0 {
+			t.Fatalf("anonymous registry auth = %#v, want empty JSON object", payload)
+		}
+		return nil
+	}
 
-	err := runner.completePulledImage("busybox.tar", testBusyboxInfo(), PullOptions{To: "http://" + targetRegistry})
+	err := runner.completePulledImage("busybox.tar", testBusyboxInfo(), PullOptions{
+		To:           "http://" + targetRegistry,
+		DockerConfig: filepath.Join(t.TempDir(), "missing-config.json"),
+	})
 	if err != nil {
 		t.Fatalf("completePulledImage() error = %v", err)
 	}
@@ -1258,6 +1325,22 @@ func writePullDockerConfig(t *testing.T, registryName, username, password string
 		t.Fatal(err)
 	}
 	return path
+}
+
+func decodeDockerRegistryAuth(t *testing.T, encoded string) map[string]string {
+	t.Helper()
+	if encoded == "" {
+		t.Fatal("registry auth is empty")
+	}
+	data, err := base64.URLEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatalf("registry auth is not base64url: %v", err)
+	}
+	var payload map[string]string
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("registry auth JSON error: %v", err)
+	}
+	return payload
 }
 
 func strconvQuote(value string) string {
