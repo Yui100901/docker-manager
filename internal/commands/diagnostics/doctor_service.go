@@ -15,12 +15,12 @@ type doctorDockerService interface {
 	ClientVersion() string
 }
 
-var newDoctorDockerService = func() (doctorDockerService, error) {
-	cli, err := docker.NewMobyClient()
+var newDoctorDockerService = func() (doctorDockerService, docker.ConnectionInfo, error) {
+	cli, info, err := docker.NewMobyClientWithInfo()
 	if err != nil {
-		return nil, err
+		return nil, info, err
 	}
-	return &dockerDoctorService{cli: cli}, nil
+	return &dockerDoctorService{cli: cli}, info, nil
 }
 
 type dockerDoctorService struct {
@@ -28,7 +28,7 @@ type dockerDoctorService struct {
 }
 
 func (s *dockerDoctorService) Ping(ctx context.Context) (mobyclient.PingResult, error) {
-	return s.cli.Ping(ctx, mobyclient.PingOptions{})
+	return s.cli.Ping(ctx, mobyclient.PingOptions{NegotiateAPIVersion: true})
 }
 
 func (s *dockerDoctorService) ServerVersion(ctx context.Context) (mobyclient.ServerVersionResult, error) {

@@ -6,9 +6,12 @@ import (
 	"docker-manager/internal/docker"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -198,6 +201,66 @@ func TestRootCommandDockerFlagsOverrideConfig(t *testing.T) {
 	}
 	if got.TLSVerify == nil || *got.TLSVerify {
 		t.Fatalf("docker tls verify = %#v, want false", got.TLSVerify)
+	}
+}
+
+func TestDoctorAppliesExplicitDockerFlagsWhenConfigIsInvalid(t *testing.T) {
+	var plainHits atomic.Int64
+	plainServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		plainHits.Add(1)
+		w.Header().Set("API-Version", "1.49")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(plainServer.Close)
+
+	t.Setenv("DOCKER_HOST", "tcp://"+strings.TrimPrefix(plainServer.URL, "http://"))
+	t.Setenv("DOCKER_TLS_VERIFY", "")
+	t.Setenv("DOCKER_CERT_PATH", "")
+	t.Setenv("DOCKER_API_VERSION", "")
+	docker.Configure(docker.Options{})
+	if _, err := docker.NewMobyClient(); err != nil {
+		t.Fatalf("NewMobyClient() for ambient HTTP endpoint error = %v", err)
+	}
+	t.Cleanup(func() {
+		docker.Configure(docker.Options{Host: "tcp://doctor-test-reset.invalid:1"})
+		docker.Configure(docker.Options{})
+	})
+
+	configPath := filepath.Join(t.TempDir(), "broken.yaml")
+	if err := os.WriteFile(configPath, []byte("docker_host: [\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	missingCertPath := filepath.Join(t.TempDir(), "missing-certs")
+	cfg := appConfig{DockerHost: "tcp://stale.invalid:2375"}
+	opts := outputOptions{}
+	cmd := newRootCommand(&cfg, &opts)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--config", configPath,
+		"--docker-host", "tcp://secure.example:2376",
+		"--docker-tls-verify=true",
+		"--docker-cert-path", missingCertPath,
+		"doctor", "--format", "json", "--check-e2e=false", "--output-dir", t.TempDir(),
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	got := docker.CurrentOptions()
+	if got.Host != "tcp://secure.example:2376" || got.CertPath != missingCertPath || got.TLSVerify == nil || !*got.TLSVerify {
+		t.Fatalf("CurrentOptions() = %#v, want explicit TLS flags despite invalid YAML", got)
+	}
+	newClient, _, err := docker.NewMobyClientWithInfo()
+	if err == nil || newClient != nil {
+		t.Fatalf("NewMobyClientWithInfo() = (%p, %v), want missing TLS certificate error", newClient, err)
+	}
+	if got := plainHits.Load(); got != 0 {
+		t.Fatalf("ambient plaintext endpoint requests = %d, want 0", got)
+	}
+	if !strings.Contains(out.String(), "secure.example:2376") || !strings.Contains(out.String(), "Docker endpoint 初始化失败") {
+		t.Fatalf("doctor output = %q, want explicit endpoint initialization failure", out.String())
 	}
 }
 

@@ -7,7 +7,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"docker-manager/internal/docker"
 
 	mobyclient "github.com/moby/moby/client"
 )
@@ -94,6 +97,9 @@ func TestCheckDoctorCAReportsConfiguredPaths(t *testing.T) {
 	if len(checks) != 1 || checks[0].Status != "ok" {
 		t.Fatalf("checks = %#v, want private-ca ok", checks)
 	}
+	if !strings.Contains(checks[0].Message, "仅验证路径") || !strings.Contains(checks[0].Recommended, "不会改变运行时 TLS") {
+		t.Fatalf("checks = %#v, want explicit path-only CA semantics", checks)
+	}
 }
 
 func TestCheckDoctorCAWarnsOnMissingPath(t *testing.T) {
@@ -105,6 +111,54 @@ func TestCheckDoctorCAWarnsOnMissingPath(t *testing.T) {
 
 	if len(checks) != 1 || checks[0].Status != "warning" {
 		t.Fatalf("checks = %#v, want private-ca warning", checks)
+	}
+}
+
+func TestCheckDoctorCAUsesEffectiveDockerCertPath(t *testing.T) {
+	tests := []struct {
+		name         string
+		environment  string
+		explicit     string
+		wantStatus   string
+		wantDetail   string
+		rejectDetail string
+	}{
+		{
+			name:         "explicit valid path overrides missing environment path",
+			environment:  filepath.Join(t.TempDir(), "missing-env-certs"),
+			explicit:     t.TempDir(),
+			wantStatus:   "ok",
+			rejectDetail: "missing-env-certs",
+		},
+		{
+			name:         "explicit missing path overrides valid environment path",
+			environment:  t.TempDir(),
+			explicit:     filepath.Join(t.TempDir(), "missing-explicit-certs"),
+			wantStatus:   "warning",
+			wantDetail:   "missing-explicit-certs",
+			rejectDetail: "DOCKER_CERT_PATH",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("SSL_CERT_FILE", "")
+			t.Setenv("SSL_CERT_DIR", "")
+			t.Setenv("DOCKER_CERT_PATH", tt.environment)
+			docker.Configure(docker.Options{CertPath: tt.explicit})
+			t.Cleanup(func() { docker.Configure(docker.Options{}) })
+
+			checks := checkDoctorCA(doctorConfig{})
+			if len(checks) != 1 || checks[0].Status != tt.wantStatus {
+				t.Fatalf("checks = %#v, want %s", checks, tt.wantStatus)
+			}
+			if tt.wantDetail != "" && !strings.Contains(checks[0].Detail, tt.wantDetail) {
+				t.Errorf("detail = %q, want %q", checks[0].Detail, tt.wantDetail)
+			}
+			if tt.rejectDetail != "" && strings.Contains(checks[0].Detail, tt.rejectDetail) {
+				t.Errorf("detail = %q, contains overridden source %q", checks[0].Detail, tt.rejectDetail)
+			}
+		})
 	}
 }
 
@@ -121,8 +175,11 @@ func TestCheckDoctorDiskProbesWritableOutputDir(t *testing.T) {
 
 func TestRunDoctorReportsDockerFailureAndSkippedRegistry(t *testing.T) {
 	old := newDoctorDockerService
-	newDoctorDockerService = func() (doctorDockerService, error) {
-		return fakeDoctorDockerService{pingErr: errors.New("daemon down")}, nil
+	newDoctorDockerService = func() (doctorDockerService, docker.ConnectionInfo, error) {
+		return fakeDoctorDockerService{pingErr: errors.New("daemon down")}, docker.ConnectionInfo{
+			Host:      "unix:///var/run/docker.sock",
+			Transport: "unix",
+		}, nil
 	}
 	defer func() { newDoctorDockerService = old }()
 
@@ -165,8 +222,11 @@ func TestRunDoctorCheckGroupsSkipsWorkWhenCanceled(t *testing.T) {
 
 func TestDoctorCommandSupportsJSON(t *testing.T) {
 	old := newDoctorDockerService
-	newDoctorDockerService = func() (doctorDockerService, error) {
-		return fakeDoctorDockerService{}, nil
+	newDoctorDockerService = func() (doctorDockerService, docker.ConnectionInfo, error) {
+		return fakeDoctorDockerService{}, docker.ConnectionInfo{
+			Host:      "unix:///var/run/docker.sock",
+			Transport: "unix",
+		}, nil
 	}
 	defer func() { newDoctorDockerService = old }()
 

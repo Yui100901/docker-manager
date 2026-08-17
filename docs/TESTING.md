@@ -78,6 +78,25 @@ export NO_PROXY="127.0.0.1,localhost,registry.local"
 
 如果源 registry 需要代理、目标 registry 是本地或内网地址，优先使用环境变量加 `NO_PROXY`，避免目标 registry 被代理转发。单条命令强制代理可使用 `dm pull --proxy`。
 
+## Docker daemon TLS 契约
+
+发布前至少运行以下定向测试：
+
+```bash
+go test -count=1 ./internal/docker ./internal/commands/diagnostics
+go test -race -count=1 ./internal/docker ./internal/commands/diagnostics
+```
+
+测试矩阵必须覆盖 `tcp://` 与 `docker_tls_verify=true/false`、证书目录为空/有效/不存在的六种组合，并通过真实 TLS test server 验证以下契约：
+
+- 有效证书目录始终启用 HTTPS/mTLS；`false` 只关闭 daemon 证书校验，不切回 HTTP。
+- `true` 且证书目录为空、缺失或损坏时，client 初始化失败且不会发出明文请求。
+- `https://`、`http://`、`ssh://`、未知 scheme，以及 unix/npipe 配 TLS 参数会被早期拒绝。
+- `dm doctor` 根据实际 transport 报告 HTTP、未校验 HTTPS、已校验 HTTPS，并显示协商后的 client API version。
+- `DOCKER_*` 环境变化不会复用旧 client，client 初始化不会改写这些进程环境变量。
+
+远程明文 daemon 只能用于契约确认，不代表 TLS daemon 矩阵通过。至少检查 `dm doctor --format json` 中 `docker-endpoint` 为 `warning`、`transport=http`、`tls=false`，同时 `docker-daemon` 与 `docker-version` 为 `ok`。真实生产 TLS 验收还需使用独立 CA、服务端证书和客户端证书运行 Docker 2376，并分别验证正确证书、错误 CA、缺失客户端证书和 hostname 不匹配。
+
 ## 手动验收示例
 
 基础信息:

@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 
+	"docker-manager/internal/docker"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -123,6 +125,7 @@ func validateProxyURL(raw string) error {
 }
 
 func checkDoctorCA(cfg doctorConfig) []DoctorCheck {
+	effectiveDockerCertPath := docker.EffectiveOptions().CertPath
 	candidates := []struct {
 		source string
 		path   string
@@ -134,7 +137,7 @@ func checkDoctorCA(cfg doctorConfig) []DoctorCheck {
 		{source: "dm.yaml registry_ca_path", path: cfg.RegistryCAPath, isDir: true},
 		{source: "SSL_CERT_FILE", path: os.Getenv("SSL_CERT_FILE")},
 		{source: "SSL_CERT_DIR", path: os.Getenv("SSL_CERT_DIR"), isDir: true},
-		{source: "DOCKER_CERT_PATH", path: os.Getenv("DOCKER_CERT_PATH"), isDir: true},
+		{source: "effective Docker cert path", path: effectiveDockerCertPath, isDir: true},
 	}
 	var active []string
 	var missing []string
@@ -165,7 +168,7 @@ func checkDoctorCA(cfg doctorConfig) []DoctorCheck {
 			Status:      "warning",
 			Message:     "发现 CA 配置但路径不可用",
 			Detail:      strings.Join(missing, "; "),
-			Recommended: "检查私有 CA 文件/目录是否存在，或修正 SSL_CERT_FILE、SSL_CERT_DIR、DOCKER_CERT_PATH、dm.yaml CA 配置",
+			Recommended: "检查对应路径；Docker daemon TLS 使用 docker_cert_path/DOCKER_CERT_PATH，dm.yaml ca_* 与 registry_ca_* 当前仅供路径诊断",
 		}}
 	}
 	if len(active) == 0 {
@@ -173,14 +176,15 @@ func checkDoctorCA(cfg doctorConfig) []DoctorCheck {
 			Name:        "private-ca",
 			Status:      "skipped",
 			Message:     "未发现显式私有 CA 配置",
-			Recommended: "使用自签或企业 CA 的 registry，可配置系统信任、SSL_CERT_FILE/SSL_CERT_DIR、DOCKER_CERT_PATH 或 dm.yaml CA 路径",
+			Recommended: "自签 Docker daemon 使用 docker_cert_path；registry CA 应安装到系统或 Docker 信任目录，dm.yaml ca_* 与 registry_ca_* 不会注入运行时信任",
 		}}
 	}
 	sort.Strings(active)
 	return []DoctorCheck{{
-		Name:    "private-ca",
-		Status:  "ok",
-		Message: "私有 CA 路径可访问",
-		Detail:  strings.Join(active, "; "),
+		Name:        "private-ca",
+		Status:      "ok",
+		Message:     "配置的 CA 路径可访问（本检查仅验证路径）",
+		Detail:      strings.Join(active, "; "),
+		Recommended: "确认 CA 已安装到实际消费者的信任链；dm.yaml ca_* 与 registry_ca_* 当前不会改变运行时 TLS",
 	}}
 }

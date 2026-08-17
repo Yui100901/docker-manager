@@ -4,6 +4,7 @@ go 1.24.1
 
 require (
 	github.com/Yui100901/MyGo v1.1.15
+	github.com/docker/go-connections v0.6.0
 	github.com/moby/moby/client v0.4.0
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/spf13/cobra v1.10.2
@@ -20,7 +21,6 @@ require (
 	github.com/containerd/errdefs v1.0.0
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
 	github.com/distribution/reference v0.6.0
-	github.com/docker/go-connections v0.6.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect

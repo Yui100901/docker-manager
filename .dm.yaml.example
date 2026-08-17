@@ -4,14 +4,19 @@
 
 # proxy: http://127.0.0.1:7890
 
-# Docker API endpoint. Leave empty to use local Docker or standard Docker envs:
+# Docker API endpoint. Supported schemes: tcp://, unix://, and npipe://.
+# Leave empty to use local Docker or standard Docker envs:
 # DOCKER_HOST, DOCKER_TLS_VERIFY, DOCKER_CERT_PATH, DOCKER_API_VERSION.
 # docker_host: tcp://docker.example.com:2376
+# A non-empty cert path enables TLS/mTLS and must contain ca.pem, cert.pem,
+# and key.pem. TLS verification requires this directory; false keeps TLS/mTLS
+# when the directory is set but does not verify the daemon certificate.
 # docker_tls_verify: true
 # docker_cert_path: /root/.docker/certs
 # docker_api_version: "1.46"
 
-# Optional private CA paths for doctor checks.
+# Optional paths inspected by dm doctor only. They do not modify daemon or
+# registry runtime trust; install registry CAs in system/Docker trust instead.
 # ca_file: /etc/ssl/certs/company-ca.pem
 # ca_path: /etc/ssl/certs
 # registry_ca_file: /etc/docker/certs.d/registry.local:5000/ca.crt

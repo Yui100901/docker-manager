@@ -75,6 +75,9 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 			loaded, err := loadAppConfig(effectiveConfigPath)
 			if err != nil {
 				if isDoctorCommand(cmd) {
+					*cfg = appConfig{}
+					applyOutputDefaults(cmd, cfg, opts)
+					applyDockerDefaults(cmd, cfg, dockerHost, dockerTLSVerify, dockerCertPath, dockerAPIVersion)
 					configureLogging(*opts)
 					return nil
 				}
@@ -99,8 +102,8 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 	rootCmd.PersistentFlags().BoolVar(&opts.Quiet, "quiet", opts.Quiet, "隐藏信息日志")
 	rootCmd.PersistentFlags().BoolVar(&opts.JSON, "log-json", opts.JSON, "以 JSON 输出日志和错误，不影响业务报告格式")
 	rootCmd.PersistentFlags().StringVar(&dockerHost, "docker-host", "", "Docker daemon 地址，默认读取 DOCKER_HOST 或本地 Docker")
-	rootCmd.PersistentFlags().BoolVar(&dockerTLSVerify, "docker-tls-verify", false, "启用 Docker TCP TLS 证书校验，默认读取 DOCKER_TLS_VERIFY")
-	rootCmd.PersistentFlags().StringVar(&dockerCertPath, "docker-cert-path", "", "Docker TLS 证书目录，默认读取 DOCKER_CERT_PATH")
+	rootCmd.PersistentFlags().BoolVar(&dockerTLSVerify, "docker-tls-verify", false, "校验 Docker TCP 服务端证书，要求有效证书目录；默认读取 DOCKER_TLS_VERIFY")
+	rootCmd.PersistentFlags().StringVar(&dockerCertPath, "docker-cert-path", "", "Docker TLS/mTLS 证书目录，含 ca.pem/cert.pem/key.pem；默认读取 DOCKER_CERT_PATH")
 	rootCmd.PersistentFlags().StringVar(&dockerAPIVersion, "docker-api-version", "", "Docker API 版本，默认读取 DOCKER_API_VERSION 或自动协商")
 
 	commandSet := newRootCommandSet(cfg)

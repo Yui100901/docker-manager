@@ -109,8 +109,8 @@ Windows 安装脚本会把真实二进制安装为 `<InstallDir>\bin\dm.exe`，�
 ```bash
 --config string               配置文件路径，默认 .dm.yaml；未显式传入时优先读取 DM_CONFIG
 --docker-host string          Docker daemon 地址，默认读取 DOCKER_HOST 或本地 Docker
---docker-tls-verify           启用 Docker TCP TLS 证书校验，默认读取 DOCKER_TLS_VERIFY
---docker-cert-path string     Docker TLS 证书目录，默认读取 DOCKER_CERT_PATH
+--docker-tls-verify           校验 Docker TCP 服务端证书，要求有效证书目录；默认读取 DOCKER_TLS_VERIFY
+--docker-cert-path string     Docker TLS/mTLS 证书目录，含 ca.pem/cert.pem/key.pem；默认读取 DOCKER_CERT_PATH
 --docker-api-version string   Docker API 版本，默认读取 DOCKER_API_VERSION 或自动协商
 --verbose                     输出详细日志
 --quiet                       隐藏信息日志
@@ -133,7 +133,18 @@ quiet: false
 log_json: false
 ```
 
-Docker API endpoint 优先级为: 全局命令行参数 > `.dm.yaml` > Docker 环境变量 > 本地 Docker 默认 endpoint。生产环境不建议裸露未启用 TLS 的 `tcp://host:2375`；`dm doctor` 会对明文 TCP endpoint 给出 warning。
+Docker API endpoint 优先级为: 全局命令行参数 > `.dm.yaml` > Docker 环境变量 > 本地 Docker 默认 endpoint。支持 `tcp://`、`unix://` 和 `npipe://`；其他 scheme 会在 client 初始化时拒绝。生产环境不建议裸露未启用 TLS 的 `tcp://host:2375`；`dm doctor` 会对明文 TCP endpoint 给出 warning。
+
+Docker daemon TLS 规则如下：
+
+| 配置 | 实际 transport | 行为 |
+| --- | --- | --- |
+| TCP，证书目录为空，未启用校验 | HTTP | 明文连接，`dm doctor` 报 warning |
+| TCP，证书目录非空，未启用校验 | HTTPS + mTLS | 加载客户端证书，但不校验 daemon 证书，`dm doctor` 报 warning |
+| TCP，证书目录非空，启用校验 | HTTPS + mTLS | 使用系统根证书加 `ca.pem` 校验 daemon，并加载 `cert.pem`/`key.pem` |
+| 启用校验但证书目录为空或不存在 | 初始化失败 | 不发起明文请求，不回退到 HTTP |
+
+`docker_cert_path`/`DOCKER_CERT_PATH` 是 Docker daemon TLS 的运行时证书来源，目录必须包含可读取的 `ca.pem`、`cert.pem` 和 `key.pem`。`.dm.yaml` 中的 `ca_file`、`ca_path`、`registry_ca_file`、`registry_ca_path` 当前只供 `dm doctor` 检查路径，不会注入 daemon 或 registry 的运行时信任链；registry 私有 CA 应安装到系统或 Docker 的信任目录。Docker daemon TCP transport 使用标准 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 环境变量，`.dm.yaml` 的 `proxy` 不控制 daemon client。同一 `dm` 进程只在 client 初始化时加载证书；原路径内证书被替换后，应重新执行命令以加载新证书。
 
 ## Shell 自动补全
 

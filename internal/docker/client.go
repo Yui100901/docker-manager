@@ -1,23 +1,32 @@
 package docker
 
 import (
+	"crypto/tls"
+	"crypto/x509"
+	"fmt"
+	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/docker/go-connections/tlsconfig"
 	mobyclient "github.com/moby/moby/client"
 )
 
 var (
-	mobyClient     *mobyclient.Client
-	dockerClientMu sync.Mutex
-	clientOptions  Options
+	mobyClient        *mobyclient.Client
+	mobyClientOptions resolvedClientOptions
+	mobyClientInfo    ConnectionInfo
+	dockerClientMu    sync.Mutex
+	clientOptions     Options
 )
 
-// Options describes the Docker daemon endpoint selected for Docker API calls.
-// Empty fields preserve Docker SDK defaults and the corresponding DOCKER_* env
-// values.
+// Options describes the explicit Docker daemon settings selected by config or
+// flags. Empty string fields inherit the corresponding DOCKER_* environment
+// value; TLSVerify uses nil to represent inheritance.
 type Options struct {
 	Host       string
 	TLSVerify  *bool
@@ -25,37 +34,63 @@ type Options struct {
 	APIVersion string
 }
 
+// ConnectionInfo describes the transport that was built for a Docker client.
+// For initialization errors, it describes the intended transport up to the
+// point where validation failed.
+type ConnectionInfo struct {
+	Host              string
+	Transport         string
+	TLS               bool
+	TLSVerify         bool
+	CertPath          string
+	CASource          string
+	ClientCertificate bool
+	APIVersion        string
+}
+
+type resolvedClientOptions struct {
+	Host         string
+	TLSVerify    bool
+	TLSVerifySet bool
+	CertPath     string
+	APIVersion   string
+}
+
 // NewMobyClient returns the shared Moby API client for migrated code paths.
 func NewMobyClient() (*mobyclient.Client, error) {
 	return initMobyClient()
 }
 
+// NewMobyClientWithInfo returns the shared client and its actual transport
+// configuration. Callers such as doctor use the metadata instead of inferring
+// TLS state from configuration intent.
+func NewMobyClientWithInfo() (*mobyclient.Client, ConnectionInfo, error) {
+	return initMobyClientWithInfo()
+}
+
 // Configure sets the Docker API endpoint used by future clients. It is normally
-// called once from the root command after reading config and global flags.
+// called once from the root command before any manager requests a client.
 func Configure(opts Options) {
 	dockerClientMu.Lock()
 	defer dockerClientMu.Unlock()
 
+	opts = cloneOptions(opts)
 	if sameOptions(clientOptions, opts) {
 		return
 	}
-	if mobyClient != nil {
-		_ = mobyClient.Close()
-		mobyClient = nil
-	}
+	resetMobyClientLocked()
 	clientOptions = opts
 }
 
-// CurrentOptions returns the effective explicit options. Environment-derived
-// values are intentionally not expanded here.
+// CurrentOptions returns the explicit options supplied through Configure.
 func CurrentOptions() Options {
 	dockerClientMu.Lock()
 	defer dockerClientMu.Unlock()
-	return clientOptions
+	return cloneOptions(clientOptions)
 }
 
-// Endpoint returns the currently selected Docker endpoint. It prefers explicit
-// config and DOCKER_* env values, then falls back to the platform local daemon.
+// Endpoint returns the selected Docker endpoint after resolving explicit
+// configuration over DOCKER_HOST and the platform local default.
 func Endpoint() string {
 	opts := EffectiveOptions()
 	if strings.TrimSpace(opts.Host) != "" {
@@ -71,36 +106,12 @@ func IsRemoteEndpoint() bool {
 	return !(strings.HasPrefix(host, "unix://") || strings.HasPrefix(host, "npipe://"))
 }
 
-// EffectiveOptions resolves explicit options over Docker's DOCKER_* environment
-// variables. SDK defaults such as the platform-specific local socket are not
-// expanded here; callers can read Client.DaemonHost after NewClient.
+// EffectiveOptions resolves explicit options over Docker's DOCKER_*
+// environment variables without mutating process-wide environment state.
 func EffectiveOptions() Options {
 	dockerClientMu.Lock()
 	defer dockerClientMu.Unlock()
-
-	opts := Options{
-		Host:       os.Getenv(mobyclient.EnvOverrideHost),
-		CertPath:   os.Getenv(mobyclient.EnvOverrideCertPath),
-		APIVersion: os.Getenv(mobyclient.EnvOverrideAPIVersion),
-	}
-	if os.Getenv(mobyclient.EnvTLSVerify) != "" {
-		value := true
-		opts.TLSVerify = &value
-	}
-	if clientOptions.Host != "" {
-		opts.Host = clientOptions.Host
-	}
-	if clientOptions.CertPath != "" {
-		opts.CertPath = clientOptions.CertPath
-	}
-	if clientOptions.APIVersion != "" {
-		opts.APIVersion = clientOptions.APIVersion
-	}
-	if clientOptions.TLSVerify != nil {
-		value := *clientOptions.TLSVerify
-		opts.TLSVerify = &value
-	}
-	return opts
+	return resolveClientOptions(clientOptions, os.LookupEnv).toOptions()
 }
 
 func defaultLocalEndpoint() string {
@@ -108,6 +119,14 @@ func defaultLocalEndpoint() string {
 		return "npipe:////./pipe/docker_engine"
 	}
 	return "unix:///var/run/docker.sock"
+}
+
+func cloneOptions(opts Options) Options {
+	if opts.TLSVerify != nil {
+		value := *opts.TLSVerify
+		opts.TLSVerify = &value
+	}
+	return opts
 }
 
 func sameOptions(a, b Options) bool {
@@ -124,64 +143,208 @@ func sameOptions(a, b Options) bool {
 	}
 }
 
+func resolveClientOptions(explicit Options, lookupEnv func(string) (string, bool)) resolvedClientOptions {
+	resolved := resolvedClientOptions{}
+	if value, ok := lookupEnv(mobyclient.EnvOverrideHost); ok {
+		resolved.Host = strings.TrimSpace(value)
+	}
+	if value, ok := lookupEnv(mobyclient.EnvOverrideCertPath); ok {
+		resolved.CertPath = strings.TrimSpace(value)
+	}
+	if value, ok := lookupEnv(mobyclient.EnvOverrideAPIVersion); ok {
+		resolved.APIVersion = strings.TrimSpace(value)
+	}
+	if value, ok := lookupEnv(mobyclient.EnvTLSVerify); ok && value != "" {
+		resolved.TLSVerify = true
+		resolved.TLSVerifySet = true
+	}
+
+	if value := strings.TrimSpace(explicit.Host); value != "" {
+		resolved.Host = value
+	}
+	if value := strings.TrimSpace(explicit.CertPath); value != "" {
+		resolved.CertPath = value
+	}
+	if value := strings.TrimSpace(explicit.APIVersion); value != "" {
+		resolved.APIVersion = value
+	}
+	if explicit.TLSVerify != nil {
+		resolved.TLSVerify = *explicit.TLSVerify
+		resolved.TLSVerifySet = true
+	}
+	return resolved
+}
+
+func (opts resolvedClientOptions) toOptions() Options {
+	result := Options{
+		Host:       opts.Host,
+		CertPath:   opts.CertPath,
+		APIVersion: opts.APIVersion,
+	}
+	if opts.TLSVerifySet {
+		value := opts.TLSVerify
+		result.TLSVerify = &value
+	}
+	return result
+}
+
 func initMobyClient() (*mobyclient.Client, error) {
+	cli, _, err := initMobyClientWithInfo()
+	return cli, err
+}
+
+func initMobyClientWithInfo() (*mobyclient.Client, ConnectionInfo, error) {
 	dockerClientMu.Lock()
 	defer dockerClientMu.Unlock()
 
-	if mobyClient == nil {
-		restore := applyDockerEnvForClient(clientOptions)
-		defer restore()
-
-		cli, err := mobyclient.NewClientWithOpts(mobyclient.FromEnv, mobyclient.WithAPIVersionNegotiation())
-		if err != nil {
-			return nil, err
-		}
-		mobyClient = cli
+	resolved := resolveClientOptions(clientOptions, os.LookupEnv)
+	if mobyClient != nil && mobyClientOptions != resolved {
+		resetMobyClientLocked()
 	}
-	return mobyClient, nil
+	if mobyClient != nil {
+		return mobyClient, mobyClientInfo, nil
+	}
+
+	cli, info, err := buildMobyClient(resolved)
+	if err != nil {
+		return nil, info, err
+	}
+	mobyClient = cli
+	mobyClientOptions = resolved
+	mobyClientInfo = info
+	return mobyClient, mobyClientInfo, nil
 }
 
-func applyDockerEnvForClient(opts Options) func() {
-	keys := []string{
-		mobyclient.EnvOverrideHost,
-		mobyclient.EnvOverrideAPIVersion,
-		mobyclient.EnvOverrideCertPath,
-		mobyclient.EnvTLSVerify,
+func resetMobyClientLocked() {
+	if mobyClient != nil {
+		_ = mobyClient.Close()
 	}
-	previous := make(map[string]*string, len(keys))
-	for _, key := range keys {
-		if value, ok := os.LookupEnv(key); ok {
-			copied := value
-			previous[key] = &copied
-		} else {
-			previous[key] = nil
-		}
+	mobyClient = nil
+	mobyClientOptions = resolvedClientOptions{}
+	mobyClientInfo = ConnectionInfo{}
+}
+
+func buildMobyClient(opts resolvedClientOptions) (*mobyclient.Client, ConnectionInfo, error) {
+	host := opts.Host
+	if host == "" {
+		host = defaultLocalEndpoint()
+	}
+	info := ConnectionInfo{
+		Host:       host,
+		TLSVerify:  opts.TLSVerify,
+		CertPath:   opts.CertPath,
+		APIVersion: opts.APIVersion,
 	}
 
-	if opts.Host != "" {
-		_ = os.Setenv(mobyclient.EnvOverrideHost, opts.Host)
+	hostURL, err := mobyclient.ParseHostURL(host)
+	if err != nil {
+		return nil, info, fmt.Errorf("configure Docker host %q: %w", host, err)
+	}
+	endpointTransport := strings.ToLower(hostURL.Scheme)
+	info.Transport = endpointTransport
+	tlsEnabled := opts.CertPath != "" || (opts.TLSVerifySet && opts.TLSVerify)
+	if tlsEnabled {
+		info.TLS = true
+	}
+	switch endpointTransport {
+	case "tcp":
+		if tlsEnabled {
+			info.Transport = "https"
+		} else {
+			info.Transport = "http"
+		}
+	case "unix", "npipe":
+		if tlsEnabled {
+			return nil, info, fmt.Errorf("Docker TLS is only supported for tcp:// endpoints, got %q", host)
+		}
+	default:
+		return nil, info, fmt.Errorf("unsupported Docker host scheme %q in %q; use tcp://, unix://, or npipe://", endpointTransport, host)
+	}
+	if opts.TLSVerify && opts.CertPath == "" {
+		return nil, info, fmt.Errorf("Docker TLS verification requires a certificate directory containing ca.pem, cert.pem, and key.pem")
+	}
+
+	clientOpts := make([]mobyclient.Opt, 0, 4)
+	if tlsEnabled {
+		tlsConfig, caSource, err := loadDockerTLSConfig(opts.CertPath, opts.TLSVerify)
+		info.CASource = caSource
+		if err != nil {
+			return nil, info, err
+		}
+		info.ClientCertificate = true
+		transport := &http.Transport{
+			TLSClientConfig: tlsConfig,
+			MaxIdleConns:    6,
+			IdleConnTimeout: 30 * time.Second,
+		}
+		httpClient := &http.Client{
+			Transport:     transport,
+			CheckRedirect: mobyclient.CheckRedirect,
+		}
+		clientOpts = append(clientOpts, mobyclient.WithHTTPClient(httpClient))
+	}
+	clientOpts = append(clientOpts, mobyclient.WithHost(host))
+	if tlsEnabled {
+		clientOpts = append(clientOpts, mobyclient.WithScheme("https"))
 	}
 	if opts.APIVersion != "" {
-		_ = os.Setenv(mobyclient.EnvOverrideAPIVersion, opts.APIVersion)
-	}
-	if opts.CertPath != "" {
-		_ = os.Setenv(mobyclient.EnvOverrideCertPath, opts.CertPath)
-	}
-	if opts.TLSVerify != nil {
-		if *opts.TLSVerify {
-			_ = os.Setenv(mobyclient.EnvTLSVerify, "1")
-		} else {
-			_ = os.Unsetenv(mobyclient.EnvTLSVerify)
-		}
+		clientOpts = append(clientOpts, mobyclient.WithAPIVersion(opts.APIVersion))
 	}
 
-	return func() {
-		for _, key := range keys {
-			if value := previous[key]; value != nil {
-				_ = os.Setenv(key, *value)
-			} else {
-				_ = os.Unsetenv(key)
-			}
+	cli, err := mobyclient.New(clientOpts...)
+	if err != nil {
+		return nil, info, fmt.Errorf("initialize Docker client: %w", err)
+	}
+	return cli, info, nil
+}
+
+func loadDockerTLSConfig(certPath string, verify bool) (*tls.Config, string, error) {
+	certPath = strings.TrimSpace(certPath)
+	if certPath == "" {
+		return nil, "", fmt.Errorf("Docker TLS certificate directory is empty")
+	}
+	caFile := filepath.Join(certPath, "ca.pem")
+	caSource := "verification-disabled"
+	if verify {
+		caSource = "system+" + caFile
+	}
+	pathInfo, err := os.Stat(certPath)
+	if err != nil {
+		return nil, caSource, fmt.Errorf("inspect Docker TLS certificate directory %q: %w", certPath, err)
+	}
+	if !pathInfo.IsDir() {
+		return nil, caSource, fmt.Errorf("Docker TLS certificate path %q is not a directory", certPath)
+	}
+
+	certFile := filepath.Join(certPath, "cert.pem")
+	keyFile := filepath.Join(certPath, "key.pem")
+	for _, path := range []string{caFile, certFile, keyFile} {
+		fileInfo, err := os.Stat(path)
+		if err != nil {
+			return nil, caSource, fmt.Errorf("inspect Docker TLS file %q: %w", path, err)
+		}
+		if !fileInfo.Mode().IsRegular() {
+			return nil, caSource, fmt.Errorf("Docker TLS file %q is not a regular file", path)
 		}
 	}
+	caPEM, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, caSource, fmt.Errorf("read Docker TLS CA file %q: %w", caFile, err)
+	}
+	if !x509.NewCertPool().AppendCertsFromPEM(caPEM) {
+		return nil, caSource, fmt.Errorf("Docker TLS CA file %q does not contain a valid PEM certificate", caFile)
+	}
+
+	tlsConfig, err := tlsconfig.Client(tlsconfig.Options{
+		CAFile:             caFile,
+		CertFile:           certFile,
+		KeyFile:            keyFile,
+		InsecureSkipVerify: !verify, // #nosec G402 -- explicit Docker-compatible opt-out
+		ExclusiveRootPools: false,
+		MinVersion:         tls.VersionTLS12,
+	})
+	if err != nil {
+		return nil, caSource, fmt.Errorf("configure Docker TLS from %q: %w", certPath, err)
+	}
+	return tlsConfig, caSource, nil
 }

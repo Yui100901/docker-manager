@@ -2,39 +2,45 @@ package diagnostics
 
 import (
 	"context"
-	"docker-manager/internal/docker"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
+
+	"docker-manager/internal/docker"
 )
 
 func checkDoctorDocker(ctx context.Context, timeout time.Duration) []DoctorCheck {
 	checkCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	svc, err := newDoctorDockerService()
+	svc, info, err := newDoctorDockerService()
 	if err != nil {
-		checks := []DoctorCheck{dockerEndpointCheck("", "")}
+		checks := []DoctorCheck{dockerEndpointCheck(info, "", err)}
 		return append(checks, DoctorCheck{
 			Name:        "docker-daemon",
 			Status:      "failed",
 			Message:     err.Error(),
-			Recommended: "确认 Docker daemon 已启动，当前用户有访问 Docker socket 或 named pipe 的权限",
+			Recommended: "修正 Docker endpoint 或 TLS 证书配置后重试",
 		})
 	}
-	checks := []DoctorCheck{dockerEndpointCheck(svc.DaemonHost(), svc.ClientVersion())}
+	if host := strings.TrimSpace(svc.DaemonHost()); host != "" {
+		info.Host = host
+	}
 	ping, err := svc.Ping(checkCtx)
 	if err != nil {
+		checks := []DoctorCheck{dockerEndpointCheck(info, info.APIVersion, nil)}
 		return append(checks, DoctorCheck{
 			Name:        "docker-daemon",
 			Status:      "failed",
 			Message:     err.Error(),
-			Recommended: "确认 Docker daemon 已启动；Linux 下检查 docker 组或 sudo 权限",
+			Recommended: dockerDaemonFailureRecommendation(info),
 		})
 	}
+	checks := []DoctorCheck{dockerEndpointCheck(info, svc.ClientVersion(), nil)}
 	checks = append(checks, DoctorCheck{
 		Name:    "docker-daemon",
 		Status:  "ok",
@@ -60,43 +66,71 @@ func checkDoctorDocker(ctx context.Context, timeout time.Duration) []DoctorCheck
 	return checks
 }
 
-func dockerEndpointCheck(daemonHost, clientVersion string) DoctorCheck {
-	effective := docker.EffectiveOptions()
-	host := strings.TrimSpace(daemonHost)
+func dockerEndpointCheck(info docker.ConnectionInfo, clientVersion string, initErr error) DoctorCheck {
+	host := strings.TrimSpace(info.Host)
 	if host == "" {
-		host = strings.TrimSpace(effective.Host)
+		host = "unknown"
 	}
-	if host == "" {
-		host = "Docker SDK 默认本地 endpoint"
+	if strings.TrimSpace(clientVersion) == "" {
+		clientVersion = info.APIVersion
 	}
-	var detail []string
-	detail = append(detail, "host="+host)
-	if clientVersion != "" {
-		detail = append(detail, "client_api_version="+clientVersion)
-	} else if effective.APIVersion != "" {
-		detail = append(detail, "client_api_version="+effective.APIVersion)
+	if strings.TrimSpace(clientVersion) == "" {
+		clientVersion = "auto(pending)"
 	}
-	if effective.CertPath != "" {
-		detail = append(detail, "cert_path="+effective.CertPath)
+	detail := strings.Join([]string{
+		"host=" + host,
+		"transport=" + info.Transport,
+		fmt.Sprintf("tls=%t", info.TLS),
+		fmt.Sprintf("tls_verify=%t", info.TLSVerify),
+		"cert_path=" + info.CertPath,
+		"ca_source=" + info.CASource,
+		fmt.Sprintf("client_certificate=%t", info.ClientCertificate),
+		"client_api_version=" + clientVersion,
+	}, " ")
+
+	if initErr != nil {
+		return DoctorCheck{
+			Name:        "docker-endpoint",
+			Status:      "failed",
+			Message:     "Docker endpoint 初始化失败: " + initErr.Error(),
+			Detail:      detail,
+			Recommended: "检查 endpoint 协议、DOCKER_CERT_PATH 及 ca.pem/cert.pem/key.pem",
+		}
 	}
-	tlsEnabled := effective.TLSVerify != nil && *effective.TLSVerify
-	if tlsEnabled {
-		detail = append(detail, "tls_verify=true")
-	}
-	if strings.HasPrefix(strings.ToLower(host), "tcp://") && !tlsEnabled {
+	if strings.EqualFold(info.Transport, "http") {
 		return DoctorCheck{
 			Name:        "docker-endpoint",
 			Status:      "warning",
-			Message:     "当前 Docker endpoint 是未启用 TLS 校验的 TCP 地址",
-			Detail:      strings.Join(detail, " "),
+			Message:     "当前 Docker endpoint 使用明文 HTTP",
+			Detail:      detail,
 			Recommended: "生产环境不要裸露 2375；优先使用 TLS 2376、SSH 隧道、VPN 或内网访问控制",
+		}
+	}
+	if strings.EqualFold(info.Transport, "https") && !info.TLSVerify {
+		return DoctorCheck{
+			Name:        "docker-endpoint",
+			Status:      "warning",
+			Message:     "当前 Docker endpoint 使用 TLS，但未校验服务端证书",
+			Detail:      detail,
+			Recommended: "生产环境启用 docker_tls_verify，并使用受信 CA 签发的服务端证书",
 		}
 	}
 	return DoctorCheck{
 		Name:    "docker-endpoint",
 		Status:  "ok",
 		Message: "Docker endpoint 已解析",
-		Detail:  strings.Join(detail, " "),
+		Detail:  detail,
+	}
+}
+
+func dockerDaemonFailureRecommendation(info docker.ConnectionInfo) string {
+	switch strings.ToLower(strings.TrimSpace(info.Transport)) {
+	case "https":
+		return "检查 Docker TCP 地址、防火墙、服务端证书/CA 以及客户端 cert.pem/key.pem"
+	case "http":
+		return "检查 Docker TCP 地址、监听端口、防火墙及 daemon 是否允许该 endpoint"
+	default:
+		return "确认 Docker daemon 已启动；检查本地 socket、named pipe 或用户权限"
 	}
 }
 
