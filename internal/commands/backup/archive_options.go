@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -29,6 +30,27 @@ type backupArchiveOptions struct {
 	Encrypt        bool
 	PassphraseFile string
 	SplitSize      int64
+}
+
+type backupArchiveWriter interface {
+	io.WriteCloser
+	Abort() error
+}
+
+type singleBackupArchiveWriter struct {
+	file *os.File
+	path string
+}
+
+func (w *singleBackupArchiveWriter) Write(p []byte) (int, error) { return w.file.Write(p) }
+func (w *singleBackupArchiveWriter) Close() error                { return w.file.Close() }
+func (w *singleBackupArchiveWriter) Abort() error {
+	closeErr := w.file.Close()
+	removeErr := os.Remove(w.path)
+	if os.IsNotExist(removeErr) {
+		removeErr = nil
+	}
+	return errors.Join(closeErr, removeErr)
 }
 
 func archiveOptionsFromBackup(opts BackupOptions) (backupArchiveOptions, error) {
@@ -72,16 +94,27 @@ func parseBackupSize(value string) (int64, error) {
 	return size * multiplier, nil
 }
 
-func openBackupArchiveWriter(ctx context.Context, archivePath string, opts backupArchiveOptions) (io.WriteCloser, error) {
+func openBackupArchiveWriter(ctx context.Context, archivePath string, opts backupArchiveOptions) (backupArchiveWriter, error) {
 	if err := os.MkdirAll(filepath.Dir(archivePath), 0755); err != nil {
 		return nil, err
 	}
-	var writer io.WriteCloser
+	var passphrase []byte
 	var err error
+	if opts.Encrypt {
+		passphrase, err = readBackupPassphrase(opts.PassphraseFile)
+		if err != nil {
+			return nil, err
+		}
+	}
+	var writer backupArchiveWriter
 	if opts.SplitSize > 0 {
 		writer, err = newSplitFileWriter(ctx, archivePath, opts.SplitSize)
 	} else {
-		writer, err = os.Create(archivePath)
+		var file *os.File
+		file, err = os.OpenFile(archivePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		if err == nil {
+			writer = &singleBackupArchiveWriter{file: file, path: archivePath}
+		}
 	}
 	if err != nil {
 		return nil, err
@@ -89,14 +122,9 @@ func openBackupArchiveWriter(ctx context.Context, archivePath string, opts backu
 	if !opts.Encrypt {
 		return writer, nil
 	}
-	passphrase, err := readBackupPassphrase(opts.PassphraseFile)
-	if err != nil {
-		_ = writer.Close()
-		return nil, err
-	}
 	encrypted, err := newEncryptWriter(writer, passphrase)
 	if err != nil {
-		_ = writer.Close()
+		_ = writer.Abort()
 		return nil, err
 	}
 	return encrypted, nil
@@ -115,7 +143,7 @@ func readBackupPassphrase(path string) ([]byte, error) {
 }
 
 type encryptWriter struct {
-	dst     io.WriteCloser
+	dst     backupArchiveWriter
 	aead    cipher.AEAD
 	prefix  []byte
 	counter uint64
@@ -123,7 +151,7 @@ type encryptWriter struct {
 	closed  bool
 }
 
-func newEncryptWriter(dst io.WriteCloser, passphrase []byte) (*encryptWriter, error) {
+func newEncryptWriter(dst backupArchiveWriter, passphrase []byte) (*encryptWriter, error) {
 	salt := make([]byte, backupEncryptionSaltSize)
 	prefix := make([]byte, backupEncryptionPrefixSize)
 	if _, err := rand.Read(salt); err != nil {
@@ -154,6 +182,11 @@ func newEncryptWriter(dst io.WriteCloser, passphrase []byte) (*encryptWriter, er
 		return nil, err
 	}
 	return &encryptWriter{dst: dst, aead: aead, prefix: prefix, buf: make([]byte, 0, backupEncryptionChunkSize)}, nil
+}
+
+func (w *encryptWriter) Abort() error {
+	w.closed = true
+	return w.dst.Abort()
 }
 
 func (w *encryptWriter) Write(p []byte) (int, error) {
@@ -218,6 +251,7 @@ type splitFileWriter struct {
 	partIndex int
 	written   int64
 	current   *os.File
+	paths     []string
 }
 
 func newSplitFileWriter(ctx context.Context, basePath string, partSize int64) (*splitFileWriter, error) {
@@ -267,6 +301,20 @@ func (w *splitFileWriter) Close() error {
 	return err
 }
 
+func (w *splitFileWriter) Abort() error {
+	var cleanupErrors []error
+	if w.current != nil {
+		cleanupErrors = append(cleanupErrors, w.current.Close())
+		w.current = nil
+	}
+	for _, path := range w.paths {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			cleanupErrors = append(cleanupErrors, err)
+		}
+	}
+	return errors.Join(cleanupErrors...)
+}
+
 func (w *splitFileWriter) openNextPart() error {
 	if w.current != nil {
 		if err := w.current.Close(); err != nil {
@@ -276,11 +324,12 @@ func (w *splitFileWriter) openNextPart() error {
 	w.partIndex++
 	w.written = 0
 	path := splitPartPath(w.basePath, w.partIndex)
-	file, err := os.Create(path)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		return err
 	}
 	w.current = file
+	w.paths = append(w.paths, path)
 	return nil
 }
 

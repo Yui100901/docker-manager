@@ -28,6 +28,13 @@ func buildRestorePlanReport(ctx context.Context, backupPath string, opts Restore
 	if cleanup != nil {
 		defer cleanup()
 	}
+	if opts.TrustedPublicKey != "" && opts.SkipChecksum {
+		return RestorePlanReport{}, fmt.Errorf("trusted public key verification requires checksum verification")
+	}
+	signatureText, err := verifyBackupSignatureWithContext(ctx, resolvedDir, opts.TrustedPublicKey)
+	if err != nil {
+		return RestorePlanReport{}, fmt.Errorf("verify backup signature: %w", err)
+	}
 	checksumText := checksumPlanText(opts.SkipChecksum, filepath.Join(resolvedDir, backupChecksumName))
 	if !opts.SkipChecksum {
 		if _, err := verifyBackupChecksumsWithContext(ctx, resolvedDir); err != nil {
@@ -38,10 +45,10 @@ func buildRestorePlanReport(ctx context.Context, backupPath string, opts Restore
 	if err != nil {
 		return RestorePlanReport{}, err
 	}
-	return buildRestorePlanReportFromDir(ctx, svc, resolvedDir, backupPath, checksumText, opts)
+	return buildRestorePlanReportFromDir(ctx, svc, resolvedDir, backupPath, checksumText, signatureText, opts)
 }
 
-func buildRestorePlanReportFromDir(ctx context.Context, svc backupDockerService, backupDir, source string, checksumText string, opts RestoreOptions) (RestorePlanReport, error) {
+func buildRestorePlanReportFromDir(ctx context.Context, svc backupDockerService, backupDir, source string, checksumText, signatureText string, opts RestoreOptions) (RestorePlanReport, error) {
 	manifest, err := readBackupManifest(backupDir)
 	if err != nil {
 		return RestorePlanReport{}, err
@@ -52,15 +59,20 @@ func buildRestorePlanReportFromDir(ctx context.Context, svc backupDockerService,
 	if opts.Name != "" && len(manifest.Containers) != 1 {
 		return RestorePlanReport{}, fmt.Errorf("--name 只支持恢复单个备份")
 	}
+	if err := validateRestoreManifestArtifacts(backupDir, manifest, opts); err != nil {
+		return RestorePlanReport{}, err
+	}
 	report := RestorePlanReport{
 		Source:         source,
 		DockerEndpoint: docker.Endpoint(),
 		Checksum:       checksumText,
+		Signature:      signatureText,
 		ContainerCount: len(manifest.Containers),
 		Options: RestorePlanOptions{
-			Replace: opts.Replace,
-			NoStart: opts.NoStart,
-			Name:    opts.Name,
+			Replace:              opts.Replace,
+			NoStart:              opts.NoStart,
+			Name:                 opts.Name,
+			AllowDangerousConfig: opts.AllowUnsafeHostConfig,
 		},
 	}
 	ports, portWarnings := currentRestorePortBindings(ctx, svc)
@@ -97,15 +109,13 @@ func buildRestoreContainerPlan(ctx context.Context, svc backupDockerService, bac
 	if err != nil {
 		return RestoreContainerPlan{}, err
 	}
-	targetName := opts.Name
-	if targetName == "" {
-		targetName = entry.ContainerName
+	targetName, err := restoreEntryTargetName(entry, inspect, opts)
+	if err != nil {
+		return RestoreContainerPlan{}, err
 	}
-	if targetName == "" {
-		targetName = normalizeContainerName(inspect.Name)
-	}
-	if targetName == "" {
-		return RestoreContainerPlan{}, fmt.Errorf("backup does not contain a container name; use --name")
+	unsafeConfig, err := unsafeRestoreEntryConfig(entryDir, entry, inspect)
+	if err != nil {
+		return RestoreContainerPlan{}, err
 	}
 	exists, err := svc.ContainerExists(ctx, targetName)
 	if err != nil {
@@ -117,6 +127,7 @@ func buildRestoreContainerPlan(ctx context.Context, svc backupDockerService, bac
 		EntryDir:      entryDir,
 		Ports:         restorePortBindings(inspect),
 		Container:     restoreTargetPlan(exists, opts),
+		UnsafeConfig:  unsafeConfig,
 	}
 	plan.Image = restoreImagePlan(ctx, svc, entryDir, entry, inspect)
 	plan.Networks = restoreNetworkPlans(ctx, svc, entryDir, entry.Networks)
@@ -128,6 +139,13 @@ func buildRestoreContainerPlan(ctx context.Context, svc backupDockerService, bac
 	}
 	if len(plan.PortConflicts) > 0 {
 		plan.Warnings = append(plan.Warnings, "存在端口冲突，实际恢复前需要释放端口或调整容器配置")
+	}
+	if len(plan.UnsafeConfig) > 0 {
+		if opts.AllowUnsafeHostConfig {
+			plan.Warnings = append(plan.Warnings, "检测到高风险恢复配置；已请求显式放行，仍需 --confirm 才会执行")
+		} else {
+			plan.Warnings = append(plan.Warnings, "检测到高风险恢复配置；默认阻止实际恢复")
+		}
 	}
 	return plan, nil
 }
@@ -271,11 +289,14 @@ func restoreContainerActions(plan RestoreContainerPlan, opts RestoreOptions) []s
 		}
 	}
 	if plan.Container.Action == "replace" {
-		actions = append(actions, "remove-container:"+plan.ContainerName)
+		actions = append(actions, "stage-existing-container:"+plan.ContainerName)
 	}
 	actions = append(actions, "create-container:"+plan.ContainerName)
 	if !opts.NoStart {
 		actions = append(actions, "start-container:"+plan.ContainerName)
+	}
+	if plan.Container.Action == "replace" {
+		actions = append(actions, "remove-staged-container:"+plan.ContainerName)
 	}
 	return actions
 }
@@ -376,8 +397,8 @@ func printRestorePlanReport(w io.Writer, report RestorePlanReport) {
 	if report.DockerEndpoint != "" {
 		fmt.Fprintf(w, "目标 Docker: %s\n", report.DockerEndpoint)
 	}
-	fmt.Fprintf(w, "容器数量: %d checksum=%s\n", report.ContainerCount, report.Checksum)
-	fmt.Fprintf(w, "摘要: 镜像导入=%d 已存在镜像=%d network创建=%d 已存在network=%d 差异network=%d volume创建=%d 已存在volume=%d 差异volume=%d 容器创建=%d 替换=%d 冲突=%d 端口冲突=%d\n\n",
+	fmt.Fprintf(w, "容器数量: %d checksum=%s signature=%s\n", report.ContainerCount, report.Checksum, report.Signature)
+	fmt.Fprintf(w, "摘要: 镜像导入=%d 已存在镜像=%d network创建=%d 已存在network=%d 差异network=%d volume创建=%d 已存在volume=%d 差异volume=%d 容器创建=%d 替换=%d 冲突=%d 端口冲突=%d 高风险配置=%d\n\n",
 		report.Summary.ImagesToLoad,
 		report.Summary.ImagesPresent,
 		report.Summary.NetworksToCreate,
@@ -390,6 +411,7 @@ func printRestorePlanReport(w io.Writer, report RestorePlanReport) {
 		report.Summary.ContainersToReplace,
 		report.Summary.ContainerConflicts,
 		report.Summary.PortConflicts,
+		report.Summary.UnsafeContainers,
 	)
 	for _, warning := range report.Warnings {
 		fmt.Fprintf(w, "警告: %s\n", warning)
@@ -424,6 +446,9 @@ func printRestoreContainerPlan(w io.Writer, plan RestoreContainerPlan) {
 	}
 	if len(plan.Actions) > 0 {
 		fmt.Fprintf(w, "  动作: %s\n", strings.Join(plan.Actions, ", "))
+	}
+	for _, risk := range plan.UnsafeConfig {
+		fmt.Fprintf(w, "  高风险恢复配置: %s\n", risk)
 	}
 	for _, warning := range plan.Warnings {
 		fmt.Fprintf(w, "  预检提示: %s\n", warning)

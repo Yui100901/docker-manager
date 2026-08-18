@@ -100,4 +100,7 @@ func addRestorePlanSummary(summary *RestorePlanSummary, plan RestoreContainerPla
 		summary.ContainersToCreate++
 	}
 	summary.PortConflicts += len(plan.PortConflicts)
+	if len(plan.UnsafeConfig) > 0 {
+		summary.UnsafeContainers++
+	}
 }

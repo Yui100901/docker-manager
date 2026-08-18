@@ -30,10 +30,14 @@ func firstContainerName(names []string) string {
 }
 
 func isDanglingImage(img *image.Summary) bool {
-	if len(img.RepoTags) == 0 {
+	return img != nil && isDanglingRepoTags(img.RepoTags)
+}
+
+func isDanglingRepoTags(tags []string) bool {
+	if len(tags) == 0 {
 		return true
 	}
-	for _, tag := range img.RepoTags {
+	for _, tag := range tags {
 		if tag != "" && tag != "<none>:<none>" {
 			return false
 		}
@@ -50,19 +54,6 @@ func cleanRepoTags(tags []string) []string {
 		cleaned = append(cleaned, tag)
 	}
 	return cleaned
-}
-
-func imageDeleteRefs(items []image.DeleteResponse) []string {
-	refs := make([]string, 0, len(items))
-	for _, item := range items {
-		if item.Deleted != "" {
-			refs = append(refs, item.Deleted)
-		}
-		if item.Untagged != "" {
-			refs = append(refs, item.Untagged)
-		}
-	}
-	return refs
 }
 
 func shortID(id string) string {

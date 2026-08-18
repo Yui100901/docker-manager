@@ -3,9 +3,14 @@ package backup
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	cryptorand "crypto/rand"
+	"crypto/x509"
 	"docker-manager/internal/docker"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"net/netip"
 	"os"
@@ -21,16 +26,32 @@ import (
 )
 
 type fakeBackupDockerService struct {
-	mu              sync.Mutex
-	inspect         container.InspectResponse
-	inspects        map[string]container.InspectResponse
-	containers      []container.Summary
-	network         network.Inspect
-	volume          volume.Volume
-	containerExists bool
-	imageExists     bool
-	calls           []string
-	loadOutput      io.Writer
+	mu                sync.Mutex
+	inspect           container.InspectResponse
+	inspects          map[string]container.InspectResponse
+	inspectErrors     map[string]error
+	containers        []container.Summary
+	network           network.Inspect
+	volume            volume.Volume
+	containerExists   bool
+	imageMissing      bool
+	calls             []string
+	loadOutput        io.Writer
+	loadErr           error
+	createErr         error
+	createIDOnError   string
+	createCommitError bool
+	startErr          error
+	stopErr           error
+	renameErr         error
+	removeErr         error
+	startErrors       map[string]error
+	renameErrors      map[string]error
+	removeErrors      map[string]error
+	cancelAfterCreate context.CancelFunc
+	cancelAfterStart  context.CancelFunc
+	readyErr          error
+	renameCommitError map[string]bool
 }
 
 func (f *fakeBackupDockerService) ListContainers(ctx context.Context, all bool) ([]container.Summary, error) {
@@ -44,6 +65,9 @@ func (f *fakeBackupDockerService) InspectContainer(ctx context.Context, name str
 	f.mu.Lock()
 	f.calls = append(f.calls, "inspect-container:"+name)
 	f.mu.Unlock()
+	if err := f.inspectErrors[name]; err != nil {
+		return container.InspectResponse{}, err
+	}
 	if inspect, ok := f.inspects[name]; ok {
 		return inspect, nil
 	}
@@ -65,14 +89,17 @@ func (f *fakeBackupDockerService) LoadImage(ctx context.Context, inputFile strin
 	f.calls = append(f.calls, "load-image:"+filepath.Base(inputFile))
 	f.loadOutput = output
 	f.mu.Unlock()
-	return nil
+	return f.loadErr
 }
 
 func (f *fakeBackupDockerService) ImageExists(ctx context.Context, ref string) (bool, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, "image-exists:"+ref)
 	f.mu.Unlock()
-	return f.imageExists, nil
+	if f.imageMissing {
+		return false, nil
+	}
+	return true, nil
 }
 
 func (f *fakeBackupDockerService) InspectNetwork(ctx context.Context, name string) (network.Inspect, error) {
@@ -114,21 +141,99 @@ func (f *fakeBackupDockerService) RemoveContainer(ctx context.Context, name stri
 	f.mu.Lock()
 	f.calls = append(f.calls, "remove-container:"+name)
 	f.mu.Unlock()
-	return nil
+	if err := f.removeErrors[name]; err != nil {
+		return err
+	}
+	return f.removeErr
+}
+
+func (f *fakeBackupDockerService) StopContainer(ctx context.Context, id string) error {
+	f.mu.Lock()
+	f.calls = append(f.calls, "stop-container:"+id)
+	f.mu.Unlock()
+	return f.stopErr
+}
+
+func (f *fakeBackupDockerService) RenameContainer(ctx context.Context, id, name string) error {
+	f.mu.Lock()
+	f.calls = append(f.calls, "rename-container:"+id+":"+name)
+	f.mu.Unlock()
+	if err := f.renameErrors[name]; err != nil {
+		if f.renameCommitError[name] {
+			f.recordRenamedContainer(id, name)
+		}
+		return err
+	}
+	f.recordRenamedContainer(id, name)
+	return f.renameErr
+}
+
+func (f *fakeBackupDockerService) recordRenamedContainer(id, name string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.inspects == nil {
+		f.inspects = make(map[string]container.InspectResponse)
+	}
+	inspect := f.inspects[id]
+	if inspect.ID == "" {
+		inspect.ID = id
+	}
+	inspect.Name = "/" + name
+	f.inspects[id] = inspect
+	f.inspects[name] = inspect
 }
 
 func (f *fakeBackupDockerService) CreateContainer(ctx context.Context, inspect container.InspectResponse, name string) (string, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, "create-container:"+name)
 	f.mu.Unlock()
+	if f.cancelAfterCreate != nil {
+		f.cancelAfterCreate()
+	}
+	if f.createErr != nil {
+		if f.createCommitError {
+			id := f.createIDOnError
+			if id == "" {
+				id = "restored-id"
+			}
+			f.recordCreatedContainer(id, name, inspect)
+		}
+		return f.createIDOnError, f.createErr
+	}
+	f.recordCreatedContainer("restored-id", name, inspect)
 	return "restored-id", nil
+}
+
+func (f *fakeBackupDockerService) recordCreatedContainer(id, name string, inspect container.InspectResponse) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.inspects == nil {
+		f.inspects = make(map[string]container.InspectResponse)
+	}
+	inspect.ID = id
+	inspect.Name = "/" + name
+	f.inspects[id] = inspect
+	f.inspects[name] = inspect
 }
 
 func (f *fakeBackupDockerService) StartContainer(ctx context.Context, id string) error {
 	f.mu.Lock()
 	f.calls = append(f.calls, "start-container:"+id)
 	f.mu.Unlock()
-	return nil
+	if f.cancelAfterStart != nil {
+		f.cancelAfterStart()
+	}
+	if err := f.startErrors[id]; err != nil {
+		return err
+	}
+	return f.startErr
+}
+
+func (f *fakeBackupDockerService) WaitContainerReady(ctx context.Context, id string, requireHealthy bool) error {
+	f.mu.Lock()
+	f.calls = append(f.calls, fmt.Sprintf("wait-container:%s:healthy=%v", id, requireHealthy))
+	f.mu.Unlock()
+	return f.readyErr
 }
 
 func TestBackupContainerWritesBundle(t *testing.T) {
@@ -329,7 +434,7 @@ func TestBackupContainerWritesOfflineBundleArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Backup metadata", "Source platform", "Prerequisites", "Checksum verification", "`dm restore` verifies `checksums.txt` by default"} {
+	for _, want := range []string{"Backup metadata", "Source platform", "Prerequisites", "Checksum verification", "Signature verification", "`dm restore` verifies `checksums.txt` by default", "--confirm"} {
 		if !strings.Contains(string(readme), want) {
 			t.Fatalf("README = %q, want %q", string(readme), want)
 		}
@@ -338,7 +443,7 @@ func TestBackupContainerWritesOfflineBundleArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"dm version", "Docker daemon must be reachable", "checksums.txt"} {
+	for _, want := range []string{"dm version", "Docker daemon must be reachable", "checksums.txt", "without --confirm"} {
 		if !strings.Contains(string(restoreScript), want) {
 			t.Fatalf("restore.sh = %q, want %q", string(restoreScript), want)
 		}
@@ -613,11 +718,15 @@ func TestRestoreBackupRejectsExistingContainerWithoutReplace(t *testing.T) {
 		Config:     &container.Config{Image: "busybox:latest"},
 	})
 
-	fake := &fakeBackupDockerService{containerExists: true}
+	fake := &fakeBackupDockerService{
+		containerExists: true,
+		network:         network.Inspect{Network: network.Network{Name: "demo_net"}},
+		volume:          volume.Volume{Name: "demo_data"},
+	}
 	restoreFactory := replaceBackupServiceFactory(fake)
 	defer restoreFactory()
 
-	err := restoreBackup(context.Background(), dir, RestoreOptions{})
+	err := restoreBackup(context.Background(), dir, RestoreOptions{Confirm: true, SkipChecksum: true})
 	if err == nil {
 		t.Fatal("restoreBackup() error = nil, want existing container error")
 	}
@@ -679,7 +788,7 @@ func TestRestoreBackupSupportsTarGzArchive(t *testing.T) {
 	restoreFactory := replaceBackupServiceFactory(fake)
 	defer restoreFactory()
 
-	if err := restoreBackup(context.Background(), archive, RestoreOptions{NoStart: true}); err != nil {
+	if err := restoreBackup(context.Background(), archive, RestoreOptions{NoStart: true, Confirm: true, SkipChecksum: true}); err != nil {
 		t.Fatalf("restoreBackup() error = %v", err)
 	}
 	for _, want := range []string{"container-exists:demo", "create-container:demo"} {
@@ -718,7 +827,7 @@ func TestRestoreBackupSupportsEncryptedArchive(t *testing.T) {
 	fake := &fakeBackupDockerService{}
 	restoreFactory := replaceBackupServiceFactory(fake)
 	defer restoreFactory()
-	if err := restoreBackup(context.Background(), archive, RestoreOptions{NoStart: true, PassphraseFile: passFile}); err != nil {
+	if err := restoreBackup(context.Background(), archive, RestoreOptions{NoStart: true, Confirm: true, SkipChecksum: true, PassphraseFile: passFile}); err != nil {
 		t.Fatalf("restoreBackup() encrypted archive error = %v", err)
 	}
 	if !hasCall(fake.calls, "create-container:demo") {
@@ -754,7 +863,7 @@ func TestRestoreBackupSupportsSplitArchive(t *testing.T) {
 	fake := &fakeBackupDockerService{}
 	restoreFactory := replaceBackupServiceFactory(fake)
 	defer restoreFactory()
-	if err := restoreBackup(context.Background(), splitPartPath(archive, 1), RestoreOptions{NoStart: true}); err != nil {
+	if err := restoreBackup(context.Background(), splitPartPath(archive, 1), RestoreOptions{NoStart: true, Confirm: true, SkipChecksum: true}); err != nil {
 		t.Fatalf("restoreBackup() split archive error = %v", err)
 	}
 	if !hasCall(fake.calls, "create-container:demo") {
@@ -812,7 +921,7 @@ func TestRestoreBackupSupportsBatchManifest(t *testing.T) {
 	restoreFactory := replaceBackupServiceFactory(fake)
 	defer restoreFactory()
 
-	if err := restoreBackup(context.Background(), root, RestoreOptions{NoStart: true}); err != nil {
+	if err := restoreBackup(context.Background(), root, RestoreOptions{NoStart: true, Confirm: true}); err != nil {
 		t.Fatalf("restoreBackup() error = %v", err)
 	}
 	for _, want := range []string{
@@ -880,7 +989,7 @@ func TestRestoreBackupVerifiesChecksumsBeforeDockerActions(t *testing.T) {
 	if err := writeChecksums(dir); err != nil {
 		t.Fatalf("writeChecksums() error = %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, backupInspectName), []byte("{}\n "), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, backupInspectName), []byte("{\"Name\":\"/demo\",\"Config\":{\"Image\":\"busybox:latest\"},\"HostConfig\":{}}\n "), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -888,7 +997,7 @@ func TestRestoreBackupVerifiesChecksumsBeforeDockerActions(t *testing.T) {
 	restoreFactory := replaceBackupServiceFactory(fake)
 	defer restoreFactory()
 
-	err := restoreBackup(context.Background(), dir, RestoreOptions{NoStart: true})
+	err := restoreBackup(context.Background(), dir, RestoreOptions{NoStart: true, Confirm: true})
 	if err == nil {
 		t.Fatal("restoreBackup() error = nil, want checksum mismatch")
 	}
@@ -916,7 +1025,7 @@ func TestRestoreBackupCanSkipChecksumVerification(t *testing.T) {
 	if err := writeChecksums(dir); err != nil {
 		t.Fatalf("writeChecksums() error = %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, backupInspectName), []byte("{}\n "), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, backupInspectName), []byte("{\"Name\":\"/demo\",\"Config\":{\"Image\":\"busybox:latest\"},\"HostConfig\":{}}\n "), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -924,7 +1033,7 @@ func TestRestoreBackupCanSkipChecksumVerification(t *testing.T) {
 	restoreFactory := replaceBackupServiceFactory(fake)
 	defer restoreFactory()
 
-	if err := restoreBackup(context.Background(), dir, RestoreOptions{NoStart: true, SkipChecksum: true}); err != nil {
+	if err := restoreBackup(context.Background(), dir, RestoreOptions{NoStart: true, Confirm: true, SkipChecksum: true}); err != nil {
 		t.Fatalf("restoreBackup() error = %v", err)
 	}
 	if !hasCall(fake.calls, "container-exists:demo") || !hasCall(fake.calls, "create-container:demo") {
@@ -968,7 +1077,11 @@ func TestRestoreBackupDryRunPrintsPlanWithoutDockerMutations(t *testing.T) {
 		t.Fatalf("writeChecksums() error = %v", err)
 	}
 
-	fake := &fakeBackupDockerService{containerExists: true}
+	fake := &fakeBackupDockerService{
+		containerExists: true,
+		network:         network.Inspect{Network: network.Network{Name: "demo_net"}},
+		volume:          volume.Volume{Name: "demo_data"},
+	}
 	restoreFactory := replaceBackupServiceFactory(fake)
 	defer restoreFactory()
 
@@ -1027,7 +1140,7 @@ func TestBuildRestorePlanReportPreviewsDiffsWithoutMutations(t *testing.T) {
 
 	fake := &fakeBackupDockerService{
 		containerExists: true,
-		imageExists:     false,
+		imageMissing:    true,
 		containers:      []container.Summary{{ID: "existing-id", Names: []string{"/old-web"}}},
 		inspects: map[string]container.InspectResponse{
 			"existing-id": {
@@ -1151,12 +1264,16 @@ func TestRestoreBackupReplaceCreatesAndStartsContainer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fake := &fakeBackupDockerService{containerExists: true}
+	fake := &fakeBackupDockerService{
+		containerExists: true,
+		network:         network.Inspect{Network: network.Network{Name: "demo_net"}},
+		volume:          volume.Volume{Name: "demo_data"},
+	}
 	restoreFactory := replaceBackupServiceFactory(fake)
 	defer restoreFactory()
 
 	var out bytes.Buffer
-	if err := restoreBackup(context.Background(), dir, RestoreOptions{Replace: true, Output: &out}); err != nil {
+	if err := restoreBackup(context.Background(), dir, RestoreOptions{Replace: true, Confirm: true, SkipChecksum: true, Output: &out}); err != nil {
 		t.Fatalf("restoreBackup() error = %v", err)
 	}
 	if fake.loadOutput != &out {
@@ -1169,19 +1286,416 @@ func TestRestoreBackupReplaceCreatesAndStartsContainer(t *testing.T) {
 		"create-volume:demo_data",
 		"container-exists:demo",
 		"remove-container:demo",
-		"create-container:demo",
 		"start-container:restored-id",
+		"rename-container:restored-id:demo",
 	}
 	for _, want := range wantCalls {
 		if !hasCall(fake.calls, want) {
 			t.Fatalf("calls = %#v, want %s", fake.calls, want)
 		}
 	}
+	if !hasCallPrefix(fake.calls, "create-container:demo-dm-restore-candidate-") {
+		t.Fatalf("calls = %#v, want candidate container creation", fake.calls)
+	}
+}
+
+func TestRestoreCommandDefaultsToPlanWithoutConfirm(t *testing.T) {
+	dir := writeRestoreFixture(t, container.InspectResponse{
+		Name:       "/demo",
+		Config:     &container.Config{Image: "busybox:latest"},
+		HostConfig: &container.HostConfig{},
+	})
+	fake := &fakeBackupDockerService{}
+	restoreFactory := replaceBackupServiceFactory(fake)
+	defer restoreFactory()
+
+	cmd := NewRestoreCommand()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{dir, "--skip-checksum"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if hasCallPrefix(fake.calls, "create-container:") {
+		t.Fatalf("calls = %#v, default restore must not mutate Docker", fake.calls)
+	}
+	for _, want := range []string{"未提供 --confirm", "恢复 dry-run 计划"} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("output = %q, want %q", output.String(), want)
+		}
+	}
+}
+
+func TestRestoreBackupRejectsMutationWithoutConfirm(t *testing.T) {
+	dir := writeRestoreFixture(t, container.InspectResponse{
+		Name:       "/demo",
+		Config:     &container.Config{Image: "busybox:latest"},
+		HostConfig: &container.HostConfig{},
+	})
+	fake := &fakeBackupDockerService{}
+	restoreFactory := replaceBackupServiceFactory(fake)
+	defer restoreFactory()
+
+	err := restoreBackup(context.Background(), dir, RestoreOptions{NoStart: true, SkipChecksum: true})
+	if err == nil || !strings.Contains(err.Error(), "--confirm") {
+		t.Fatalf("restoreBackup() error = %v, want explicit confirmation error", err)
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("calls = %#v, unconfirmed restore must not access Docker", fake.calls)
+	}
+}
+
+func TestRestoreUnsafeHostConfigCanOnlyPreviewUnlessExplicitlyAllowed(t *testing.T) {
+	dir := writeRestoreFixture(t, container.InspectResponse{
+		Name:   "/dangerous",
+		Config: &container.Config{Image: "busybox:latest"},
+		HostConfig: &container.HostConfig{
+			Privileged:  true,
+			NetworkMode: "host",
+			PidMode:     "host",
+			Binds:       []string{"/etc:/host-etc:ro"},
+			CapAdd:      []string{"SYS_ADMIN"},
+			SecurityOpt: []string{"seccomp=unconfined"},
+			Resources: container.Resources{
+				Devices: []container.DeviceMapping{{PathOnHost: "/dev/kvm", PathInContainer: "/dev/kvm", CgroupPermissions: "rwm"}},
+			},
+		},
+	})
+	fake := &fakeBackupDockerService{}
+	restoreFactory := replaceBackupServiceFactory(fake)
+	defer restoreFactory()
+
+	var plan bytes.Buffer
+	if err := restoreBackup(context.Background(), dir, RestoreOptions{DryRun: true, SkipChecksum: true, Output: &plan}); err != nil {
+		t.Fatalf("dry-run error = %v", err)
+	}
+	for _, want := range []string{"privileged=true", "host network namespace", "host bind mount", "SYS_ADMIN", "seccomp=unconfined", "host device mappings", "默认阻止实际恢复"} {
+		if !strings.Contains(plan.String(), want) {
+			t.Fatalf("plan = %q, want %q", plan.String(), want)
+		}
+	}
+	if hasCallPrefix(fake.calls, "create-container:") {
+		t.Fatalf("calls = %#v, unsafe preview must not mutate Docker", fake.calls)
+	}
+
+	fake.calls = nil
+	err := restoreBackup(context.Background(), dir, RestoreOptions{Confirm: true, NoStart: true, SkipChecksum: true})
+	if err == nil || !strings.Contains(err.Error(), "unsafe restore configuration") {
+		t.Fatalf("restoreBackup() error = %v, want unsafe HostConfig rejection", err)
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("calls = %#v, unsafe restore must fail before Docker access", fake.calls)
+	}
+
+	if err := restoreBackup(context.Background(), dir, RestoreOptions{Confirm: true, AllowUnsafeHostConfig: true, NoStart: true, SkipChecksum: true}); err != nil {
+		t.Fatalf("explicitly allowed restore error = %v", err)
+	}
+	if !hasCall(fake.calls, "create-container:dangerous") {
+		t.Fatalf("calls = %#v, want explicitly allowed create", fake.calls)
+	}
+}
+
+func TestBackupSignatureAuthenticatesChecksumFile(t *testing.T) {
+	backupDir := writeRestoreFixture(t, container.InspectResponse{
+		Name:       "/signed",
+		Config:     &container.Config{Image: "busybox:latest"},
+		HostConfig: &container.HostConfig{},
+	})
+	if err := writeChecksums(backupDir); err != nil {
+		t.Fatal(err)
+	}
+	publicKey, privateKey, err := ed25519.GenerateKey(cryptorand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateDER, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicDER, err := x509.MarshalPKIXPublicKey(publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDir := t.TempDir()
+	privatePath := filepath.Join(keyDir, "signing.pem")
+	publicPath := filepath.Join(keyDir, "trusted.pem")
+	if err := os.WriteFile(privatePath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateDER}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(publicPath, pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicDER}), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := signBackupChecksumsWithContext(context.Background(), backupDir, privatePath); err != nil {
+		t.Fatalf("signBackupChecksumsWithContext() error = %v", err)
+	}
+	status, err := verifyBackupSignatureWithContext(context.Background(), backupDir, publicPath)
+	if err != nil || !strings.Contains(status, "已验证") {
+		t.Fatalf("verify status=%q error=%v", status, err)
+	}
+	insidePublicKey := filepath.Join(backupDir, "untrusted-public.pem")
+	publicPEM, err := os.ReadFile(publicPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(insidePublicKey, publicPEM, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := verifyBackupSignatureWithContext(context.Background(), backupDir, insidePublicKey); err == nil || !strings.Contains(err.Error(), "outside the backup root") {
+		t.Fatalf("verify with in-bundle trust anchor error = %v, want outside-root rejection", err)
+	}
+
+	checksumPath := filepath.Join(backupDir, backupChecksumName)
+	checksums, err := os.ReadFile(checksumPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(checksumPath, append(checksums, []byte("0  injected\n")...), 0644); err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeBackupDockerService{}
+	restoreFactory := replaceBackupServiceFactory(fake)
+	defer restoreFactory()
+	err = restoreBackup(context.Background(), backupDir, RestoreOptions{DryRun: true, TrustedPublicKey: publicPath})
+	if err == nil || !strings.Contains(err.Error(), "signature verification failed") {
+		t.Fatalf("restoreBackup() error = %v, want signature failure", err)
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("calls = %#v, invalid signature must fail before Docker access", fake.calls)
+	}
+}
+
+func TestBackupBundleSigningRejectsPrivateKeyInsideOutput(t *testing.T) {
+	fake := &fakeBackupDockerService{
+		inspect: container.InspectResponse{
+			Name:       "/demo",
+			Config:     &container.Config{Image: "busybox:latest"},
+			HostConfig: &container.HostConfig{},
+		},
+	}
+	restoreFactory := replaceBackupServiceFactory(fake)
+	defer restoreFactory()
+
+	outputDir := filepath.Join(t.TempDir(), "bundle")
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	_, privateKey, err := ed25519.GenerateKey(cryptorand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateDER, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privatePath := filepath.Join(outputDir, "do-not-archive.pem")
+	if err := os.WriteFile(privatePath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateDER}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	archivePath := filepath.Join(t.TempDir(), "bundle.tar.gz")
+	_, err = backupContainer(context.Background(), "demo", BackupOptions{
+		OutputDir:    outputDir,
+		Bundle:       true,
+		BundleOutput: archivePath,
+		SigningKey:   privatePath,
+	})
+	if err == nil || !strings.Contains(err.Error(), "outside the backup root") {
+		t.Fatalf("backupContainer() error = %v, want signing-key boundary error", err)
+	}
+	if _, err := os.Stat(filepath.Join(outputDir, backupChecksumName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("checksums should not be generated around an in-root private key: %v", err)
+	}
+	if _, err := os.Stat(archivePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("archive should not be generated around an in-root private key: %v", err)
+	}
+}
+
+func TestRestoreReplaceStagesOldContainerUntilNewContainerStarts(t *testing.T) {
+	dir := writeRestoreFixture(t, container.InspectResponse{
+		Name:       "/demo",
+		Config:     &container.Config{Image: "busybox:latest"},
+		HostConfig: &container.HostConfig{},
+	})
+	fake := runningExistingRestoreService("demo", "old-id")
+	restoreFactory := replaceBackupServiceFactory(fake)
+	defer restoreFactory()
+
+	if err := restoreBackup(context.Background(), dir, RestoreOptions{Confirm: true, Replace: true, SkipChecksum: true}); err != nil {
+		t.Fatalf("restoreBackup() error = %v", err)
+	}
+	requireCallOrder(t, fake.calls,
+		"container-exists:demo",
+		"inspect-container:demo",
+		"stop-container:old-id",
+		"rename-container:old-id:demo-dm-restore-rollback-",
+		"create-container:demo",
+		"start-container:restored-id",
+		"remove-container:old-id",
+	)
+}
+
+func TestRestoreReplaceNoStartDoesNotStartEitherContainer(t *testing.T) {
+	dir := writeRestoreFixture(t, container.InspectResponse{
+		Name:       "/demo",
+		Config:     &container.Config{Image: "busybox:latest"},
+		HostConfig: &container.HostConfig{},
+	})
+	fake := runningExistingRestoreService("demo", "old-id")
+	restoreFactory := replaceBackupServiceFactory(fake)
+	defer restoreFactory()
+
+	if err := restoreBackup(context.Background(), dir, RestoreOptions{Confirm: true, Replace: true, NoStart: true, SkipChecksum: true}); err != nil {
+		t.Fatalf("restoreBackup() error = %v", err)
+	}
+	if hasCallPrefix(fake.calls, "start-container:") {
+		t.Fatalf("calls = %#v, --no-start must not start the new or staged container after success", fake.calls)
+	}
+	requireCallOrder(t, fake.calls, "stop-container:old-id", "rename-container:old-id:", "create-container:demo", "remove-container:old-id")
+}
+
+func TestRestoreReplaceRollsBackCreateFailure(t *testing.T) {
+	dir := writeRestoreFixture(t, container.InspectResponse{
+		Name:       "/demo",
+		Config:     &container.Config{Image: "busybox:latest"},
+		HostConfig: &container.HostConfig{},
+	})
+	fake := runningExistingRestoreService("demo", "old-id")
+	fake.createErr = errors.New("create failed")
+	restoreFactory := replaceBackupServiceFactory(fake)
+	defer restoreFactory()
+
+	err := restoreBackup(context.Background(), dir, RestoreOptions{Confirm: true, Replace: true, SkipChecksum: true})
+	if err == nil || !strings.Contains(err.Error(), "create failed") {
+		t.Fatalf("restoreBackup() error = %v, want create failure", err)
+	}
+	requireCallOrder(t, fake.calls,
+		"stop-container:old-id",
+		"rename-container:old-id:demo-dm-restore-rollback-",
+		"create-container:demo",
+		"rename-container:old-id:demo",
+		"start-container:old-id",
+	)
+	if hasCallPrefix(fake.calls, "remove-container:old-id") {
+		t.Fatalf("calls = %#v, original container must not be removed on create failure", fake.calls)
+	}
+}
+
+func TestRestoreReplaceRollsBackStartFailure(t *testing.T) {
+	dir := writeRestoreFixture(t, container.InspectResponse{
+		Name:       "/demo",
+		Config:     &container.Config{Image: "busybox:latest"},
+		HostConfig: &container.HostConfig{},
+	})
+	fake := runningExistingRestoreService("demo", "old-id")
+	fake.startErrors = map[string]error{"restored-id": errors.New("start failed")}
+	restoreFactory := replaceBackupServiceFactory(fake)
+	defer restoreFactory()
+
+	err := restoreBackup(context.Background(), dir, RestoreOptions{Confirm: true, Replace: true, SkipChecksum: true})
+	if err == nil || !strings.Contains(err.Error(), "start failed") {
+		t.Fatalf("restoreBackup() error = %v, want start failure", err)
+	}
+	requireCallOrder(t, fake.calls,
+		"start-container:restored-id",
+		"remove-container:restored-id",
+		"rename-container:old-id:demo",
+		"start-container:old-id",
+	)
+}
+
+func TestRestoreReplaceRetainsHealthyNewContainerOnCleanupFailure(t *testing.T) {
+	dir := writeRestoreFixture(t, container.InspectResponse{
+		Name:       "/demo",
+		Config:     &container.Config{Image: "busybox:latest"},
+		HostConfig: &container.HostConfig{},
+	})
+	fake := runningExistingRestoreService("demo", "old-id")
+	fake.removeErrors = map[string]error{"old-id": errors.New("cleanup failed")}
+	restoreFactory := replaceBackupServiceFactory(fake)
+	defer restoreFactory()
+
+	err := restoreBackup(context.Background(), dir, RestoreOptions{Confirm: true, Replace: true, SkipChecksum: true})
+	if err == nil || !strings.Contains(err.Error(), "cleanup failed") {
+		t.Fatalf("restoreBackup() error = %v, want cleanup failure", err)
+	}
+	if !strings.Contains(err.Error(), "healthy new container was retained as demo") {
+		t.Fatalf("restoreBackup() error = %v, want retained-new-container guidance", err)
+	}
+	requireCallOrder(t, fake.calls, "rename-container:restored-id:demo", "remove-container:old-id", "inspect-container:old-id")
+	for _, forbidden := range []string{"remove-container:restored-id", "rename-container:old-id:demo", "start-container:old-id"} {
+		for _, call := range fake.calls {
+			if call == forbidden {
+				t.Fatalf("calls = %#v, cleanup uncertainty must retain the healthy new container", fake.calls)
+			}
+		}
+	}
+}
+
+func TestRestoreReplaceRollsBackCancellationAfterCreate(t *testing.T) {
+	dir := writeRestoreFixture(t, container.InspectResponse{
+		Name:       "/demo",
+		Config:     &container.Config{Image: "busybox:latest"},
+		HostConfig: &container.HostConfig{},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	fake := runningExistingRestoreService("demo", "old-id")
+	fake.cancelAfterCreate = cancel
+	restoreFactory := replaceBackupServiceFactory(fake)
+	defer restoreFactory()
+
+	err := restoreBackup(ctx, dir, RestoreOptions{Confirm: true, Replace: true, SkipChecksum: true})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("restoreBackup() error = %v, want context.Canceled", err)
+	}
+	requireCallOrder(t, fake.calls,
+		"create-container:demo",
+		"remove-container:restored-id",
+		"rename-container:old-id:demo",
+		"start-container:old-id",
+	)
 }
 
 func TestSafeExtractPathRejectsTraversal(t *testing.T) {
 	if _, err := safeExtractPath(t.TempDir(), "../evil"); err == nil {
 		t.Fatal("safeExtractPath() error = nil, want traversal error")
+	}
+}
+
+func writeRestoreFixture(t *testing.T, inspect container.InspectResponse) string {
+	t.Helper()
+	dir := t.TempDir()
+	name := normalizeContainerName(inspect.Name)
+	if name == "" {
+		name = "demo"
+	}
+	writeTestJSON(t, filepath.Join(dir, backupManifestName), BackupManifest{
+		Version:       1,
+		ContainerName: name,
+		InspectFile:   backupInspectName,
+	})
+	writeTestJSON(t, filepath.Join(dir, backupInspectName), inspect)
+	return dir
+}
+
+func runningExistingRestoreService(name, id string) *fakeBackupDockerService {
+	return &fakeBackupDockerService{
+		containerExists: true,
+		inspects: map[string]container.InspectResponse{
+			name: {ID: id, Name: "/" + name, State: &container.State{Running: true}},
+		},
+	}
+}
+
+func requireCallOrder(t *testing.T, calls []string, prefixes ...string) {
+	t.Helper()
+	next := 0
+	for _, call := range calls {
+		if next < len(prefixes) && strings.HasPrefix(call, prefixes[next]) {
+			next++
+		}
+	}
+	if next != len(prefixes) {
+		t.Fatalf("calls = %#v, did not contain ordered prefixes %#v (stopped at %q)", calls, prefixes, prefixes[next])
 	}
 }
 

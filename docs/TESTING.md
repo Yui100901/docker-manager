@@ -142,7 +142,11 @@ dm rerun dm_test_container --dry-run
 dm backup dm_test_container --dry-run
 dm backup dm_test_container --bundle --bundle-output "$DM_TEST_ROOT/container-backup.tar.gz"
 dm restore "$DM_TEST_ROOT/container-backup.tar.gz" --dry-run
+# 使用唯一目标名执行实际恢复，实际写操作必须显式确认
+dm restore "$DM_TEST_ROOT/container-backup.tar.gz" --name dm_test_restored --confirm
 ```
+
+`--signing-key`、`--passphrase-file` 和最终 bundle 路径必须放在备份输出目录外。测试 checksum 缺失兼容路径时必须显式使用 `--skip-checksum`，其他实际恢复测试不得跳过完整性校验。
 
 报告:
 
@@ -158,7 +162,7 @@ dm prune --filter "label=dmtest=true" --format markdown
 清理:
 
 ```bash
-docker rm -f dm_test_container dm_registry_test >/dev/null 2>&1 || true
+docker rm -f dm_test_container dm_test_restored dm_registry_test >/dev/null 2>&1 || true
 rm -rf "$DM_TEST_ROOT"
 unset HTTP_PROXY HTTPS_PROXY NO_PROXY
 ```

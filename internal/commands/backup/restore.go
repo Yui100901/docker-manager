@@ -19,46 +19,37 @@ func restoreBackup(ctx context.Context, backupDir string, opts RestoreOptions) e
 	if err := checkBackupContext(ctx); err != nil {
 		return err
 	}
+	if !opts.DryRun && !opts.Confirm {
+		return fmt.Errorf("实际恢复需要显式 --confirm；未确认时请使用 dry-run 计划")
+	}
+	if opts.TrustedPublicKey != "" && opts.SkipChecksum {
+		return fmt.Errorf("trusted public key verification requires checksum verification")
+	}
 	if opts.Output == nil {
 		opts.Output = io.Discard
 	}
-	resolvedDir, cleanup, err := resolveRestoreBackupDirWithOptions(ctx, backupDir, opts)
+	prepared, err := prepareRestoreBackup(ctx, backupDir, opts)
 	if err != nil {
 		return err
 	}
-	if cleanup != nil {
-		defer cleanup()
-	}
-	backupDir = resolvedDir
-
-	if !opts.SkipChecksum {
-		verified, err := verifyBackupChecksumsWithContext(ctx, backupDir)
-		if err != nil {
-			return fmt.Errorf("verify checksums: %w", err)
+	defer prepared.Close()
+	if !opts.DryRun {
+		if err := validatePreparedRestoreSet(ctx, []*preparedRestoreBackup{prepared}, opts); err != nil {
+			return err
 		}
-		if verified {
-			log.Printf("Checksum verification passed: %s", backupDir)
-		}
-	} else {
-		log.Printf("Skip checksum verification: %s", backupDir)
 	}
-
-	if err := checkBackupContext(ctx); err != nil {
-		return err
-	}
-	return restoreBackupDir(ctx, backupDir, opts)
+	return executePreparedRestore(ctx, prepared, opts)
 }
 
 func restoreBackupDir(ctx context.Context, backupDir string, opts RestoreOptions) error {
 	if err := checkBackupContext(ctx); err != nil {
 		return err
 	}
+	if !opts.DryRun && !opts.Confirm {
+		return fmt.Errorf("actual restore requires explicit confirmation")
+	}
 	if opts.Output == nil {
 		opts.Output = io.Discard
-	}
-	svc, err := newBackupDockerService()
-	if err != nil {
-		return err
 	}
 	manifest, err := readBackupManifest(backupDir)
 	if err != nil {
@@ -70,24 +61,51 @@ func restoreBackupDir(ctx context.Context, backupDir string, opts RestoreOptions
 	if opts.Name != "" && len(manifest.Containers) != 1 {
 		return fmt.Errorf("--name 只支持恢复单个备份")
 	}
-	if opts.DryRun {
-		fmt.Fprintf(opts.Output, "恢复 dry-run 计划: %s\n", backupDir)
-		fmt.Fprintf(opts.Output, "  容器数量: %d\n", len(manifest.Containers))
-		fmt.Fprintf(opts.Output, "  checksum: %s\n", checksumPlanText(opts.SkipChecksum, filepath.Join(backupDir, backupChecksumName)))
+	if err := validateRestoreManifestArtifacts(backupDir, manifest, opts); err != nil {
+		return err
 	}
-	for _, entry := range manifest.Containers {
+	svc, err := newBackupDockerService()
+	if err != nil {
+		return err
+	}
+	prepared := &preparedRestoreBackup{source: backupDir, dir: backupDir, manifest: manifest, svc: svc}
+	if !opts.DryRun {
+		prepared.targets, prepared.existingTargets, err = preflightRestoreDockerTargets(ctx, svc, backupDir, manifest, opts)
+		if err != nil {
+			return err
+		}
+		if err := validatePreparedRestoreSet(ctx, []*preparedRestoreBackup{prepared}, opts); err != nil {
+			return err
+		}
+	}
+	return executePreparedRestore(ctx, prepared, opts)
+}
+
+func executePreparedRestore(ctx context.Context, prepared *preparedRestoreBackup, opts RestoreOptions) error {
+	if err := checkBackupContext(ctx); err != nil {
+		return err
+	}
+	if opts.DryRun && prepared.signatureStatus != "" {
+		fmt.Fprintf(opts.Output, "恢复来源验证: %s\n", prepared.signatureStatus)
+	}
+	if opts.DryRun {
+		fmt.Fprintf(opts.Output, "恢复 dry-run 计划: %s\n", prepared.source)
+		fmt.Fprintf(opts.Output, "  容器数量: %d\n", len(prepared.manifest.Containers))
+		fmt.Fprintf(opts.Output, "  checksum: %s\n", checksumPlanText(opts.SkipChecksum, filepath.Join(prepared.dir, backupChecksumName)))
+	}
+	for _, entry := range prepared.manifest.Containers {
 		if err := checkBackupContext(ctx); err != nil {
 			return err
 		}
-		if err := restoreBackupContainerEntry(ctx, svc, backupDir, entry, opts); err != nil {
+		if err := restoreBackupContainerEntry(ctx, prepared.svc, prepared.dir, entry, prepared.existingTargets, opts); err != nil {
 			return err
 		}
 	}
-	log.Printf("Restore summary: containers=%d source=%s", len(manifest.Containers), backupDir)
+	log.Printf("Restore summary: containers=%d source=%s", len(prepared.manifest.Containers), prepared.source)
 	return nil
 }
 
-func restoreBackupContainerEntry(ctx context.Context, svc backupDockerService, backupDir string, entry BackupContainerManifest, opts RestoreOptions) error {
+func restoreBackupContainerEntry(ctx context.Context, svc backupDockerService, backupDir string, entry BackupContainerManifest, expectedTargets map[string]string, opts RestoreOptions) error {
 	if err := checkBackupContext(ctx); err != nil {
 		return err
 	}
@@ -106,15 +124,16 @@ func restoreBackupContainerEntry(ctx context.Context, svc backupDockerService, b
 	if err := checkBackupContext(ctx); err != nil {
 		return err
 	}
-	targetName := opts.Name
-	if targetName == "" {
-		targetName = entry.ContainerName
+	targetName, err := restoreEntryTargetName(entry, inspect, opts)
+	if err != nil {
+		return err
 	}
-	if targetName == "" {
-		targetName = normalizeContainerName(inspect.Name)
+	unsafeConfig, err := unsafeRestoreEntryConfig(entryDir, entry, inspect)
+	if err != nil {
+		return err
 	}
-	if targetName == "" {
-		return fmt.Errorf("backup does not contain a container name; use --name")
+	if !opts.DryRun && len(unsafeConfig) > 0 && !opts.AllowUnsafeHostConfig {
+		return fmt.Errorf("container %s contains unsafe restore configuration: %s; inspect the dry-run plan and use --allow-dangerous-config only for a trusted backup", targetName, strings.Join(unsafeConfig, "; "))
 	}
 
 	exists, err := svc.ContainerExists(ctx, targetName)
@@ -127,6 +146,23 @@ func restoreBackupContainerEntry(ctx context.Context, svc backupDockerService, b
 	if exists && !opts.Replace {
 		if !opts.DryRun {
 			return fmt.Errorf("container %s already exists; use --replace to overwrite", targetName)
+		}
+	}
+	if expectedID, tracked := expectedTargets[targetName]; tracked {
+		if expectedID == "" && exists {
+			return fmt.Errorf("container %s appeared after restore preflight; refusing to replace an unreviewed target", targetName)
+		}
+		if expectedID != "" && !exists {
+			return fmt.Errorf("container %s disappeared after restore preflight", targetName)
+		}
+		if exists {
+			actual, err := svc.InspectContainer(ctx, targetName)
+			if err != nil {
+				return fmt.Errorf("reinspect container %s after restore preflight: %w", targetName, err)
+			}
+			if actualID := restoreContainerIdentity(actual, targetName); actualID != expectedID {
+				return fmt.Errorf("container %s changed after restore preflight: expected %s, found %s", targetName, expectedID, actualID)
+			}
 		}
 	}
 
@@ -150,6 +186,14 @@ func restoreBackupContainerEntry(ctx context.Context, svc backupDockerService, b
 		}
 		if err := svc.LoadImage(ctx, imagePath, opts.Output); err != nil {
 			return fmt.Errorf("load image archive %s: %w", imagePath, err)
+		}
+		imageRef := inspect.Config.Image
+		imageExists, err := svc.ImageExists(ctx, imageRef)
+		if err != nil {
+			return fmt.Errorf("verify loaded image %s: %w", imageRef, err)
+		}
+		if !imageExists {
+			return fmt.Errorf("image archive %s did not load required image %s", imagePath, imageRef)
 		}
 	}
 
@@ -179,28 +223,9 @@ func restoreBackupContainerEntry(ctx context.Context, svc backupDockerService, b
 		}
 	}
 
-	// Destructive replacement is intentionally delayed until all restorable
-	// artifacts have been read and Docker-side prerequisites have succeeded.
-	if exists {
-		if err := checkBackupContext(ctx); err != nil {
-			return err
-		}
-		if err := svc.RemoveContainer(ctx, targetName); err != nil {
-			return fmt.Errorf("remove existing container %s: %w", targetName, err)
-		}
-	}
-
-	id, err := svc.CreateContainer(ctx, inspect, targetName)
+	id, err := createRestoredContainer(ctx, svc, inspect, targetName, exists, expectedTargets[targetName], opts)
 	if err != nil {
-		return fmt.Errorf("create container %s: %w", targetName, err)
-	}
-	if err := checkBackupContext(ctx); err != nil {
 		return err
-	}
-	if !opts.NoStart {
-		if err := svc.StartContainer(ctx, id); err != nil {
-			return fmt.Errorf("start container %s: %w", targetName, err)
-		}
 	}
 	log.Printf("Restore container summary: container=%s id=%s started=%v", targetName, id, !opts.NoStart)
 	return nil
@@ -219,6 +244,11 @@ func buildRestoreDryRunPlan(entryDir string, entry BackupContainerManifest, insp
 		Replace:       opts.Replace,
 		NoStart:       opts.NoStart,
 	}
+	unsafeConfig, err := unsafeRestoreEntryConfig(entryDir, entry, inspect)
+	if err != nil {
+		return plan, err
+	}
+	plan.UnsafeConfig = unsafeConfig
 	if plan.Image == "" && inspect.Config != nil {
 		plan.Image = inspect.Config.Image
 	}
@@ -244,6 +274,9 @@ func buildRestoreDryRunPlan(entryDir string, entry BackupContainerManifest, insp
 	}
 	if exists && !opts.Replace {
 		plan.Conflicts = append(plan.Conflicts, fmt.Sprintf("目标容器 %s 已存在；实际恢复需要 --replace 或更换 --name", targetName))
+	}
+	if len(plan.UnsafeConfig) > 0 {
+		plan.Conflicts = append(plan.Conflicts, "检测到高风险恢复配置；实际恢复默认阻止，只有确认来源后才可同时使用 --confirm 和 --allow-dangerous-config")
 	}
 	if len(plan.Ports) > 0 {
 		plan.Conflicts = append(plan.Conflicts, "请确认目标宿主机端口未被占用: "+strings.Join(plan.Ports, ", "))
@@ -274,11 +307,17 @@ func printRestoreDryRunContainerPlan(w io.Writer, plan restoreDryRunPlan) {
 	}
 	switch {
 	case plan.Exists && plan.Replace:
-		fmt.Fprintln(w, "    目标状态: 已存在，实际恢复会先删除后重建")
+		fmt.Fprintln(w, "    目标状态: 已存在，将临时改名保留；新容器创建并启动成功后才删除旧容器")
 	case plan.Exists:
 		fmt.Fprintln(w, "    目标状态: 已存在，存在覆盖冲突")
 	default:
 		fmt.Fprintln(w, "    目标状态: 不存在，将创建")
+	}
+	if len(plan.UnsafeConfig) > 0 {
+		fmt.Fprintln(w, "    高风险恢复配置（默认阻止实际恢复）:")
+		for _, risk := range plan.UnsafeConfig {
+			fmt.Fprintf(w, "      - %s\n", risk)
+		}
 	}
 	if plan.NoStart {
 		fmt.Fprintln(w, "    启动策略: 只创建，不启动")

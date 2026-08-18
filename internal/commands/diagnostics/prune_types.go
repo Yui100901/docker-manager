@@ -2,12 +2,12 @@ package diagnostics
 
 import (
 	"docker-manager/internal/commandflags"
+	"time"
 
 	"github.com/moby/moby/api/types/build"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/image"
 	"github.com/moby/moby/api/types/volume"
-	mobyclient "github.com/moby/moby/client"
 )
 
 type PruneReportOptions struct {
@@ -16,6 +16,7 @@ type PruneReportOptions struct {
 	Only          []string
 	Filters       []string
 	Until         string
+	UntilValues   []string
 	ProtectLabels []string
 	commandflags.FormatOptions
 }
@@ -39,6 +40,9 @@ type PruneScope struct {
 	Filters       []string `json:"filters,omitempty"`
 	Until         string   `json:"until,omitempty"`
 	ProtectLabels []string `json:"protect_labels,omitempty"`
+
+	untilCutoff    time.Time
+	hasUntilCutoff bool
 }
 
 type pruneDiskUsage struct {
@@ -68,6 +72,8 @@ type PruneVolumeRef struct {
 	Driver   string `json:"driver,omitempty"`
 	Size     int64  `json:"size,omitempty"`
 	RefCount int64  `json:"ref_count"`
+
+	snapshot *pruneVolumeSnapshot
 }
 
 type PruneBuildCacheRef struct {
@@ -75,24 +81,36 @@ type PruneBuildCacheRef struct {
 	Type        string `json:"type,omitempty"`
 	Description string `json:"description,omitempty"`
 	Size        int64  `json:"size,omitempty"`
+
+	snapshot *pruneBuildCacheSnapshot
 }
 
 type PruneApplyResult struct {
-	ContainersDeleted  []string `json:"containers_deleted,omitempty"`
-	ImagesDeleted      []string `json:"images_deleted,omitempty"`
-	VolumesDeleted     []string `json:"volumes_deleted,omitempty"`
-	BuildCachesDeleted []string `json:"build_caches_deleted,omitempty"`
-	SpaceReclaimed     uint64   `json:"space_reclaimed"`
+	ContainersDeleted  []string                   `json:"containers_deleted,omitempty"`
+	ImagesDeleted      []string                   `json:"images_deleted,omitempty"`
+	VolumesDeleted     []string                   `json:"volumes_deleted,omitempty"`
+	BuildCachesDeleted []string                   `json:"build_caches_deleted,omitempty"`
+	Failures           []PruneApplyFailure        `json:"failures,omitempty"`
+	UnknownOutcomes    []PruneApplyUnknownOutcome `json:"unknown_outcomes,omitempty"`
+	// SpaceReclaimed contains only bytes confirmed by Docker (currently build cache).
+	SpaceReclaimed uint64 `json:"space_reclaimed"`
+	// EstimatedBytesReclaimed sums snapshot sizes for every successful candidate.
+	EstimatedBytesReclaimed uint64 `json:"estimated_bytes_reclaimed"`
+}
+
+type PruneApplyFailure struct {
+	Kind  string `json:"kind"`
+	ID    string `json:"id"`
+	Error string `json:"error"`
+}
+
+type PruneApplyUnknownOutcome struct {
+	Kind   string `json:"kind"`
+	ID     string `json:"id"`
+	Reason string `json:"reason"`
 }
 
 type pruneFilter struct {
 	Key   string
 	Value string
-}
-
-type pruneDockerFilters struct {
-	Containers  mobyclient.Filters
-	Images      mobyclient.Filters
-	Volumes     mobyclient.Filters
-	BuildCaches mobyclient.Filters
 }

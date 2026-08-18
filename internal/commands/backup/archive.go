@@ -6,12 +6,15 @@ import (
 	"context"
 	"docker-manager/internal/resourcefilter"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/api/types/volume"
 	"io"
+	"io/fs"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -29,19 +32,18 @@ func createBackupArchiveWithOptions(ctx context.Context, sourceDir, archivePath 
 	if err := checkBackupContext(ctx); err != nil {
 		return err
 	}
+	if err := requireBackupPathOutsideRoot(sourceDir, archivePath, "bundle output"); err != nil {
+		return err
+	}
 	archiveAbs, _ := filepath.Abs(archivePath)
 	file, err := openBackupArchiveWriter(ctx, archivePath, opts)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
-
 	gz := gzip.NewWriter(file)
-	defer gz.Close()
 	tw := tar.NewWriter(gz)
-	defer tw.Close()
 
-	return filepath.WalkDir(sourceDir, func(path string, entry os.DirEntry, walkErr error) error {
+	walkErr := filepath.WalkDir(sourceDir, func(path string, entry os.DirEntry, walkErr error) error {
 		if err := checkBackupContext(ctx); err != nil {
 			return err
 		}
@@ -81,9 +83,15 @@ func createBackupArchiveWithOptions(ctx context.Context, sourceDir, archivePath 
 		if err != nil {
 			return err
 		}
-		defer in.Close()
-		return backupCopyWithContext(ctx, tw, in)
+		copyErr := backupCopyWithContext(ctx, tw, in)
+		closeErr := in.Close()
+		return errors.Join(copyErr, closeErr)
 	})
+	closeErr := errors.Join(tw.Close(), gz.Close(), file.Close())
+	if err := errors.Join(walkErr, closeErr); err != nil {
+		return errors.Join(err, file.Abort())
+	}
+	return nil
 }
 
 func resolveRestoreBackupDir(path string) (string, func(), error) {
@@ -99,6 +107,14 @@ func resolveRestoreBackupDirWithOptions(ctx context.Context, path string, opts R
 		return "", nil, err
 	}
 	if !isBackupArchive(path) && !isBackupArchivePart(path) && !isEncryptedBackupArchive(path) {
+		if opts.TrustedPublicKey != "" {
+			if err := requireBackupKeyOutsideRoot(path, opts.TrustedPublicKey, "trusted public key"); err != nil {
+				return "", nil, err
+			}
+		}
+		if opts.Confirm && !opts.DryRun {
+			return snapshotRestoreBackupDir(ctx, path)
+		}
 		return path, nil, nil
 	}
 	tempDir, err := os.MkdirTemp("", "dm-restore-*")
@@ -106,9 +122,19 @@ func resolveRestoreBackupDirWithOptions(ctx context.Context, path string, opts R
 		return "", nil, err
 	}
 	cleanup := func() { _ = os.RemoveAll(tempDir) }
+	workDir := filepath.Join(tempDir, "work")
+	extractDir := filepath.Join(tempDir, "extract")
+	if err := os.Mkdir(workDir, 0700); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	if err := os.Mkdir(extractDir, 0700); err != nil {
+		cleanup()
+		return "", nil, err
+	}
 	archivePath := path
 	if isBackupArchivePart(path) {
-		joined := filepath.Join(tempDir, strings.TrimSuffix(filepath.Base(path), ".part-001"))
+		joined := filepath.Join(workDir, strings.TrimSuffix(filepath.Base(path), ".part-001"))
 		if err := joinBackupArchivePartsWithContext(ctx, path, joined); err != nil {
 			cleanup()
 			return "", nil, err
@@ -116,18 +142,18 @@ func resolveRestoreBackupDirWithOptions(ctx context.Context, path string, opts R
 		archivePath = joined
 	}
 	if isEncryptedBackupArchive(archivePath) {
-		decrypted := filepath.Join(tempDir, strings.TrimSuffix(filepath.Base(archivePath), ".enc"))
+		decrypted := filepath.Join(workDir, strings.TrimSuffix(filepath.Base(archivePath), ".enc"))
 		if err := decryptBackupArchiveWithContext(ctx, archivePath, decrypted, opts.PassphraseFile); err != nil {
 			cleanup()
 			return "", nil, err
 		}
 		archivePath = decrypted
 	}
-	if err := extractBackupArchiveWithContext(ctx, archivePath, tempDir); err != nil {
+	if err := extractBackupArchiveWithContext(ctx, archivePath, extractDir); err != nil {
 		cleanup()
 		return "", nil, err
 	}
-	root, err := findExtractedBackupRoot(tempDir)
+	root, err := findExtractedBackupRoot(extractDir)
 	if err != nil {
 		cleanup()
 		return "", nil, err
@@ -207,9 +233,9 @@ func extractBackupArchiveWithContext(ctx context.Context, archivePath, destDir s
 }
 
 func safeExtractPath(root, name string) (string, error) {
-	clean := filepath.Clean(filepath.FromSlash(name))
-	if clean == "." || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) {
-		return "", fmt.Errorf("invalid archive path %q", name)
+	clean, err := canonicalBackupRelativePath(name)
+	if err != nil {
+		return "", fmt.Errorf("invalid archive path %q: %w", name, err)
 	}
 	return filepath.Join(root, clean), nil
 }
@@ -316,11 +342,25 @@ func readVolumeInspect(backupDir string, ref BackupResourceRef) (volume.Volume, 
 }
 
 func backupFilePath(backupDir, rel string) (string, error) {
-	clean := filepath.Clean(filepath.FromSlash(rel))
-	if clean == "." || filepath.IsAbs(clean) || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) || clean == ".." {
-		return "", fmt.Errorf("invalid backup file path %q", rel)
+	clean, err := canonicalBackupRelativePath(rel)
+	if err != nil {
+		return "", fmt.Errorf("invalid backup file path %q: %w", rel, err)
 	}
 	return filepath.Join(backupDir, clean), nil
+}
+
+func canonicalBackupRelativePath(name string) (string, error) {
+	if name == "" || strings.Contains(name, `\`) || strings.Contains(name, ":") {
+		return "", fmt.Errorf("path must use portable forward-slash components")
+	}
+	if !fs.ValidPath(name) || pathpkg.Clean(name) != name {
+		return "", fmt.Errorf("path is not canonical")
+	}
+	local := filepath.FromSlash(name)
+	if filepath.VolumeName(local) != "" || !filepath.IsLocal(local) {
+		return "", fmt.Errorf("path is not local")
+	}
+	return local, nil
 }
 
 func readJSON(path string, value interface{}) error {

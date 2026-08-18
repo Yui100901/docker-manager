@@ -12,13 +12,14 @@ import (
 )
 
 const (
-	backupManifestName = "manifest.json"
-	backupInspectName  = "container.inspect.json"
-	backupComposeName  = "docker-compose.yml"
-	backupReadmeName   = "README.md"
-	backupRestoreName  = "restore.sh"
-	backupChecksumName = "checksums.txt"
-	backupRoot         = "docker-backups"
+	backupManifestName  = "manifest.json"
+	backupInspectName   = "container.inspect.json"
+	backupComposeName   = "docker-compose.yml"
+	backupReadmeName    = "README.md"
+	backupRestoreName   = "restore.sh"
+	backupChecksumName  = "checksums.txt"
+	backupSignatureName = "checksums.txt.sig"
+	backupRoot          = "docker-backups"
 )
 
 type backupDockerService interface {
@@ -33,8 +34,11 @@ type backupDockerService interface {
 	CreateVolume(ctx context.Context, vol volume.Volume) error
 	ContainerExists(ctx context.Context, name string) (bool, error)
 	RemoveContainer(ctx context.Context, name string) error
+	StopContainer(ctx context.Context, id string) error
+	RenameContainer(ctx context.Context, id, name string) error
 	CreateContainer(ctx context.Context, inspect container.InspectResponse, name string) (string, error)
 	StartContainer(ctx context.Context, id string) error
+	WaitContainerReady(ctx context.Context, id string, requireHealthy bool) error
 }
 
 var newBackupDockerService = func() (backupDockerService, error) {
@@ -59,18 +63,22 @@ type BackupOptions struct {
 	PassphraseFile string
 	SplitSize      string
 	Merge          bool
+	SigningKey     string
 	Output         io.Writer
 }
 
 type RestoreOptions struct {
-	Name           string
-	Replace        bool
-	NoStart        bool
-	DryRun         bool
-	Format         string
-	PassphraseFile string
-	SkipChecksum   bool
-	Output         io.Writer
+	Name                  string
+	Replace               bool
+	NoStart               bool
+	DryRun                bool
+	Confirm               bool
+	AllowUnsafeHostConfig bool
+	Format                string
+	PassphraseFile        string
+	SkipChecksum          bool
+	TrustedPublicKey      string
+	Output                io.Writer
 }
 
 // BackupManifest keeps the current batch-friendly containers list while still
@@ -150,12 +158,14 @@ type restoreDryRunPlan struct {
 	Replace       bool
 	NoStart       bool
 	Conflicts     []string
+	UnsafeConfig  []string
 }
 
 type RestorePlanReport struct {
 	Source         string                 `json:"source"`
 	DockerEndpoint string                 `json:"docker_endpoint"`
 	Checksum       string                 `json:"checksum"`
+	Signature      string                 `json:"signature"`
 	ContainerCount int                    `json:"container_count"`
 	Options        RestorePlanOptions     `json:"options"`
 	Containers     []RestoreContainerPlan `json:"containers"`
@@ -164,9 +174,10 @@ type RestorePlanReport struct {
 }
 
 type RestorePlanOptions struct {
-	Replace bool   `json:"replace"`
-	NoStart bool   `json:"no_start"`
-	Name    string `json:"name,omitempty"`
+	Replace              bool   `json:"replace"`
+	NoStart              bool   `json:"no_start"`
+	Name                 string `json:"name,omitempty"`
+	AllowDangerousConfig bool   `json:"allow_dangerous_config"`
 }
 
 type RestorePlanSummary struct {
@@ -183,6 +194,7 @@ type RestorePlanSummary struct {
 	ContainerConflicts  int `json:"container_conflicts"`
 	PortConflicts       int `json:"port_conflicts"`
 	Warnings            int `json:"warnings"`
+	UnsafeContainers    int `json:"unsafe_containers"`
 }
 
 type RestoreContainerPlan struct {
@@ -197,6 +209,7 @@ type RestoreContainerPlan struct {
 	Container     RestoreTargetPlan     `json:"container"`
 	Actions       []string              `json:"actions,omitempty"`
 	Warnings      []string              `json:"warnings,omitempty"`
+	UnsafeConfig  []string              `json:"unsafe_config,omitempty"`
 }
 
 type RestoreImagePlan struct {

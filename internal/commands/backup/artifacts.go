@@ -145,6 +145,7 @@ func writeBackupReadme(path string, manifest BackupManifest) error {
 		sb.WriteString("- `containers/`: per-container backup directories\n")
 	}
 	sb.WriteString("- `checksums.txt`: SHA256 checksums\n")
+	sb.WriteString("- `checksums.txt.sig`: optional Ed25519 signature created with `dm backup --signing-key`\n")
 	sb.WriteString("- `restore.sh`: helper restore script\n\n")
 	sb.WriteString("## Prerequisites\n\n")
 	sb.WriteString("- Install `dm` on the target host and make sure it is available in `PATH`.\n")
@@ -152,10 +153,14 @@ func writeBackupReadme(path string, manifest BackupManifest) error {
 	sb.WriteString("- Review container names, ports, bind mounts, named volumes and custom networks before using `--replace`.\n")
 	sb.WriteString("- If this backup contains bind mounts, the target host must already have compatible host paths and permissions.\n\n")
 	sb.WriteString("## Checksum verification\n\n")
-	sb.WriteString("`dm restore` verifies `checksums.txt` by default before it touches Docker. If verification fails, restore stops before loading images or creating resources. Use `--skip-checksum` only after manually confirming the package integrity.\n\n")
+	sb.WriteString("`dm restore` verifies `checksums.txt` by default before it touches Docker. If verification fails, restore stops before loading images or creating resources. A checksum alone does not authenticate the backup source. Use `--skip-checksum` only after manually confirming the package integrity.\n\n")
+	sb.WriteString("## Signature verification\n\n")
+	sb.WriteString("For a signed bundle, keep the trusted public key outside the backup and use `--trusted-public-key <public.pem>`. The Ed25519 signature authenticates the exact checksum file, and the checksums authenticate the bundle files.\n\n")
 	sb.WriteString("## Restore\n\n")
 	sb.WriteString("```bash\n")
-	sb.WriteString("dm restore .\n")
+	sb.WriteString("dm restore . # plan only; does not modify Docker\n")
+	sb.WriteString("dm restore . --confirm\n")
+	sb.WriteString("dm restore . --trusted-public-key /secure/trusted-public.pem --confirm\n")
 	sb.WriteString("# or restore directly from the archive:\n")
 	sb.WriteString("dm restore <backup>.tar.gz\n")
 	sb.WriteString("```\n\n")
@@ -189,10 +194,14 @@ echo "docker-manager restore helper"
 dm version || true
 echo "Backup directory: $DIR"
 echo "Prerequisite: Docker daemon must be reachable and the current user must be allowed to manage Docker resources."
-if [ -f "$DIR/checksums.txt" ]; then
-  echo "Checksum: dm restore will verify checksums.txt by default. Use --skip-checksum only after manual verification."
-else
-  echo "Checksum: checksums.txt not found; dm restore will skip checksum verification."
+echo "Safety: without --confirm this helper only prints a restore plan."
+	if [ -f "$DIR/checksums.txt" ]; then
+	  echo "Checksum: dm restore will verify checksums.txt by default. Use --skip-checksum only after manual verification."
+	else
+	  echo "Checksum: checksums.txt not found; planning is allowed, but --confirm will fail unless --skip-checksum is explicitly supplied."
+fi
+if [ -f "$DIR/checksums.txt.sig" ]; then
+  echo "Signature: pass --trusted-public-key with a public key stored outside this backup to authenticate its source."
 fi
 
 dm restore "$DIR" "$@"
@@ -235,5 +244,5 @@ func checksumPlanText(skip bool, checksumPath string) string {
 	if _, err := os.Stat(checksumPath); err == nil {
 		return "已校验 checksums.txt"
 	}
-	return "未找到 checksums.txt，将跳过校验"
+	return "未找到 checksums.txt；计划可生成，实际恢复默认拒绝"
 }

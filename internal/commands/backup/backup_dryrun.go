@@ -37,6 +37,9 @@ func printBackupDryRunPlan(w io.Writer, outputDir string, manifest BackupManifes
 			fmt.Fprintf(w, "  分卷大小: %s\n", opts.SplitSize)
 		}
 		fmt.Fprintf(w, "  将生成附加文件: %s, %s, %s\n", backupReadmeName, backupRestoreName, backupChecksumName)
+		if opts.SigningKey != "" {
+			fmt.Fprintf(w, "  签名: %s（Ed25519 私钥不会写入备份）\n", backupSignatureName)
+		}
 	}
 	for _, entry := range manifest.Containers {
 		location := outputDir

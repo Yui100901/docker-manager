@@ -484,7 +484,7 @@ run_cancel_mode() {
 
   run_cancel_case "cancel pull" "${DM_BIN}" image pull "${fake_registry}/busybox:latest" --plain-http --timeout 5m --output-dir "${WORK_DIR}/cancel-pull"
   run_cancel_case "cancel backup bundle" "${DM_BIN}" --docker-host "${fake_docker}" backup "dm_cancel" --bundle --output-dir "${WORK_DIR}/cancel-backup" --bundle-output "${WORK_DIR}/cancel-backup.tar.gz"
-  run_cancel_case "cancel restore no-start" "${DM_BIN}" --docker-host "${fake_docker}" restore "${restore_fixture}" --skip-checksum --no-start
+  run_cancel_case "cancel restore no-start" "${DM_BIN}" --docker-host "${fake_docker}" restore "${restore_fixture}" --skip-checksum --no-start --confirm
   run_cancel_case "cancel logs report" "${DM_BIN}" --docker-host "${fake_docker}" report logs --filter "name:dm_cancel" --keyword dm-test --tail 100
   run_cancel_case "cancel prune dry-run" "${DM_BIN}" --docker-host "${fake_docker}" report prune --only container --format json
   run_cancel_case "cancel reverse" "${DM_BIN}" --docker-host "${fake_docker}" reverse --filter "name:dm_cancel"
@@ -622,10 +622,10 @@ run_case "backup batch merge bundle" "${DM_BIN}" backup "${CONTAINER_NAME}" "${S
 test -f "${MERGED_BACKUP_ARCHIVE}"
 
 run_case "restore dry-run archive" "${DM_BIN}" restore "${BACKUP_ARCHIVE}" --name "${RESTORED_NAME}" --no-start --dry-run
-run_case "restore no-start archive" "${DM_BIN}" restore "${BACKUP_ARCHIVE}" --name "${RESTORED_NAME}" --no-start
+run_case "restore no-start archive" "${DM_BIN}" restore "${BACKUP_ARCHIVE}" --name "${RESTORED_NAME}" --no-start --confirm
 docker inspect "${RESTORED_NAME}" >/dev/null
-run_expect_fail "restore existing without replace rejected" "${DM_BIN}" restore "${BACKUP_ARCHIVE}" --name "${RESTORED_NAME}" --no-start
-run_case "restore replace archive" "${DM_BIN}" restore "${BACKUP_ARCHIVE}" --name "${RESTORED_NAME}" --replace --no-start
+run_expect_fail "restore existing without replace rejected" "${DM_BIN}" restore "${BACKUP_ARCHIVE}" --name "${RESTORED_NAME}" --no-start --confirm
+run_case "restore replace archive" "${DM_BIN}" restore "${BACKUP_ARCHIVE}" --name "${RESTORED_NAME}" --replace --no-start --confirm
 run_case "restore merged dry-run" "${DM_BIN}" restore "${MERGED_BACKUP_ARCHIVE}" --dry-run --no-start
 
 run_case "report health text" "${DM_BIN}" report health --filter "label:${LABEL}"

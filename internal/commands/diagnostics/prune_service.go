@@ -2,6 +2,8 @@ package diagnostics
 
 import (
 	"context"
+	"regexp"
+	"time"
 
 	"docker-manager/internal/docker"
 
@@ -16,10 +18,12 @@ type pruneDockerService interface {
 	DiskUsage(ctx context.Context, opts mobyclient.DiskUsageOptions) (pruneDiskUsage, error)
 	ListContainers(ctx context.Context, all bool) ([]container.Summary, error)
 	InspectContainer(ctx context.Context, id string) (container.InspectResponse, error)
-	PruneContainers(ctx context.Context, pruneFilters mobyclient.Filters) (container.PruneReport, error)
-	PruneImages(ctx context.Context, pruneFilters mobyclient.Filters) (image.PruneReport, error)
-	PruneVolumes(ctx context.Context, pruneFilters mobyclient.Filters) (volume.PruneReport, error)
-	PruneBuildCache(ctx context.Context, pruneFilters mobyclient.Filters) (*build.CachePruneReport, error)
+	InspectImage(ctx context.Context, id string) (image.InspectResponse, error)
+	InspectVolume(ctx context.Context, name string) (volume.Volume, error)
+	RemoveContainer(ctx context.Context, id string) error
+	RemoveImage(ctx context.Context, id string) error
+	RemoveVolume(ctx context.Context, name string) error
+	RemoveBuildCache(ctx context.Context, id string, untilCutoff time.Time, hasUntilCutoff bool) (*build.CachePruneReport, error)
 }
 
 var newPruneDockerService = func() (pruneDockerService, error) {
@@ -64,36 +68,64 @@ func (s *dockerPruneService) InspectContainer(ctx context.Context, id string) (c
 	return result.Container, nil
 }
 
-func (s *dockerPruneService) PruneContainers(ctx context.Context, pruneFilters mobyclient.Filters) (container.PruneReport, error) {
-	result, err := s.cli.ContainerPrune(ctx, mobyclient.ContainerPruneOptions{Filters: pruneFilters})
+func (s *dockerPruneService) InspectImage(ctx context.Context, id string) (image.InspectResponse, error) {
+	result, err := s.cli.ImageInspect(ctx, id)
 	if err != nil {
-		return container.PruneReport{}, err
+		return image.InspectResponse{}, err
 	}
-	return result.Report, nil
+	return result.InspectResponse, nil
 }
 
-func (s *dockerPruneService) PruneImages(ctx context.Context, pruneFilters mobyclient.Filters) (image.PruneReport, error) {
-	result, err := s.cli.ImagePrune(ctx, mobyclient.ImagePruneOptions{Filters: pruneFilters})
+func (s *dockerPruneService) InspectVolume(ctx context.Context, name string) (volume.Volume, error) {
+	result, err := s.cli.VolumeInspect(ctx, name, mobyclient.VolumeInspectOptions{})
 	if err != nil {
-		return image.PruneReport{}, err
+		return volume.Volume{}, err
 	}
-	return result.Report, nil
+	return result.Volume, nil
 }
 
-func (s *dockerPruneService) PruneVolumes(ctx context.Context, pruneFilters mobyclient.Filters) (volume.PruneReport, error) {
-	result, err := s.cli.VolumePrune(ctx, mobyclient.VolumePruneOptions{Filters: pruneFilters})
-	if err != nil {
-		return volume.PruneReport{}, err
-	}
-	return result.Report, nil
+func (s *dockerPruneService) RemoveContainer(ctx context.Context, id string) error {
+	_, err := s.cli.ContainerRemove(ctx, id, mobyclient.ContainerRemoveOptions{
+		Force:         false,
+		RemoveVolumes: false,
+	})
+	return err
 }
 
-func (s *dockerPruneService) PruneBuildCache(ctx context.Context, pruneFilters mobyclient.Filters) (*build.CachePruneReport, error) {
-	result, err := s.cli.BuildCachePrune(ctx, mobyclient.BuildCachePruneOptions{All: true, Filters: pruneFilters})
-	if err != nil {
-		return nil, err
+func (s *dockerPruneService) RemoveImage(ctx context.Context, id string) error {
+	_, err := s.cli.ImageRemove(ctx, id, mobyclient.ImageRemoveOptions{
+		Force:         false,
+		PruneChildren: false,
+	})
+	return err
+}
+
+func (s *dockerPruneService) RemoveVolume(ctx context.Context, name string) error {
+	_, err := s.cli.VolumeRemove(ctx, name, mobyclient.VolumeRemoveOptions{Force: false})
+	return err
+}
+
+func (s *dockerPruneService) RemoveBuildCache(ctx context.Context, id string, untilCutoff time.Time, hasUntilCutoff bool) (*build.CachePruneReport, error) {
+	result, err := s.cli.BuildCachePrune(ctx, pruneBuildCacheOptions(id, untilCutoff, hasUntilCutoff))
+	return &result.Report, err
+}
+
+func pruneBuildCacheOptions(id string, untilCutoff time.Time, hasUntilCutoff bool) mobyclient.BuildCachePruneOptions {
+	filters := make(mobyclient.Filters)
+	// The daemon forwards this filter to BuildKit as a regular expression.
+	filters.Add("id", "^"+regexp.QuoteMeta(id)+"$")
+	if hasUntilCutoff {
+		filters.Add("until", pruneBuildCacheUntilDuration(untilCutoff, time.Now()))
 	}
-	return &result.Report, nil
+	return mobyclient.BuildCachePruneOptions{All: true, Filters: filters}
+}
+
+func pruneBuildCacheUntilDuration(cutoff, now time.Time) string {
+	age := now.Sub(cutoff)
+	if age < 0 {
+		age = 0
+	}
+	return age.String()
 }
 
 func toPointerSlice[T any](items []T) []*T {

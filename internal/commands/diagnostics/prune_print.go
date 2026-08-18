@@ -21,12 +21,12 @@ func printPruneReport(w io.Writer, report PruneReport) {
 
 	printPruneSection(w, "已停止容器", len(report.StoppedContainers), func() {
 		for _, c := range report.StoppedContainers {
-			fmt.Fprintf(w, "  - %s %s image=%s size=%s status=%s\n", c.ID, c.Name, c.Image, humanBytes(uint64FromInt64(c.Size)), c.Status)
+			fmt.Fprintf(w, "  - %s %s image=%s size=%s status=%s\n", shortID(c.ID), c.Name, c.Image, humanBytes(uint64FromInt64(c.Size)), c.Status)
 		}
 	})
 	printPruneSection(w, "悬空镜像", len(report.DanglingImages), func() {
 		for _, img := range report.DanglingImages {
-			fmt.Fprintf(w, "  - %s size=%s tags=%s\n", img.ID, humanBytes(uint64FromInt64(img.Size)), strings.Join(img.RepoTags, ","))
+			fmt.Fprintf(w, "  - %s size=%s tags=%s\n", shortID(img.ID), humanBytes(uint64FromInt64(img.Size)), strings.Join(img.RepoTags, ","))
 		}
 	})
 	printPruneSection(w, "未使用 volume", len(report.UnusedVolumes), func() {
@@ -36,7 +36,7 @@ func printPruneReport(w io.Writer, report PruneReport) {
 	})
 	printPruneSection(w, "构建缓存", len(report.BuildCaches), func() {
 		for _, cache := range report.BuildCaches {
-			fmt.Fprintf(w, "  - %s type=%s size=%s %s\n", cache.ID, cache.Type, humanBytes(uint64FromInt64(cache.Size)), cache.Description)
+			fmt.Fprintf(w, "  - %s type=%s size=%s %s\n", shortID(cache.ID), cache.Type, humanBytes(uint64FromInt64(cache.Size)), cache.Description)
 		}
 	})
 
@@ -47,7 +47,24 @@ func printPruneReport(w io.Writer, report PruneReport) {
 		fmt.Fprintf(w, "  已删除/取消标记镜像: %d\n", len(report.ApplyResult.ImagesDeleted))
 		fmt.Fprintf(w, "  已删除 volume: %d\n", len(report.ApplyResult.VolumesDeleted))
 		fmt.Fprintf(w, "  已删除构建缓存: %d\n", len(report.ApplyResult.BuildCachesDeleted))
-		fmt.Fprintf(w, "  已回收空间: %s\n", humanBytes(report.ApplyResult.SpaceReclaimed))
+		fmt.Fprintf(w, "  Docker 已确认回收空间: %s\n", humanBytes(report.ApplyResult.SpaceReclaimed))
+		fmt.Fprintf(w, "  成功项快照估算空间: %s\n", humanBytes(report.ApplyResult.EstimatedBytesReclaimed))
+		fmt.Fprintf(w, "  删除失败: %d\n", len(report.ApplyResult.Failures))
+		for _, failure := range report.ApplyResult.Failures {
+			id := failure.ID
+			if failure.Kind != pruneKindVolume {
+				id = shortID(id)
+			}
+			fmt.Fprintf(w, "    - %s %s: %s\n", failure.Kind, id, failure.Error)
+		}
+		fmt.Fprintf(w, "  结果未知: %d\n", len(report.ApplyResult.UnknownOutcomes))
+		for _, outcome := range report.ApplyResult.UnknownOutcomes {
+			id := outcome.ID
+			if outcome.Kind != pruneKindVolume {
+				id = shortID(id)
+			}
+			fmt.Fprintf(w, "    - %s %s: %s\n", outcome.Kind, id, outcome.Reason)
+		}
 	}
 }
 

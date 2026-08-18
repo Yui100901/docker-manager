@@ -30,13 +30,26 @@ func writeChecksumsWithContext(ctx context.Context, root string) error {
 		if entry.IsDir() {
 			return nil
 		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("checksum source contains a symbolic link: %s", path)
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("checksum source contains a non-regular file: %s", path)
+		}
 		rel, err := filepath.Rel(root, path)
 		if err != nil {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
-		if rel == backupChecksumName {
+		if rel == backupChecksumName || rel == backupSignatureName {
 			return nil
+		}
+		if _, err := canonicalBackupRelativePath(rel); err != nil {
+			return fmt.Errorf("checksum source has a non-canonical path %q: %w", rel, err)
 		}
 		sum, err := fileSHA256WithContext(ctx, path)
 		if err != nil {
@@ -77,6 +90,7 @@ func verifyBackupChecksumsWithContext(ctx context.Context, root string) (bool, e
 	scanner := bufio.NewScanner(file)
 	lineNumber := 0
 	checked := 0
+	covered := make(map[string]struct{})
 	for scanner.Scan() {
 		if err := checkBackupContext(ctx); err != nil {
 			return true, err
@@ -90,9 +104,16 @@ func verifyBackupChecksumsWithContext(ctx context.Context, root string) (bool, e
 		if err != nil {
 			return true, fmt.Errorf("%s:%d: %w", backupChecksumName, lineNumber, err)
 		}
-		if rel == backupChecksumName {
-			continue
+		if _, err := canonicalBackupRelativePath(rel); err != nil {
+			return true, fmt.Errorf("%s:%d: checksum path is not canonical: %q", backupChecksumName, lineNumber, rel)
 		}
+		if rel == backupChecksumName || rel == backupSignatureName {
+			return true, fmt.Errorf("%s:%d: checksum metadata must not contain itself or its signature", backupChecksumName, lineNumber)
+		}
+		if _, exists := covered[rel]; exists {
+			return true, fmt.Errorf("%s:%d: duplicate checksum path %q", backupChecksumName, lineNumber, rel)
+		}
+		covered[rel] = struct{}{}
 		target, err := safeExtractPath(root, rel)
 		if err != nil {
 			return true, fmt.Errorf("%s:%d: %w", backupChecksumName, lineNumber, err)
@@ -108,6 +129,54 @@ func verifyBackupChecksumsWithContext(ctx context.Context, root string) (bool, e
 	}
 	if err := scanner.Err(); err != nil {
 		return true, err
+	}
+	if checked == 0 {
+		return true, fmt.Errorf("%s does not cover any files", backupChecksumName)
+	}
+	seen := make(map[string]struct{}, len(covered))
+	if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if err := checkBackupContext(ctx); err != nil {
+			return err
+		}
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("backup contains a symbolic link not covered by checksums: %s", path)
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("backup contains a non-regular file not covered by checksums: %s", path)
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		relative = filepath.ToSlash(relative)
+		if relative == backupChecksumName || relative == backupSignatureName {
+			return nil
+		}
+		if _, err := canonicalBackupRelativePath(relative); err != nil {
+			return fmt.Errorf("backup file has a non-canonical path %q: %w", relative, err)
+		}
+		if _, exists := covered[relative]; !exists {
+			return fmt.Errorf("backup file %s is missing from %s", relative, backupChecksumName)
+		}
+		seen[relative] = struct{}{}
+		return nil
+	}); err != nil {
+		return true, err
+	}
+	for relative := range covered {
+		if _, exists := seen[relative]; !exists {
+			return true, fmt.Errorf("%s contains path %s that is not a regular file in the backup", backupChecksumName, relative)
+		}
 	}
 	log.Printf("Checksum verification checked files: %d", checked)
 	return true, nil
@@ -133,7 +202,7 @@ func parseChecksumLine(line string) (string, string, error) {
 	if rel == "" {
 		return "", "", fmt.Errorf("empty checksum path")
 	}
-	return sum, filepath.ToSlash(rel), nil
+	return sum, rel, nil
 }
 
 func fileSHA256(path string) (string, error) {

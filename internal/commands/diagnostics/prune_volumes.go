@@ -3,8 +3,20 @@ package diagnostics
 import (
 	"context"
 	"fmt"
-	"strings"
+	"maps"
+
+	"github.com/moby/moby/api/types/volume"
 )
+
+type pruneVolumeSnapshot struct {
+	Name       string
+	CreatedAt  string
+	Driver     string
+	Mountpoint string
+	Scope      string
+	Labels     map[string]string
+	Options    map[string]string
+}
 
 func inspectPruneVolumeRefs(ctx context.Context, svc pruneDockerService) (map[string][]VolumeContainerRef, []string, error) {
 	if err := ctx.Err(); err != nil {
@@ -20,26 +32,28 @@ func inspectPruneVolumeRefs(ctx context.Context, svc pruneDockerService) (map[st
 	return inspectVolumeContainerRefs(ctx, svc, containers)
 }
 
-func ensurePruneVolumeCandidatesStillUnreferenced(ctx context.Context, svc pruneDockerService, candidates []PruneVolumeRef) error {
-	if len(candidates) == 0 {
+func newPruneVolumeSnapshot(vol *volume.Volume) *pruneVolumeSnapshot {
+	if vol == nil {
 		return nil
 	}
-	refsByVolume, warnings, err := inspectPruneVolumeRefs(ctx, svc)
-	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("volume prune preflight canceled: %w", err)
+	return &pruneVolumeSnapshot{
+		Name:       vol.Name,
+		CreatedAt:  vol.CreatedAt,
+		Driver:     vol.Driver,
+		Mountpoint: vol.Mountpoint,
+		Scope:      vol.Scope,
+		Labels:     maps.Clone(vol.Labels),
+		Options:    maps.Clone(vol.Options),
 	}
-	if err != nil {
-		return fmt.Errorf("执行 volume prune 前复核引用失败: %w", err)
-	}
-	for _, warning := range warnings {
-		if strings.Contains(warning, "无法列出容器") {
-			return fmt.Errorf("执行 volume prune 前复核引用失败: %s", warning)
-		}
-	}
-	for _, candidate := range candidates {
-		if refs := refsByVolume[candidate.Name]; len(refs) > 0 {
-			return fmt.Errorf("拒绝执行 volume prune: volume %s 在执行前复核中仍被 %d 个容器引用", candidate.Name, len(refs))
-		}
-	}
-	return nil
+}
+
+func (snapshot *pruneVolumeSnapshot) matches(vol volume.Volume) bool {
+	return snapshot != nil &&
+		snapshot.Name == vol.Name &&
+		snapshot.CreatedAt == vol.CreatedAt &&
+		snapshot.Driver == vol.Driver &&
+		snapshot.Mountpoint == vol.Mountpoint &&
+		snapshot.Scope == vol.Scope &&
+		maps.Equal(snapshot.Labels, vol.Labels) &&
+		maps.Equal(snapshot.Options, vol.Options)
 }

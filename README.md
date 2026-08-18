@@ -15,6 +15,8 @@
 
 ## 构建
 
+构建要求 Go 1.25.13 或更高版本。Go 1.25.13 是当前标准库漏洞修复所需的最低工具链版本。
+
 开发构建当前平台二进制:
 
 ```bash
@@ -172,7 +174,7 @@ dm completion powershell
 | `dm reverse` | 从容器 inspect 生成 `docker run` 或 compose，只读输出 |
 | `dm rerun` | 基于 inspect 执行容器重建，实际执行必须传 `--confirm` |
 | `dm backup` | 备份容器 inspect、镜像、compose、volume/network 元数据和迁移包 |
-| `dm restore` | 从备份目录或 tar.gz 离线包恢复镜像、网络、volume 和容器，支持恢复前计划导出 |
+| `dm restore` | 从备份目录或 tar.gz 离线包生成恢复计划；实际恢复需显式 `--confirm` |
 | `dm health` | 输出容器健康、重启、日志、端口和挂载风险报告 |
 | `dm network` | 输出网络、端口映射、endpoint、IPAM 和暴露端口风险报告 |
 | `dm logs` | 扫描容器日志关键字，支持上下文和 `none/basic/strict` 脱敏策略 |
@@ -217,13 +219,19 @@ dm backup web --dry-run
 dm backup web --bundle --bundle-output web-backup.tar.gz
 dm backup web --bundle --encrypt --passphrase-file ./backup.pass --bundle-output web-backup.tar.gz
 dm backup web --bundle --split-size 2G --bundle-output web-backup.tar.gz
-dm restore web-backup.tar.gz --dry-run
+dm backup web --bundle --signing-key ./backup-signing-private.pem --bundle-output web-backup.tar.gz
+dm restore web-backup.tar.gz # 默认只生成计划，不修改 Docker
 dm restore web-backup.tar.gz --dry-run --format html
 dm restore web-backup.tar.gz --dry-run --format json
 dm restore web-backup.tar.gz.enc --passphrase-file ./backup.pass --dry-run --format html
 dm restore web-backup.tar.gz.part-001 --dry-run --format json
-dm restore web-backup.tar.gz --name web-restored
+dm restore web-backup.tar.gz --name web-restored --confirm
+dm restore web-backup.tar.gz --trusted-public-key ./backup-signing-public.pem --confirm
+# 仅在确认可信备份确实需要高风险 HostConfig 时显式放行
+dm restore web-backup.tar.gz --confirm --allow-dangerous-config
 ```
+
+实际恢复默认要求完整有效的 `checksums.txt`；只有在已经独立验证来源时才应显式使用 `--skip-checksum`。Checksum 只能检测内容变化，不能认证来源；需要来源认证时使用 Ed25519 `--signing-key` 和位于备份根外的 `--trusted-public-key`。签名私钥、加密口令文件和 `--bundle-output` 都必须位于备份输出目录外。当前 volume 备份仅保存 Docker volume 元数据，不包含 volume 内的数据。
 
 诊断报告:
 

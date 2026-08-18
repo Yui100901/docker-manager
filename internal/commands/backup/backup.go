@@ -22,6 +22,9 @@ func backupContainers(ctx context.Context, patterns []string, opts BackupOptions
 	if (opts.Encrypt || opts.SplitSize != "") && !opts.Bundle {
 		return BackupContainersResult{}, fmt.Errorf("--encrypt 和 --split-size 仅在 --bundle 时可用")
 	}
+	if opts.SigningKey != "" && !opts.Bundle {
+		return BackupContainersResult{}, fmt.Errorf("--signing-key 仅在 --bundle 时可用")
+	}
 	if opts.Bundle {
 		if _, err := archiveOptionsFromBackup(opts); err != nil {
 			return BackupContainersResult{}, err
@@ -81,6 +84,15 @@ func backupContainersMerged(ctx context.Context, targets []string, opts BackupOp
 	if root == "" {
 		root = defaultBackupBatchDir(time.Now())
 	}
+	var archiveOpts backupArchiveOptions
+	var archivePath string
+	if opts.Bundle {
+		var err error
+		archiveOpts, archivePath, err = resolveBackupBundleOptions(root, opts)
+		if err != nil {
+			return BackupContainersResult{}, err
+		}
+	}
 	manifest := BackupManifest{
 		Version:        1,
 		CreatedAt:      time.Now().Format(time.RFC3339),
@@ -126,22 +138,20 @@ func backupContainersMerged(ctx context.Context, targets []string, opts BackupOp
 			return BackupContainersResult{}, fmt.Errorf("write manifest: %w", err)
 		}
 		if opts.Bundle {
-			archiveOpts, err := archiveOptionsFromBackup(opts)
-			if err != nil {
-				return BackupContainersResult{}, err
-			}
 			if err := writeBackupBundleArtifactsWithContext(ctx, root, manifest); err != nil {
 				return BackupContainersResult{}, err
 			}
-			archivePath := opts.BundleOutput
-			if archivePath == "" {
-				archivePath = root + ".tar.gz"
+			if opts.SigningKey != "" {
+				if err := signBackupChecksumsWithContext(ctx, root, opts.SigningKey); err != nil {
+					return BackupContainersResult{}, err
+				}
 			}
-			archivePath = backupArchiveOutputPath(archivePath, archiveOpts)
 			if err := createBackupArchiveWithOptions(ctx, root, archivePath, archiveOpts); err != nil {
 				return BackupContainersResult{}, err
 			}
 			log.Printf("Backup batch bundle: %s", archivePath)
+		} else if err := writeChecksumsWithContext(ctx, root); err != nil {
+			return BackupContainersResult{}, fmt.Errorf("write checksums: %w", err)
 		}
 	}
 	log.Printf("Backup batch summary: containers=%d output=%s merge=true", len(targets), root)
@@ -174,6 +184,14 @@ func backupContainer(ctx context.Context, name string, opts BackupOptions) (stri
 	outputDir := opts.OutputDir
 	if outputDir == "" {
 		outputDir = defaultBackupDir(time.Now(), containerName)
+	}
+	var archiveOpts backupArchiveOptions
+	var archivePath string
+	if opts.Bundle {
+		archiveOpts, archivePath, err = resolveBackupBundleOptions(outputDir, opts)
+		if err != nil {
+			return "", err
+		}
 	}
 
 	createdAt := time.Now().Format(time.RFC3339)
@@ -267,26 +285,50 @@ func backupContainer(ctx context.Context, name string, opts BackupOptions) (stri
 		return "", fmt.Errorf("write manifest: %w", err)
 	}
 	if opts.Bundle {
-		archiveOpts, err := archiveOptionsFromBackup(opts)
-		if err != nil {
-			return "", err
-		}
 		if err := checkBackupContext(ctx); err != nil {
 			return "", err
 		}
 		if err := writeBackupBundleArtifactsWithContext(ctx, outputDir, manifest); err != nil {
 			return "", err
 		}
-		archivePath := opts.BundleOutput
-		if archivePath == "" {
-			archivePath = outputDir + ".tar.gz"
+		if opts.SigningKey != "" {
+			if err := signBackupChecksumsWithContext(ctx, outputDir, opts.SigningKey); err != nil {
+				return "", err
+			}
 		}
-		archivePath = backupArchiveOutputPath(archivePath, archiveOpts)
 		if err := createBackupArchiveWithOptions(ctx, outputDir, archivePath, archiveOpts); err != nil {
 			return "", err
 		}
 		log.Printf("Backup bundle: %s", archivePath)
+	} else if err := writeChecksumsWithContext(ctx, outputDir); err != nil {
+		return "", fmt.Errorf("write checksums: %w", err)
 	}
 	log.Printf("Backup summary: container=%s output=%s image=%v networks=%d volumes=%d", containerName, outputDir, containerManifest.ImageArchive != "", len(containerManifest.Networks), len(containerManifest.Volumes))
 	return outputDir, nil
+}
+
+func resolveBackupBundleOptions(root string, opts BackupOptions) (backupArchiveOptions, string, error) {
+	archiveOpts, err := archiveOptionsFromBackup(opts)
+	if err != nil {
+		return backupArchiveOptions{}, "", err
+	}
+	if opts.SigningKey != "" {
+		if err := requireBackupSensitiveFileOutsideRoot(root, opts.SigningKey, "signing key"); err != nil {
+			return backupArchiveOptions{}, "", err
+		}
+	}
+	if archiveOpts.Encrypt {
+		if err := requireBackupSensitiveFileOutsideRoot(root, archiveOpts.PassphraseFile, "passphrase file"); err != nil {
+			return backupArchiveOptions{}, "", err
+		}
+	}
+	archivePath := opts.BundleOutput
+	if archivePath == "" {
+		archivePath = root + ".tar.gz"
+	}
+	archivePath = backupArchiveOutputPath(archivePath, archiveOpts)
+	if err := requireBackupPathOutsideRoot(root, archivePath, "bundle output"); err != nil {
+		return backupArchiveOptions{}, "", err
+	}
+	return archiveOpts, archivePath, nil
 }

@@ -32,12 +32,23 @@ func buildPruneReportWithContext(ctx context.Context, usage pruneDiskUsage, scop
 }
 
 func buildPruneReportWithVolumeRefs(ctx context.Context, usage pruneDiskUsage, scope PruneScope, volumeRefs map[string][]VolumeContainerRef, warnings []string) (PruneReport, error) {
+	snapshotTime := time.Now()
+	resolvedScope, err := resolvePruneScopeUntil(scope, snapshotTime)
+	if err != nil {
+		return PruneReport{}, err
+	}
+	scope = resolvedScope
 	report := PruneReport{
-		GeneratedAt:    time.Now().Format(time.RFC3339),
+		GeneratedAt:    snapshotTime.Format(time.RFC3339),
 		DockerEndpoint: docker.Endpoint(),
 		Scope:          scope,
 		Warnings:       append([]string(nil), warnings...),
 	}
+	seenContainers := make(map[string]struct{})
+	seenImages := make(map[string]struct{})
+	seenVolumes := make(map[string]struct{})
+	seenBuildCaches := make(map[string]struct{})
+	buildCacheCutoff, hasBuildCacheCutoff := scope.untilTime()
 	for _, c := range usage.Containers {
 		if err := ctx.Err(); err != nil {
 			return report, err
@@ -48,8 +59,12 @@ func buildPruneReportWithVolumeRefs(ctx context.Context, usage pruneDiskUsage, s
 		if !scope.includes(pruneKindContainer) || !scope.matchesLabels(c.Labels) || !scope.matchesCreatedUnix(c.Created) {
 			continue
 		}
+		if _, duplicate := seenContainers[c.ID]; duplicate {
+			continue
+		}
+		seenContainers[c.ID] = struct{}{}
 		report.StoppedContainers = append(report.StoppedContainers, PruneContainerRef{
-			ID:     shortID(c.ID),
+			ID:     c.ID,
 			Name:   firstContainerName(c.Names),
 			Image:  c.Image,
 			Status: c.Status,
@@ -67,8 +82,13 @@ func buildPruneReportWithVolumeRefs(ctx context.Context, usage pruneDiskUsage, s
 		if !scope.includes(pruneKindImage) || !scope.matchesLabels(img.Labels) || !scope.matchesCreatedUnix(img.Created) {
 			continue
 		}
+		imageKey := normalizedPruneImageID(img.ID)
+		if _, duplicate := seenImages[imageKey]; duplicate {
+			continue
+		}
+		seenImages[imageKey] = struct{}{}
 		report.DanglingImages = append(report.DanglingImages, PruneImageRef{
-			ID:       shortID(img.ID),
+			ID:       img.ID,
 			RepoTags: cleanRepoTags(img.RepoTags),
 			Size:     img.Size,
 		})
@@ -88,11 +108,16 @@ func buildPruneReportWithVolumeRefs(ctx context.Context, usage pruneDiskUsage, s
 			report.Warnings = append(report.Warnings, fmt.Sprintf("volume %s 的 DiskUsage refcount=0，但 inspect 发现仍被 %d 个容器引用，已跳过清理候选", vol.Name, len(refs)))
 			continue
 		}
+		if _, duplicate := seenVolumes[vol.Name]; duplicate {
+			continue
+		}
+		seenVolumes[vol.Name] = struct{}{}
 		report.UnusedVolumes = append(report.UnusedVolumes, PruneVolumeRef{
 			Name:     vol.Name,
 			Driver:   vol.Driver,
 			Size:     vol.UsageData.Size,
 			RefCount: vol.UsageData.RefCount,
+			snapshot: newPruneVolumeSnapshot(vol),
 		})
 		addPositiveSize(&report.EstimatedBytes, vol.UsageData.Size)
 	}
@@ -106,11 +131,19 @@ func buildPruneReportWithVolumeRefs(ctx context.Context, usage pruneDiskUsage, s
 		if !scope.includesBuildCache() {
 			continue
 		}
+		if hasBuildCacheCutoff && cache.LastUsedAt != nil && cache.LastUsedAt.After(buildCacheCutoff) {
+			continue
+		}
+		if _, duplicate := seenBuildCaches[cache.ID]; duplicate {
+			continue
+		}
+		seenBuildCaches[cache.ID] = struct{}{}
 		report.BuildCaches = append(report.BuildCaches, PruneBuildCacheRef{
-			ID:          shortID(cache.ID),
+			ID:          cache.ID,
 			Type:        cache.Type,
 			Description: cache.Description,
 			Size:        cache.Size,
+			snapshot:    newPruneBuildCacheSnapshot(cache, buildCacheCutoff, hasBuildCacheCutoff),
 		})
 		addPositiveSize(&report.EstimatedBytes, cache.Size)
 	}

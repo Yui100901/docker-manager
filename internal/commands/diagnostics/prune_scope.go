@@ -5,8 +5,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	mobyclient "github.com/moby/moby/client"
 )
 
 const (
@@ -21,15 +19,59 @@ func buildPruneScope(opts PruneReportOptions) (PruneScope, error) {
 	if err != nil {
 		return PruneScope{}, err
 	}
+	filters, err := normalizePruneFlagValues("--filter", opts.Filters)
+	if err != nil {
+		return PruneScope{}, err
+	}
+	protectLabels, err := normalizePruneFlagValues("--protect-label", opts.ProtectLabels)
+	if err != nil {
+		return PruneScope{}, err
+	}
+
+	var explicitUntil []string
+	until := ""
+	if opts.Until != "" {
+		value := strings.TrimSpace(opts.Until)
+		if value == "" {
+			return PruneScope{}, fmt.Errorf("--until 不能为空")
+		}
+		if err := rejectEmptyPruneCommaPart("--until", value); err != nil {
+			return PruneScope{}, err
+		}
+		until = value
+		explicitUntil = append(explicitUntil, value)
+	}
+	untilValues, err := normalizePruneFlagValues("--until", opts.UntilValues)
+	if err != nil {
+		return PruneScope{}, err
+	}
+	if until == "" && len(untilValues) > 0 {
+		until = untilValues[0]
+	}
+	explicitUntil = append(explicitUntil, untilValues...)
+
 	scope := PruneScope{
 		Only:          only,
-		Filters:       uniquePruneStrings(opts.Filters),
-		Until:         strings.TrimSpace(opts.Until),
-		ProtectLabels: uniquePruneStrings(opts.ProtectLabels),
+		Filters:       filters,
+		Until:         until,
+		ProtectLabels: protectLabels,
 	}
 	if err := validatePruneScope(scope); err != nil {
 		return PruneScope{}, err
 	}
+	untilCandidates := append([]string(nil), explicitUntil...)
+	for _, filter := range scope.Filters {
+		key, value, _ := parsePruneFilter(filter)
+		if key == "until" {
+			untilCandidates = append(untilCandidates, value)
+		}
+	}
+	cutoff, hasCutoff, err := resolvePruneUntilValues(untilCandidates, time.Now())
+	if err != nil {
+		return PruneScope{}, err
+	}
+	scope.untilCutoff = cutoff
+	scope.hasUntilCutoff = hasCutoff
 	return scope, nil
 }
 
@@ -40,10 +82,13 @@ func normalizePruneKinds(values []string) ([]string, error) {
 	seen := map[string]bool{}
 	var kinds []string
 	for _, value := range values {
+		if strings.TrimSpace(value) == "" {
+			return nil, fmt.Errorf("--only 不能为空")
+		}
 		for _, part := range strings.Split(value, ",") {
 			part = strings.ToLower(strings.TrimSpace(part))
 			if part == "" {
-				continue
+				return nil, fmt.Errorf("--only 包含空的逗号分段")
 			}
 			var kind string
 			switch part {
@@ -90,6 +135,9 @@ func validatePruneScope(scope PruneScope) error {
 		if strings.TrimSpace(label) == "" {
 			return fmt.Errorf("--protect-label 不能为空")
 		}
+		if err := rejectEmptyPruneCommaPart("--protect-label", label); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -111,35 +159,6 @@ func (s PruneScope) includesBuildCache() bool {
 		return false
 	}
 	return len(s.labelFilters()) == 0
-}
-
-func (s PruneScope) dockerFilters() pruneDockerFilters {
-	containerFilters := make(mobyclient.Filters)
-	imageFilters := make(mobyclient.Filters)
-	volumeFilters := make(mobyclient.Filters)
-	buildFilters := make(mobyclient.Filters)
-
-	imageFilters.Add("dangling", "true")
-	volumeFilters.Add("all", "true")
-
-	for _, item := range s.allFilterItems() {
-		switch item.Key {
-		case "label", "label!":
-			containerFilters.Add(item.Key, item.Value)
-			imageFilters.Add(item.Key, item.Value)
-			volumeFilters.Add(item.Key, item.Value)
-		case "until":
-			containerFilters.Add("until", item.Value)
-			imageFilters.Add("until", item.Value)
-			buildFilters.Add("until", item.Value)
-		}
-	}
-	return pruneDockerFilters{
-		Containers:  containerFilters,
-		Images:      imageFilters,
-		Volumes:     volumeFilters,
-		BuildCaches: buildFilters,
-	}
 }
 
 func (s PruneScope) allFilterItems() []pruneFilter {
@@ -214,30 +233,40 @@ func (s PruneScope) matchesCreatedString(created string) bool {
 }
 
 func (s PruneScope) untilTime() (time.Time, bool) {
-	value := strings.TrimSpace(s.Until)
+	if s.hasUntilCutoff {
+		return s.untilCutoff, true
+	}
+	var values []string
+	if value := strings.TrimSpace(s.Until); value != "" {
+		values = append(values, value)
+	}
 	for _, filter := range s.Filters {
 		key, parsed, err := parsePruneFilter(filter)
 		if err == nil && key == "until" {
-			value = parsed
+			values = append(values, parsed)
 		}
 	}
-	if value == "" {
-		return time.Time{}, false
-	}
-	t, err := parsePruneUntil(value)
+	t, ok, err := resolvePruneUntilValues(values, time.Now())
 	if err != nil {
 		return time.Time{}, false
 	}
-	return t, true
+	return t, ok
 }
 
 func parsePruneUntil(value string) (time.Time, error) {
+	return parsePruneUntilAt(value, time.Now())
+}
+
+func parsePruneUntilAt(value string, now time.Time) (time.Time, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return time.Time{}, fmt.Errorf("until 不能为空")
 	}
 	if duration, err := time.ParseDuration(value); err == nil {
-		return time.Now().Add(-duration), nil
+		if duration <= 0 {
+			return time.Time{}, fmt.Errorf("until duration 必须大于 0")
+		}
+		return now.Add(-duration), nil
 	}
 	if t, err := time.Parse(time.RFC3339Nano, value); err == nil {
 		return t, nil
@@ -245,7 +274,7 @@ func parsePruneUntil(value string) (time.Time, error) {
 	if t, err := time.Parse(time.RFC3339, value); err == nil {
 		return t, nil
 	}
-	return time.Time{}, fmt.Errorf("无法解析 until=%q，请使用 duration（如 24h）或 RFC3339 时间", value)
+	return time.Time{}, fmt.Errorf("无法解析 until=%q，请使用正 duration（如 24h）或 RFC3339 时间", value)
 }
 
 func parsePruneFilter(filter string) (string, string, error) {
@@ -294,16 +323,78 @@ func labelSetMatches(labels map[string]string, expr string) bool {
 	return actual == value
 }
 
-func uniquePruneStrings(values []string) []string {
-	seen := map[string]bool{}
+func normalizePruneFlagValues(flag string, values []string) ([]string, error) {
+	seen := make(map[string]struct{})
 	var result []string
 	for _, value := range values {
 		value = strings.TrimSpace(value)
-		if value == "" || seen[value] {
+		if value == "" {
+			return nil, fmt.Errorf("%s 不能为空", flag)
+		}
+		if err := rejectEmptyPruneCommaPart(flag, value); err != nil {
+			return nil, err
+		}
+		if _, duplicate := seen[value]; duplicate {
 			continue
 		}
-		seen[value] = true
+		seen[value] = struct{}{}
 		result = append(result, value)
 	}
-	return result
+	return result, nil
+}
+
+func rejectEmptyPruneCommaPart(flag, value string) error {
+	for _, part := range strings.Split(value, ",") {
+		if strings.TrimSpace(part) == "" {
+			return fmt.Errorf("%s 包含空的逗号分段", flag)
+		}
+	}
+	return nil
+}
+
+func resolvePruneUntilValues(values []string, now time.Time) (time.Time, bool, error) {
+	if len(values) == 0 {
+		return time.Time{}, false, nil
+	}
+	var cutoff time.Time
+	for i, value := range values {
+		parsed, err := parsePruneUntilAt(value, now)
+		if err != nil {
+			return time.Time{}, false, err
+		}
+		if i == 0 {
+			cutoff = parsed
+			continue
+		}
+		if !cutoff.Equal(parsed) {
+			return time.Time{}, false, fmt.Errorf("until 条件冲突: %q 与 %q 解析为不同截止时间", values[0], value)
+		}
+	}
+	return cutoff, true, nil
+}
+
+func resolvePruneScopeUntil(scope PruneScope, now time.Time) (PruneScope, error) {
+	if scope.hasUntilCutoff {
+		return scope, nil
+	}
+	var values []string
+	if value := strings.TrimSpace(scope.Until); value != "" {
+		values = append(values, value)
+	}
+	for _, filter := range scope.Filters {
+		key, value, err := parsePruneFilter(filter)
+		if err != nil {
+			return PruneScope{}, err
+		}
+		if key == "until" {
+			values = append(values, value)
+		}
+	}
+	cutoff, hasCutoff, err := resolvePruneUntilValues(values, now)
+	if err != nil {
+		return PruneScope{}, err
+	}
+	scope.untilCutoff = cutoff
+	scope.hasUntilCutoff = hasCutoff
+	return scope, nil
 }

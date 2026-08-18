@@ -1,6 +1,6 @@
 module docker-manager
 
-go 1.24.1
+go 1.25.13
 
 require (
 	github.com/Yui100901/MyGo v1.1.15
@@ -16,6 +16,8 @@ require github.com/moby/moby/api v1.55.0
 
 require github.com/klauspost/compress v1.19.0
 
+require github.com/cespare/xxhash/v2 v2.3.0 // indirect
+
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/containerd/errdefs v1.0.0
@@ -28,12 +30,12 @@ require (
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/opencontainers/image-spec v1.1.1
-	github.com/spf13/pflag v1.0.10 // indirect
-	go.opentelemetry.io/auto/sdk v1.1.0 // indirect
-	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.63.0 // indirect
-	go.opentelemetry.io/otel v1.38.0 // indirect
-	go.opentelemetry.io/otel/metric v1.38.0 // indirect
-	go.opentelemetry.io/otel/trace v1.38.0 // indirect
-	golang.org/x/sys v0.35.0
+	github.com/spf13/pflag v1.0.10
+	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
+	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.67.0 // indirect
+	go.opentelemetry.io/otel v1.42.0 // indirect
+	go.opentelemetry.io/otel/metric v1.42.0 // indirect
+	go.opentelemetry.io/otel/trace v1.42.0 // indirect
+	golang.org/x/sys v0.44.0
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )

@@ -49,6 +49,7 @@ func NewBackupCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&opts.Encrypt, "encrypt", false, "加密离线迁移包；需要 --passphrase-file")
 	cmd.Flags().StringVar(&opts.PassphraseFile, "passphrase-file", "", "加密或解密备份包使用的口令文件")
 	cmd.Flags().StringVar(&opts.SplitSize, "split-size", "", "按指定大小分卷输出离线迁移包，例如 512M、2G")
+	cmd.Flags().StringVar(&opts.SigningKey, "signing-key", "", "使用 PEM Ed25519 私钥签名 checksums.txt；仅用于 --bundle")
 	cmd.Flags().StringVar(&opts.OutputDir, "output-dir", "", "备份输出目录；批量目标会在该目录下拆分子目录")
 	cmd.Flags().BoolVar(&opts.Merge, "merge", false, "将多个容器合并为一个批量备份包，可整体 restore")
 	return cmd
@@ -61,17 +62,30 @@ func NewRestoreCommand() *cobra.Command {
 		Short: "从 backup 生成的目录、批量目录或 tar.gz 离线包恢复镜像、网络、volume 和容器",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			opts.Output = cmd.OutOrStdout()
-			if opts.Name != "" && len(args) > 1 {
+			runOpts := opts
+			runOpts.Output = cmd.OutOrStdout()
+			if runOpts.Name != "" && len(args) > 1 {
 				return fmt.Errorf("--name 只支持恢复单个备份")
 			}
-			if opts.DryRun && opts.Format != rpt.FormatText {
+			if runOpts.Confirm && runOpts.DryRun {
+				return fmt.Errorf("--confirm 不能与 --dry-run 同时使用")
+			}
+			if runOpts.TrustedPublicKey != "" && runOpts.SkipChecksum {
+				return fmt.Errorf("--trusted-public-key 不能与 --skip-checksum 同时使用")
+			}
+			if !runOpts.Confirm {
+				if !runOpts.DryRun && runOpts.Format == rpt.FormatText {
+					fmt.Fprintln(cmd.OutOrStdout(), "未提供 --confirm；默认只生成恢复计划，不会修改 Docker。")
+				}
+				runOpts.DryRun = true
+			}
+			if runOpts.DryRun && runOpts.Format != rpt.FormatText {
 				for _, arg := range args {
-					report, err := buildRestorePlanReport(cmd.Context(), arg, opts)
+					report, err := buildRestorePlanReport(cmd.Context(), arg, runOpts)
 					if err != nil {
 						return fmt.Errorf("生成恢复计划失败: %w", err)
 					}
-					if err := rpt.Print(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
+					if err := rpt.Print(cmd.OutOrStdout(), runOpts.Format, report, func(w io.Writer) {
 						printRestorePlanReport(w, report)
 					}); err != nil {
 						return err
@@ -79,28 +93,59 @@ func NewRestoreCommand() *cobra.Command {
 				}
 				return nil
 			}
-			if !opts.DryRun {
+			if !runOpts.DryRun {
+				var preparedBackups []*preparedRestoreBackup
+				defer func() {
+					for _, prepared := range preparedBackups {
+						prepared.Close()
+					}
+				}()
+				seenTargets := make(map[string]string)
+				for _, arg := range args {
+					prepared, err := prepareRestoreBackup(cmd.Context(), arg, runOpts)
+					if err != nil {
+						return fmt.Errorf("恢复预检失败: %w", err)
+					}
+					preparedBackups = append(preparedBackups, prepared)
+					for _, target := range prepared.targets {
+						if previous, exists := seenTargets[target]; exists {
+							return fmt.Errorf("恢复预检失败: 目标容器 %s 同时来自 %s 和 %s", target, previous, arg)
+						}
+						seenTargets[target] = arg
+					}
+				}
+				if err := validatePreparedRestoreSet(cmd.Context(), preparedBackups, runOpts); err != nil {
+					return fmt.Errorf("恢复预检失败: %w", err)
+				}
 				printRestoreDockerTarget(cmd.OutOrStdout())
+				for _, prepared := range preparedBackups {
+					if err := executePreparedRestore(cmd.Context(), prepared, runOpts); err != nil {
+						return fmt.Errorf("恢复失败: %w", err)
+					}
+					fmt.Fprintf(cmd.OutOrStdout(), "恢复完成: %s\n", prepared.source)
+				}
+				return nil
 			}
 			for _, arg := range args {
-				if err := restoreBackup(cmd.Context(), arg, opts); err != nil {
+				if err := restoreBackup(cmd.Context(), arg, runOpts); err != nil {
 					return fmt.Errorf("恢复失败: %w", err)
 				}
-				if opts.DryRun {
-					fmt.Fprintf(cmd.OutOrStdout(), "恢复 dry-run 完成: %s\n", arg)
-				} else {
-					fmt.Fprintf(cmd.OutOrStdout(), "恢复完成: %s\n", arg)
-				}
+				fmt.Fprintf(cmd.OutOrStdout(), "恢复 dry-run 完成: %s\n", arg)
 			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&opts.Name, "name", "", "恢复为新的容器名，默认使用备份中的容器名")
-	cmd.Flags().BoolVar(&opts.Replace, "replace", false, "如果目标容器已存在则先删除")
+	cmd.Flags().BoolVar(&opts.Replace, "replace", false, "安全替换已存在容器；旧容器会临时保留以便失败回滚")
 	cmd.Flags().BoolVar(&opts.NoStart, "no-start", false, "只创建容器，不启动")
 	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", false, "只预览恢复动作，不修改 Docker；配合 --format json/markdown/html 可输出结构化恢复计划")
+	cmd.Flags().BoolVar(&opts.Confirm, "confirm", false, "显式确认执行恢复；未提供时默认只生成计划")
+	cmd.Flags().BoolVar(&opts.AllowUnsafeHostConfig, "allow-dangerous-config", false, "允许恢复 privileged、host namespace、host bind、device、驱动选项等高风险配置")
+	cmd.Flags().BoolVar(&opts.AllowUnsafeHostConfig, "allow-unsafe-host-config", false, "兼容别名: --allow-dangerous-config")
+	_ = cmd.Flags().MarkHidden("allow-unsafe-host-config")
 	cmd.Flags().StringVar(&opts.PassphraseFile, "passphrase-file", "", "解密加密备份包使用的口令文件")
 	cmd.Flags().BoolVar(&opts.SkipChecksum, "skip-checksum", false, "跳过 checksums.txt 完整性校验")
+	cmd.Flags().StringVar(&opts.TrustedPublicKey, "trusted-public-key", "", "使用 PEM Ed25519 公钥验证 checksums.txt.sig 和备份来源")
 	commandflags.AddReportFormatFlag(cmd, &opts.Format)
 	return cmd
 }

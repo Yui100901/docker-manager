@@ -19,27 +19,42 @@ func NewPruneReportCommand() *cobra.Command {
 		Short: "生成 Docker 可清理资源报告，可选执行清理",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			printReport := func(report PruneReport) error {
+				return rpt.Print(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
+					printPruneReport(w, report)
+				})
+			}
 			if opts.Apply && docker.IsRemoteEndpoint() {
-				fmt.Fprintf(cmd.OutOrStdout(), "Target Docker: %s\n", docker.Endpoint())
+				fmt.Fprintf(cmd.ErrOrStderr(), "Target Docker: %s\n", docker.Endpoint())
 			}
 			report, err := runPruneReport(cmd.Context(), opts)
 			if err != nil {
+				if report.Applied && report.ApplyResult != nil {
+					if printErr := printReport(report); printErr != nil {
+						return fmt.Errorf("执行清理失败: %w；输出部分执行结果失败: %v", err, printErr)
+					}
+					return fmt.Errorf("执行清理失败: %w", err)
+				}
 				return fmt.Errorf("生成清理报告失败: %w", err)
 			}
-			return rpt.Print(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
-				printPruneReport(w, report)
-			})
+			return printReport(report)
 		},
 	}
 	cmd.Flags().BoolVar(&opts.Apply, "apply", false, "根据报告执行清理")
 	cmd.Flags().BoolVar(&opts.Confirm, "confirm", false, "确认执行 --apply 清理操作")
-	commandflags.AddPruneScopeFlags(cmd, &opts.Only, &opts.Filters, &opts.Until, &opts.ProtectLabels)
+	cmd.Flags().StringArrayVar(&opts.Only, "only", nil, "只处理指定资源类型，可重复指定: container | image | volume | build-cache")
+	cmd.Flags().StringArrayVarP(&opts.Filters, "filter", "f", nil, "清理筛选条件，支持 label=key、label=key=value、label!=key、until=<duration|timestamp>，可重复指定")
+	cmd.Flags().StringArrayVar(&opts.UntilValues, "until", nil, "仅清理该时间之前创建的资源，例如 24h、168h 或 RFC3339 时间；重复值必须一致")
+	cmd.Flags().StringArrayVar(&opts.ProtectLabels, "protect-label", nil, "保护带有指定 label 的资源，例如 keep 或 env=prod，可重复指定")
 	commandflags.AddReportFormatFlag(cmd, &opts.Format)
 	return cmd
 }
 
 func runPruneReport(ctx context.Context, opts PruneReportOptions) (PruneReport, error) {
 	if err := ctx.Err(); err != nil {
+		return PruneReport{}, err
+	}
+	if err := validatePruneReportFormat(opts.Format); err != nil {
 		return PruneReport{}, err
 	}
 	scope, err := buildPruneScope(opts)
@@ -81,15 +96,16 @@ func runPruneReport(ctx context.Context, opts PruneReportOptions) (PruneReport, 
 		return report, err
 	}
 	if opts.Apply {
-		if err := ensurePruneVolumeCandidatesStillUnreferenced(ctx, svc, report.UnusedVolumes); err != nil {
-			return report, err
-		}
-		applyResult, err := applyPruneReport(ctx, svc, scope)
+		applyResult, err := applyPruneReport(ctx, svc, report)
+		report.Applied = true
+		report.ApplyResult = &applyResult
 		if err != nil {
 			return report, err
 		}
-		report.Applied = true
-		report.ApplyResult = &applyResult
 	}
 	return report, nil
+}
+
+func validatePruneReportFormat(format string) error {
+	return rpt.Print(io.Discard, format, struct{}{}, func(io.Writer) {})
 }
