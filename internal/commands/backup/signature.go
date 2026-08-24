@@ -37,7 +37,7 @@ func signBackupChecksumsWithContext(ctx context.Context, root, privateKeyPath st
 	}
 	signature := ed25519.Sign(privateKey, checksums)
 	encoded := base64.StdEncoding.EncodeToString(signature) + "\n"
-	if err := os.WriteFile(filepath.Join(root, backupSignatureName), []byte(encoded), 0644); err != nil {
+	if err := writePrivateBackupFile(filepath.Join(root, backupSignatureName), []byte(encoded), 0600); err != nil {
 		return fmt.Errorf("write backup signature: %w", err)
 	}
 	return nil

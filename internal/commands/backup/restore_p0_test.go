@@ -105,9 +105,7 @@ func TestConfirmedRestoreRejectsMissingChecksumUnlessExplicitlySkipped(t *testin
 	if err := restoreBackup(context.Background(), dir, RestoreOptions{Confirm: true, NoStart: true, SkipChecksum: true}); err != nil {
 		t.Fatalf("restoreBackup(skip checksum) error = %v", err)
 	}
-	if !hasCall(fake.calls, "create-container:demo") {
-		t.Fatalf("calls = %#v, want confirmed container creation", fake.calls)
-	}
+	assertRestoreCandidateCommitted(t, fake.calls, "demo")
 }
 
 func TestRestoreCommandRejectsConfirmWithDryRun(t *testing.T) {
@@ -568,9 +566,7 @@ func TestEncryptedSplitSignedRestoreVerifiesExtractedPayloadOnly(t *testing.T) {
 	if err := restoreBackup(context.Background(), firstPart, RestoreOptions{Confirm: true, NoStart: true, PassphraseFile: passphrase, TrustedPublicKey: publicKey, Output: io.Discard}); err != nil {
 		t.Fatalf("restoreBackup() error = %v", err)
 	}
-	if !hasCall(fake.calls, "create-container:signed-job") {
-		t.Fatalf("calls = %#v, want signed restore", fake.calls)
-	}
+	assertRestoreCandidateCommitted(t, fake.calls, "signed-job")
 }
 
 func TestBackupSensitiveFilesAndCollidingOutputsAreNotOverwritten(t *testing.T) {

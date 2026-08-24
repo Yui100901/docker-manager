@@ -72,8 +72,11 @@ if [ "${RUN_SHELLCHECK}" = "1" ]; then
     echo "==> shellcheck"
     shellcheck scripts/*.sh
   else
-    echo "shellcheck not found; skipped"
+    echo "shellcheck not found. Install ShellCheck or explicitly pass --no-shellcheck." >&2
+    exit 127
   fi
+else
+  echo "==> shellcheck explicitly skipped (--no-shellcheck)"
 fi
 
-echo "All checks passed."
+echo "All requested checks passed."

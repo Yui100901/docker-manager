@@ -3,12 +3,15 @@ set -euo pipefail
 
 ROOT_DIR=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 DM_BIN="${DM_COMPLETION_TEST_BIN:-${ROOT_DIR}/dm}"
-WORK_DIR="${DM_COMPLETION_TEST_WORK_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/dm-completion-XXXXXX")}"
+WORK_DIR="${DM_COMPLETION_TEST_WORK_DIR:-${TMPDIR:-/tmp}/dm-completion-$$_${RANDOM}}"
 KEEP_WORKDIR=0
 NO_DOCKER=0
 PASS=0
 FAIL=0
 SKIP=0
+WORK_DIR_OWNED=0
+WORK_DIR_TOKEN="dm-completion:$$_${RANDOM}_$(date +%s)"
+WORK_DIR_SENTINEL=""
 
 usage() {
   cat <<'EOF'
@@ -18,7 +21,7 @@ Deep-test dm shell completion without pulling external images.
 
 Options:
   --dm-bin PATH       dm binary to test. Default: ./dm or DM_COMPLETION_TEST_BIN
-  --work-dir DIR      Directory for logs and reports
+  --work-dir DIR      New, non-existing directory for logs and reports
   --keep-workdir      Keep temporary work directory
   --no-docker         Skip Docker-backed resource candidate checks
   -h, --help          Show this help
@@ -56,7 +59,60 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-mkdir -p "${WORK_DIR}"
+protected_work_dir() {
+  local candidate=$1
+  local home_dir=""
+  if [ -n "${HOME:-}" ] && [ -d "${HOME}" ]; then
+    home_dir=$(CDPATH='' cd -- "${HOME}" && pwd -P)
+  fi
+  [ "${candidate}" = "/" ] || [ "${candidate}" = "${ROOT_DIR}" ] || { [ -n "${home_dir}" ] && [ "${candidate}" = "${home_dir}" ]; }
+}
+
+prepare_work_dir() {
+  local requested=$1 parent leaf parent_real candidate
+  if [ -z "${requested}" ] || [ -e "${requested}" ] || [ -L "${requested}" ]; then
+    echo "Completion work directory must be new and non-existing: ${requested}" >&2
+    return 1
+  fi
+  parent=$(dirname -- "${requested}")
+  leaf=$(basename -- "${requested}")
+  if [ -z "${leaf}" ] || [ "${leaf}" = "." ] || [ "${leaf}" = ".." ] || [ ! -d "${parent}" ]; then
+    echo "Invalid completion work directory: ${requested}" >&2
+    return 1
+  fi
+  parent_real=$(CDPATH='' cd -- "${parent}" && pwd -P) || return 1
+  candidate="${parent_real}/${leaf}"
+  if protected_work_dir "${candidate}"; then
+    echo "Refusing protected completion work directory: ${candidate}" >&2
+    return 1
+  fi
+  umask 077
+  mkdir -- "${candidate}" || return 1
+  WORK_DIR=${candidate}
+  WORK_DIR_SENTINEL="${WORK_DIR}/.dm-completion-owned"
+  if ! printf '%s\n' "${WORK_DIR_TOKEN}" >"${WORK_DIR_SENTINEL}" || ! chmod 600 "${WORK_DIR_SENTINEL}"; then
+    rm -f -- "${WORK_DIR_SENTINEL}" >/dev/null 2>&1 || true
+    rmdir -- "${WORK_DIR}" >/dev/null 2>&1 || true
+    return 1
+  fi
+  WORK_DIR_OWNED=1
+}
+
+remove_owned_work_dir() {
+  if [ "${WORK_DIR_OWNED}" -ne 1 ] || [ -z "${WORK_DIR}" ] || [ -L "${WORK_DIR}" ] || [ ! -d "${WORK_DIR}" ]; then
+    echo "Refusing to remove unowned completion work directory: ${WORK_DIR}" >&2
+    return 1
+  fi
+  if protected_work_dir "${WORK_DIR}" || [ -L "${WORK_DIR_SENTINEL}" ] || [ ! -f "${WORK_DIR_SENTINEL}" ] || [ "$(cat "${WORK_DIR_SENTINEL}")" != "${WORK_DIR_TOKEN}" ]; then
+    echo "Refusing to remove unsafe completion work directory: ${WORK_DIR}" >&2
+    return 1
+  fi
+  rm -rf -- "${WORK_DIR}"
+  WORK_DIR_OWNED=0
+}
+
+prepare_work_dir "${WORK_DIR}"
+trap 'remove_owned_work_dir >/dev/null 2>&1 || true' EXIT
 RESULTS="${WORK_DIR}/results.tsv"
 REPORT="${WORK_DIR}/completion-test-report.md"
 printf 'case\tstatus\tnote\tlog\n' >"${RESULTS}"
@@ -95,11 +151,12 @@ run_shell_case() {
 cleanup_items=()
 cleanup() {
   set +e
-  for item in "${cleanup_items[@]}"; do
-    eval "${item}" >/dev/null 2>&1 || true
+  local index
+  for ((index=${#cleanup_items[@]} - 1; index >= 0; index--)); do
+    eval "${cleanup_items[index]}" >/dev/null 2>&1 || true
   done
   if [ "${KEEP_WORKDIR}" -eq 0 ]; then
-    rm -rf "${WORK_DIR}"
+    remove_owned_work_dir || true
   fi
 }
 trap cleanup EXIT
@@ -139,7 +196,7 @@ fi
 run_case "cobra-command-complete" "report" "${DM_BIN}" __complete re
 
 if [ "${NO_DOCKER}" -eq 0 ] && command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-  suffix=$(date +%Y%m%d%H%M%S)
+  suffix="$(date +%Y%m%d%H%M%S)_$$_${RANDOM}"
   container_name="dm_completion_api_${suffix}"
   volume_name="dm_completion_vol_${suffix}"
   image_ref=$(docker images --format '{{.Repository}}:{{.Tag}}' | grep -v '<none>' | head -1 || true)

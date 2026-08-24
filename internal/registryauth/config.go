@@ -7,10 +7,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"docker-manager/internal/sensitive"
+)
+
+const (
+	DefaultCredentialHelperTimeout = 5 * time.Second
+	maxCredentialHelperStdout      = 1 << 20
+	maxCredentialHelperStderr      = 32 * 1024
 )
 
 type Config struct {
@@ -30,6 +40,8 @@ type Credential struct {
 	Found         bool
 	Source        string
 	Helper        string
+	HelperSource  string
+	HelperPath    string
 	Username      string
 	Password      string
 	IdentityToken string
@@ -44,6 +56,12 @@ type HelperResponse struct {
 }
 
 type HelperRunner func(ctx context.Context, helper, server string) (Credential, error)
+
+type ResolveOptions struct {
+	DisableHelpers bool
+	HelperTimeout  time.Duration
+	RunHelper      HelperRunner
+}
 
 func DefaultConfigPath() string {
 	if dir := strings.TrimSpace(os.Getenv("DOCKER_CONFIG")); dir != "" {
@@ -72,25 +90,46 @@ func ReadConfig(path string) (Config, bool, error) {
 }
 
 func ResolveCredential(ctx context.Context, cfg Config, registryName string, runHelper HelperRunner) Credential {
+	return ResolveCredentialWithOptions(ctx, cfg, registryName, ResolveOptions{RunHelper: runHelper})
+}
+
+func ResolveCredentialWithOptions(ctx context.Context, cfg Config, registryName string, opts ResolveOptions) Credential {
+	runHelper := opts.RunHelper
 	if runHelper == nil {
 		runHelper = DefaultRunCredentialHelper
 	}
 	keys := ConfigKeys(registryName)
-	if helper, server := FindCredentialHelper(cfg, keys); helper != "" {
-		cred, err := runHelper(ctx, helper, server)
+	helper, server, helperSource := FindCredentialHelperSource(cfg, keys)
+	if helper != "" && !opts.DisableHelpers {
+		timeout := opts.HelperTimeout
+		if timeout <= 0 {
+			timeout = DefaultCredentialHelperTimeout
+		}
+		helperCtx, cancel := context.WithTimeout(ctx, timeout)
+		cred, err := runHelper(helperCtx, helper, server)
+		cancel()
 		if err != nil {
 			return Credential{
 				Source:        "credential-helper",
 				Helper:        helper,
+				HelperSource:  helperSource,
+				HelperPath:    credentialHelperPath(helper),
 				ServerAddress: server,
-				Message:       err.Error(),
+				Message:       credentialHelperFailureMessage(err),
 			}
 		}
-		cred.Found = true
+		cred.Found = cred.Username != "" || cred.Password != "" || cred.IdentityToken != ""
 		cred.Source = "credential-helper"
 		cred.Helper = helper
+		cred.HelperSource = helperSource
+		if cred.HelperPath == "" {
+			cred.HelperPath = credentialHelperPath(helper)
+		}
 		if cred.ServerAddress == "" {
 			cred.ServerAddress = server
+		}
+		if !cred.Found {
+			cred.Message = "credential helper returned no usable credential"
 		}
 		return cred
 	}
@@ -108,19 +147,61 @@ func ResolveCredential(ctx context.Context, cfg Config, registryName string, run
 		}
 		return cred
 	}
+	if helper != "" && opts.DisableHelpers {
+		return Credential{
+			Helper:        helper,
+			HelperSource:  helperSource,
+			HelperPath:    credentialHelperPath(helper),
+			ServerAddress: server,
+			Message:       "credential helpers are disabled; no matching auths entry",
+		}
+	}
 	return Credential{Message: "no matching auths, credHelpers or credsStore entry"}
 }
 
+func credentialHelperFailureMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	if sensitive.DefaultProfile() == sensitive.ProfileNone {
+		return err.Error()
+	}
+	// Helper errors can contain arbitrary external stderr, which cannot be
+	// safely handled by pattern-based redaction.
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "credential helper timed out"
+	case errors.Is(err, context.Canceled):
+		return "credential helper canceled"
+	default:
+		return "credential helper failed: " + sensitive.RedactedValue
+	}
+}
+
 func FindCredentialHelper(cfg Config, keys []string) (string, string) {
+	helper, server, _ := FindCredentialHelperSource(cfg, keys)
+	return helper, server
+}
+
+func FindCredentialHelperSource(cfg Config, keys []string) (string, string, string) {
 	for _, key := range keys {
 		if helper := strings.TrimSpace(cfg.CredHelpers[key]); helper != "" {
-			return helper, key
+			return helper, key, "credHelpers[" + key + "]"
 		}
 	}
 	if helper := strings.TrimSpace(cfg.CredsStore); helper != "" && len(keys) > 0 {
-		return helper, keys[0]
+		return helper, credentialStoreServer(keys), "credsStore"
 	}
-	return "", ""
+	return "", "", ""
+}
+
+func credentialStoreServer(keys []string) string {
+	for _, key := range keys {
+		if key == "https://index.docker.io/v1/" {
+			return key
+		}
+	}
+	return keys[0]
 }
 
 func ConfigKeys(registryName string) []string {
@@ -156,18 +237,26 @@ func CredentialFromAuthEntry(entry AuthEntry) Credential {
 }
 
 func DefaultRunCredentialHelper(ctx context.Context, helper, server string) (Credential, error) {
-	cmd := exec.CommandContext(ctx, "docker-credential-"+helper, "get")
-	cmd.Stdin = strings.NewReader(server)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	name := "docker-credential-" + helper
+	path, err := exec.LookPath(name)
+	if err != nil {
+		return Credential{}, fmt.Errorf("%s not found in PATH: %w", name, err)
+	}
+	cmd := exec.CommandContext(ctx, path, "get")
+	cmd.Stdin = strings.NewReader(server + "\n")
+	stdout := &limitedBuffer{remaining: maxCredentialHelperStdout}
+	stderr := &limitedBuffer{remaining: maxCredentialHelperStderr}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {
 		msg := strings.TrimSpace(stderr.String())
 		if msg == "" {
 			msg = err.Error()
 		}
 		return Credential{}, fmt.Errorf("docker-credential-%s get failed: %s", helper, msg)
+	}
+	if stdout.truncated {
+		return Credential{}, fmt.Errorf("docker-credential-%s output exceeds %d bytes", helper, maxCredentialHelperStdout)
 	}
 	var resp HelperResponse
 	if err := json.Unmarshal(stdout.Bytes(), &resp); err != nil {
@@ -177,6 +266,7 @@ func DefaultRunCredentialHelper(ctx context.Context, helper, server string) (Cre
 		Username:      resp.Username,
 		Password:      resp.Secret,
 		ServerAddress: resp.ServerURL,
+		HelperPath:    path,
 	}
 	if resp.Username == "<token>" {
 		cred.Username = ""
@@ -184,6 +274,52 @@ func DefaultRunCredentialHelper(ctx context.Context, helper, server string) (Cre
 		cred.IdentityToken = resp.Secret
 	}
 	return cred, nil
+}
+
+func credentialHelperPath(helper string) string {
+	path, err := exec.LookPath("docker-credential-" + helper)
+	if err != nil {
+		return ""
+	}
+	abs, err := filepath.Abs(path)
+	if err == nil {
+		return abs
+	}
+	return path
+}
+
+type limitedBuffer struct {
+	buffer    bytes.Buffer
+	remaining int
+	truncated bool
+}
+
+func (w *limitedBuffer) Write(p []byte) (int, error) {
+	originalLength := len(p)
+	if w.remaining <= 0 {
+		if originalLength > 0 {
+			w.truncated = true
+		}
+		return originalLength, nil
+	}
+	if len(p) > w.remaining {
+		w.truncated = true
+		p = p[:w.remaining]
+	}
+	written, err := w.buffer.Write(p)
+	w.remaining -= written
+	if err != nil && err != io.ErrShortWrite {
+		return written, err
+	}
+	return originalLength, nil
+}
+
+func (w *limitedBuffer) String() string {
+	return w.buffer.String()
+}
+
+func (w *limitedBuffer) Bytes() []byte {
+	return w.buffer.Bytes()
 }
 
 func BasicAuthHeader(username, password string) string {

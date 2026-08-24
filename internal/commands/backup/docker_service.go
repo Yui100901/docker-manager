@@ -349,12 +349,10 @@ func (s *dockerBackupService) StartContainer(ctx context.Context, id string) err
 }
 
 func (s *dockerBackupService) WaitContainerReady(ctx context.Context, id string, requireHealthy bool) error {
-	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		inspect, err := s.InspectContainer(waitCtx, id)
+		inspect, err := s.InspectContainer(ctx, id)
 		if err != nil {
 			return err
 		}
@@ -377,8 +375,8 @@ func (s *dockerBackupService) WaitContainerReady(ctx context.Context, id string,
 			}
 		}
 		select {
-		case <-waitCtx.Done():
-			return fmt.Errorf("wait for container readiness: %w", waitCtx.Err())
+		case <-ctx.Done():
+			return fmt.Errorf("wait for container readiness: %w", ctx.Err())
 		case <-ticker.C:
 		}
 	}

@@ -68,7 +68,13 @@ func (r *PullRunner) pingRegistryV2Once(ctx context.Context, rawURL string, auth
 		return registryPingResult{status: registryPingFailed, message: err.Error()}
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
+	readBytes, readErr := io.Copy(io.Discard, io.LimitReader(resp.Body, maxRegistryPingBodyBytes+1))
+	if readErr != nil {
+		return registryPingResult{status: registryPingFailed, httpStatus: resp.StatusCode, message: readErr.Error()}
+	}
+	if readBytes > maxRegistryPingBodyBytes {
+		return registryPingResult{status: registryPingFailed, httpStatus: resp.StatusCode, message: "registry /v2/ response exceeds size limit"}
+	}
 
 	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
 		return registryPingResult{status: registryPingOK, httpStatus: resp.StatusCode, message: resp.Status}
@@ -109,6 +115,7 @@ func parseImageInfo(imageName string) (*ImageInfo, error) {
 }
 
 func (r *PullRunner) fetchManifest(ctx context.Context, info *ImageInfo, opts PullOptions) (*ocispec.Manifest, *pullRegistryAuth, error) {
+	limits := effectivePullResourceLimits(opts.Limits)
 	var expectedManifestDigest digest.Digest
 	if info.Digest != "" {
 		parsed, err := digest.Parse(info.Digest)
@@ -128,7 +135,7 @@ func (r *PullRunner) fetchManifest(ctx context.Context, info *ImageInfo, opts Pu
 		}, ", "),
 	}
 
-	respBytes, auth, err := r.fetchRegistryBytesWithRetryLimit(ctx, manifestURL, headers, nil, info, opts, nil, maxManifestBlobSize)
+	respBytes, auth, err := r.fetchRegistryBytesWithRetryLimit(ctx, manifestURL, headers, nil, info, opts, nil, limits.ManifestBytes)
 	if err != nil {
 		return nil, auth, fmt.Errorf("获取清单失败: %w", err)
 	}
@@ -150,7 +157,10 @@ func (r *PullRunner) fetchManifest(ctx context.Context, info *ImageInfo, opts Pu
 		return r.handleOCIIndex(ctx, info, index, auth, opts)
 	}
 
-	manifest, err := decodeImageManifest(respBytes)
+	manifest, err := decodeImageManifestWithLimits(respBytes, limits)
+	if err == nil {
+		err = validateManifestLayers(manifest, limits)
+	}
 	return manifest, auth, err
 }
 
@@ -178,7 +188,8 @@ func (r *PullRunner) handleOCIIndex(ctx context.Context, info *ImageInfo, index 
 	if selected == nil {
 		return nil, auth, fmt.Errorf("未找到匹配的平台: %s/%s", r.platform.targetOS, r.platform.targetArch)
 	}
-	if err := validateManifestDescriptor(*selected); err != nil {
+	limits := effectivePullResourceLimits(opts.Limits)
+	if err := validateManifestDescriptorWithLimit(*selected, limits.ManifestBytes); err != nil {
 		return nil, auth, err
 	}
 
@@ -190,7 +201,7 @@ func (r *PullRunner) handleOCIIndex(ctx context.Context, info *ImageInfo, index 
 		}, ", "),
 	}
 
-	resp, auth, err := r.fetchRegistryBytesWithRetryLimit(ctx, manifestURL, headers, nil, info, opts, auth, boundedReadLimit(selected.Size, maxManifestBlobSize))
+	resp, auth, err := r.fetchRegistryBytesWithRetryLimit(ctx, manifestURL, headers, nil, info, opts, auth, boundedReadLimit(selected.Size, limits.ManifestBytes))
 	if err != nil {
 		return nil, auth, fmt.Errorf("获取架构清单失败: %w", err)
 	}
@@ -198,16 +209,24 @@ func (r *PullRunner) handleOCIIndex(ctx context.Context, info *ImageInfo, index 
 		return nil, auth, err
 	}
 
-	manifest, err := decodeImageManifest(resp)
+	manifest, err := decodeImageManifestWithLimits(resp, limits)
+	if err == nil {
+		err = validateManifestLayers(manifest, limits)
+	}
 	return manifest, auth, err
 }
 
 func decodeImageManifest(data []byte) (*ocispec.Manifest, error) {
+	return decodeImageManifestWithLimits(data, defaultPullResourceLimits())
+}
+
+func decodeImageManifestWithLimits(data []byte, limits PullResourceLimits) (*ocispec.Manifest, error) {
 	manifest, err := struct_utils.UnmarshalData[ocispec.Manifest](data, struct_utils.JSON)
 	if err != nil {
 		return nil, err
 	}
-	if err := validateConfigDescriptor(manifest.Config); err != nil {
+	limits = effectivePullResourceLimits(limits)
+	if err := validateConfigDescriptorWithLimit(manifest.Config, limits.ConfigBytes); err != nil {
 		return nil, err
 	}
 	return manifest, nil
@@ -222,6 +241,9 @@ func registryAPIURL(opts PullOptions, info *ImageInfo, kind, ref string) string 
 }
 
 func (r *PullRunner) fetchRegistryBytesWithRetryLimit(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, info *ImageInfo, opts PullOptions, auth *pullRegistryAuth, maxBytes int64) ([]byte, *pullRegistryAuth, error) {
+	if maxBytes <= 0 {
+		maxBytes = effectivePullResourceLimits(opts.Limits).ManifestBytes
+	}
 	var lastErr error
 	currentAuth := auth
 	backoff := initialBackoff
@@ -248,7 +270,7 @@ func (r *PullRunner) fetchRegistryBytesWithRetryLimit(ctx context.Context, rawUR
 }
 
 func (r *PullRunner) fetchRegistryBytesOnce(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, info *ImageInfo, opts PullOptions, auth *pullRegistryAuth) ([]byte, *pullRegistryAuth, error) {
-	return r.fetchRegistryBytesOnceLimit(ctx, rawURL, headers, query, info, opts, auth, 0)
+	return r.fetchRegistryBytesOnceLimit(ctx, rawURL, headers, query, info, opts, auth, effectivePullResourceLimits(opts.Limits).ManifestBytes)
 }
 
 func (r *PullRunner) fetchRegistryBytesOnceLimit(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, info *ImageInfo, opts PullOptions, auth *pullRegistryAuth, maxBytes int64) ([]byte, *pullRegistryAuth, error) {
@@ -294,17 +316,21 @@ func saveWithRetry(ctx context.Context, url string, headers map[string]string, q
 }
 
 func (r *PullRunner) fetchWithRetry(ctx context.Context, url string, headers map[string]string, query map[string]string) ([]byte, error) {
+	return r.fetchWithRetryLimit(ctx, url, headers, query, 0)
+}
+
+func (r *PullRunner) fetchWithRetryLimit(ctx context.Context, url string, headers map[string]string, query map[string]string, maxBytes int64) ([]byte, error) {
 	var lastErr error
 	backoff := initialBackoff
 	for i := 0; i < maxHTTPRetries; i++ {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		resp, err := r.httpGetBytes(ctx, url, headers, query)
+		resp, err := r.httpGetBytesWithStatusLimit(ctx, url, headers, query, maxBytes, nil)
 		if err == nil {
 			return resp, nil
 		}
-		if errors.Is(err, context.Canceled) {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errRegistryResponseTooLarge) {
 			return nil, err
 		}
 		lastErr = err
@@ -353,6 +379,9 @@ func (r *PullRunner) httpGetBytesWithStatus(ctx context.Context, rawURL string, 
 }
 
 func (r *PullRunner) httpGetBytesWithStatusLimit(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, maxBytes int64, progressOutput io.Writer) ([]byte, error) {
+	if maxBytes <= 0 {
+		maxBytes = maxManifestBlobSize
+	}
 	req, err := buildGETRequest(ctx, rawURL, headers, query)
 	if err != nil {
 		return nil, err
@@ -375,9 +404,6 @@ func (r *PullRunner) httpGetBytesWithStatusLimit(ctx context.Context, rawURL str
 	var reader io.Reader = resp.Body
 	if progressOutput != nil {
 		reader = newDownloadProgressReader(resp.Body, progressOutput, downloadProgressLabel(rawURL, ""), resp.ContentLength)
-	}
-	if maxBytes <= 0 {
-		return io.ReadAll(reader)
 	}
 	readLimit := maxBytes
 	if maxBytes < (1<<63 - 1) {

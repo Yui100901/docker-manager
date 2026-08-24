@@ -1,6 +1,8 @@
 package diagnostics
 
 import (
+	"strings"
+
 	"docker-manager/internal/sensitive"
 )
 
@@ -9,6 +11,9 @@ const redactedValue = sensitive.RedactedValue
 type sensitiveProfile = sensitive.Profile
 
 func normalizeRedactProfile(profile string, redactSecrets bool) (sensitive.Profile, error) {
+	if strings.TrimSpace(profile) == "" && !redactSecrets {
+		return sensitive.DefaultProfile(), nil
+	}
 	return sensitive.NormalizeProfile(profile, redactSecrets)
 }
 

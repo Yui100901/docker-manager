@@ -10,6 +10,7 @@ import (
 
 	"docker-manager/internal/docker"
 	"docker-manager/internal/parallel"
+	"docker-manager/internal/sensitive"
 
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/api/types/volume"
@@ -99,7 +100,7 @@ func (rr *ReverseResult) DockerRunCommandStringRaw() string {
 		}
 		sb.WriteString(fmt.Sprintf("# %s\n%s\n\n", name, shellJoin(filtered)))
 	}
-	return sb.String()
+	return rr.redactGeneratedOutput(sb.String())
 }
 
 func (rr *ReverseResult) DockerRunCommandStringPretty() string {
@@ -153,7 +154,22 @@ func (rr *ReverseResult) DockerRunCommandStringPretty() string {
 			}
 		}
 	}
-	return sb.String()
+	return rr.redactGeneratedOutput(sb.String())
+}
+
+func (rr *ReverseResult) redactGeneratedOutput(output string) string {
+	return sensitive.RedactText(output, rr.effectiveRedactProfile())
+}
+
+func (rr *ReverseResult) effectiveRedactProfile() sensitive.Profile {
+	if strings.TrimSpace(rr.options.RedactProfile) == "" && !rr.options.RedactSecrets {
+		return sensitive.DefaultProfile()
+	}
+	profile, err := sensitive.NormalizeProfile(rr.options.RedactProfile, rr.options.RedactSecrets)
+	if err != nil {
+		return sensitive.ProfileNone
+	}
+	return profile
 }
 
 func shellJoin(args []string) string {
@@ -196,42 +212,82 @@ func isShellSafe(arg string) bool {
 
 func (rr *ReverseResult) saveOutput() error {
 	if rr.options.ReverseType == ReverseCmd || rr.options.ReverseType == ReverseAll {
-		f, err := os.Create("docker_run_command.sh")
-		if err != nil {
-			return err
-		}
-		// ensure close & capture error
-		var closeErr error
-		defer func() {
-			if cerr := f.Close(); cerr != nil && closeErr == nil {
-				closeErr = cerr
-			}
-		}()
-
-		if _, err := fmt.Fprintln(f, "#!/bin/bash"); err != nil {
-			return err
-		}
-		if rr.options.PrettyFormat {
-			if _, err := fmt.Fprint(f, rr.DockerRunCommandStringPretty()); err != nil {
+		if err := func() error {
+			f, err := openPrivateOutput("docker_run_command.sh")
+			if err != nil {
 				return err
 			}
-		} else {
-			if _, err := fmt.Fprint(f, rr.DockerRunCommandStringRaw()); err != nil {
+			if _, err := fmt.Fprintln(f, "#!/bin/bash"); err != nil {
+				_ = f.Close()
 				return err
 			}
-		}
-		if closeErr != nil {
-			return closeErr
+			if rr.options.PrettyFormat {
+				_, err = fmt.Fprint(f, rr.DockerRunCommandStringPretty())
+			} else {
+				_, err = fmt.Fprint(f, rr.DockerRunCommandStringRaw())
+			}
+			if err != nil {
+				_ = f.Close()
+				return err
+			}
+			return f.Close()
+		}(); err != nil {
+			return err
 		}
 	}
 
 	if rr.options.ReverseType == ReverseCompose || rr.options.ReverseType == ReverseAll {
 		vols, nets := rr.buildTopLevelComposeMeta()
 		yml, _ := yaml.Marshal(ComposeFile{Services: rr.ComposeMap, Volumes: vols, Networks: nets})
-		return os.WriteFile("docker-compose.reverse.yml", yml, 0644)
+		return writePrivateOutput("docker-compose.reverse.yml", []byte(rr.redactGeneratedOutput(string(yml))))
 	}
 
 	return nil
+}
+
+func openPrivateOutput(path string) (*os.File, error) {
+	root, err := os.OpenRoot(".")
+	if err != nil {
+		return nil, fmt.Errorf("open output directory: %w", err)
+	}
+	defer root.Close()
+
+	info, err := root.Lstat(path)
+	switch {
+	case err == nil:
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("refusing to replace non-regular output %s", path)
+		}
+		if err := root.Remove(path); err != nil {
+			return nil, fmt.Errorf("remove existing output %s: %w", path, err)
+		}
+	case !os.IsNotExist(err):
+		return nil, fmt.Errorf("inspect output %s: %w", path, err)
+	}
+
+	// O_EXCL prevents a link planted after the Lstat/remove step from being
+	// followed when the fixed output name is recreated.
+	f, err := root.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return nil, err
+	}
+	if err := f.Chmod(0600); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return f, nil
+}
+
+func writePrivateOutput(path string, data []byte) error {
+	f, err := openPrivateOutput(path)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 func reverseWithOptions(ctx context.Context, names []string, options ReverseOptions) (*ReverseResult, error) {

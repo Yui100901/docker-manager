@@ -26,13 +26,38 @@ Windows:
 .\scripts\check.ps1 -Race
 ```
 
+ShellCheck 是默认门禁；环境未安装 ShellCheck 时脚本会失败。仅在明确由其他 CI job 执行 ShellCheck 时，才使用 `--no-shellcheck` 或 `-NoShellCheck` 显式跳过。
+
 本地 smoke:
 
 ```powershell
-.\scripts\local-test.ps1
+$localTestOutput = Join-Path $env:TEMP ("dm-local-test-" + [guid]::NewGuid().ToString("N"))
+.\scripts\local-test.ps1 -OutputDir $localTestOutput
+.\scripts\local-test.ps1 -OutputDir ($localTestOutput + "-noenv") -NoEnvironment
 ```
 
-覆盖范围包括帮助输出、版本输出、completion 生成、`DM_CONFIG`、错误输出格式、PowerShell 安装/卸载和 Docker 不可用时的错误路径。
+覆盖范围包括帮助输出、版本输出、completion 生成、`DM_CONFIG`、错误输出格式、PowerShell 安装/卸载和 Docker 不可用时的错误路径。默认运行还会验证 `DM_CONFIG`、`DM_HOME`、`DM_OUTPUT_DIR` 的 User/Process 快照恢复、多安装所有权链、失败回滚和真实 junction/reparse 拒绝；`-NoEnvironment` 用于不允许写用户环境变量的受限环境，并会跳过多安装所有权用例。两种模式都应使用唯一 `-OutputDir`，避免混用旧报告。
+
+## P1 定向回归
+
+P1 安全边界变更后至少运行：
+
+```bash
+go test -count=1 ./internal/appconfig ./internal/cli ./internal/registryauth
+go test -count=1 ./internal/commands/pull ./internal/commands/backup ./internal/commands/reverse ./internal/commands/diagnostics
+go test -race -count=1 ./internal/appconfig ./internal/cli ./internal/registryauth ./internal/commands/pull ./internal/commands/backup ./internal/commands/reverse ./internal/commands/diagnostics
+```
+
+定向用例应确认：
+
+- 配置文件超过 `1 MiB`、根节点不是 mapping、未知字段、错误类型、多文档和显式缺失路径均失败；隐式缺失 `.dm.yaml` 才回退默认值。
+- 默认 `redact_profile=none` 保留管理员输出；`basic`、`strict` 覆盖 text/JSON/Markdown/HTML、错误、verbose HTTP 和 reverse 文件。YAML 的 `redact_profile: none` 加 `redact_secrets: true` 必须失败，命令行同时指定时显式 `--redact-profile` 优先。
+- pull 覆盖 token/manifest/config body 上限、单层及累计压缩/展开预算、临时空间峰值、层数、慢 body、取消与 `1h` 默认/`24h` 硬上限；`--skip-existing`、重试、load/push 都必须处于单镜像 `--total-timeout` 内。
+- pull 输出覆盖已有普通文件的原子替换；backup 输出覆盖已有 artifact 的拒绝。两者还应覆盖 symlink/junction、并发 writer、取消、close/sync/rename 失败，确认失败时旧目标不变且只清理本事务 staging。
+- 分卷备份覆盖 `.parts.pending.json` 文件锁、崩溃后重试、已提交 manifest、外来同名 part/marker 替换和 staging 所有权冲突；恢复只能删除 `os.SameFile` 证明属于旧事务的文件。
+- restore/rerun 创建结果不确定与回滚测试必须注入同名外来容器；只有稳定 ID 和本次 128-bit owner label 同时匹配的候选可被删除。
+- volume docker-run probe 使用 digest-pinned 默认 helper、无网络、只读 rootfs/volume、drop capabilities、`no-new-privileges`，并验证失败和取消后 helper 容器清理。
+- image/volume prune 缺少 `--allow-non-atomic-delete` 时在首个删除请求前失败；container-only 候选不要求该选项。
 
 ## 远程 Docker 验收
 
@@ -52,21 +77,21 @@ exec > >(tee -a "$DM_TEST_LOG") 2>&1
 bash scripts/e2e.sh --mode smoke
 bash scripts/e2e.sh --mode install
 bash scripts/e2e.sh --mode cancel
-bash scripts/e2e.sh --mode full
-bash scripts/e2e.sh --mode destructive
+bash scripts/e2e.sh --mode full --confirm-destructive
+bash scripts/e2e.sh --mode destructive --confirm-destructive
 ```
 
 常用环境变量:
 
 ```bash
-DM_E2E_IMAGE=busybox:latest bash scripts/e2e.sh
-DM_E2E_PROXY=http://proxy.example:7890 bash scripts/e2e.sh
-DM_E2E_OFFLINE=1 bash scripts/e2e.sh
+DM_E2E_IMAGE=busybox:latest bash scripts/e2e.sh --mode full --confirm-destructive
+DM_E2E_PROXY=http://proxy.example:7890 bash scripts/e2e.sh --mode full --confirm-destructive
+DM_E2E_OFFLINE=1 bash scripts/e2e.sh --mode full --confirm-destructive
 DM_E2E_DM_BIN=/root/dm bash scripts/e2e.sh
 DM_E2E_KEEP_WORKDIR=1 DM_E2E_WORK_DIR="$DM_TEST_ROOT/e2e-work" bash scripts/e2e.sh
 ```
 
-`smoke` 不依赖 Docker；`install` 验证临时安装/卸载；`cancel` 使用本地阻塞探针验证 SIGINT/context 取消；`full` 和 `destructive` 会启动临时 registry，并覆盖镜像拉取、导入、推送、备份恢复、报告和破坏性命令安全边界。
+不指定模式时默认执行 `smoke`，且不依赖 Docker；`install` 验证临时安装/卸载；`cancel` 使用本地阻塞探针验证 SIGINT/context 取消；`full` 和 `destructive` 会启动临时 registry，并覆盖镜像拉取、导入、推送、备份恢复、报告和破坏性命令安全边界，因此必须显式选择模式并确认。`DM_E2E_WORK_DIR` 必须指向尚不存在的新目录；脚本只会删除自己创建且 ownership sentinel 匹配的目录。
 
 网络受限时可使用代理:
 
@@ -113,6 +138,7 @@ docker info
 ```bash
 dm image pull busybox:latest --output-dir "$DM_TEST_ROOT/pulled"
 dm image pull busybox:latest --load --output-dir "$DM_TEST_ROOT/pulled-load"
+dm image pull busybox:latest --output-dir "$DM_TEST_ROOT/pulled-budget" --max-layers 256 --max-layer-bytes 2147483648 --max-expanded-layer-bytes 4294967296 --max-total-layer-bytes 4294967296 --max-total-expanded-bytes 8589934592 --max-temporary-bytes 17179869184 --total-timeout 20m
 dm image save "$DM_TEST_ROOT/saved" --filter 'repo:busybox' --dry-run
 dm image save "$DM_TEST_ROOT/saved" --filter 'repo:busybox'
 dm image load "$DM_TEST_ROOT/saved"
@@ -141,12 +167,20 @@ dm reverse --filter "label:dmtest=true" --reverse-type compose
 dm rerun dm_test_container --dry-run
 dm backup dm_test_container --dry-run
 dm backup dm_test_container --bundle --bundle-output "$DM_TEST_ROOT/container-backup.tar.gz"
+dm backup dm_test_container --bundle --split-size 1M --bundle-output "$DM_TEST_ROOT/container-split.tar.gz"
 dm restore "$DM_TEST_ROOT/container-backup.tar.gz" --dry-run
+dm restore "$DM_TEST_ROOT/container-backup.tar.gz" --dry-run --max-archive-size 20G --max-expanded-size 40G --max-json-size 64M --max-parts 32
 # 使用唯一目标名执行实际恢复，实际写操作必须显式确认
 dm restore "$DM_TEST_ROOT/container-backup.tar.gz" --name dm_test_restored --confirm
 ```
 
-`--signing-key`、`--passphrase-file` 和最终 bundle 路径必须放在备份输出目录外。测试 checksum 缺失兼容路径时必须显式使用 `--skip-checksum`，其他实际恢复测试不得跳过完整性校验。
+`--signing-key`、`--passphrase-file` 和最终 bundle 路径必须放在备份输出目录外。测试 checksum 缺失兼容路径时必须显式使用 `--skip-checksum`，其他实际恢复测试不得跳过完整性校验。成功分卷后应存在连续 `.part-NNN` 和 `container-split.tar.gz.parts.json`，manifest 的 `commit` 为 `complete`，逐卷和整体 digest 可复核，且不再存在 `.parts.pending.json` 或 `.dm-backup-staging-*`。
+
+实际 restore/rerun 后检查内部事务标签为 32 个十六进制字符；相同名称本身不能作为清理所有权依据：
+
+```bash
+docker inspect --format '{{ index .Config.Labels "com.docker-manager.restore-owner" }}' dm_test_restored
+```
 
 报告:
 
@@ -155,14 +189,26 @@ dm health --filter "label:dmtest=true" --format markdown
 dm network --filter "label:dmtest=true" --format html
 dm logs --filter "label:dmtest=true" --keyword dm-test --tail 50
 dm volumes --format json
+docker pull 'busybox:1.36.1@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662'
+dm volumes --size-mode docker-run --format json
+docker ps -a --filter label=com.docker-manager.volume-probe
 dm tree busybox:latest --format markdown
 dm prune --filter "label=dmtest=true" --format markdown
+docker volume create --label dmtest=true dm_test_prune_volume
+# 预期失败，且 dm_test_prune_volume 仍存在
+dm prune --only volume --filter "label=dmtest=true" --apply --confirm
+docker volume inspect dm_test_prune_volume
+# 明确接受 Docker 非原子删除窗口后才允许删除
+dm prune --only volume --filter "label=dmtest=true" --apply --confirm --allow-non-atomic-delete
 ```
+
+恢复资源预算测试应覆盖超限归档、展开炸弹、超长加密 chunk、过多/缺失/乱序分卷、JSON 深度和累计字节，并确认失败时没有已发布的 join 文件、解密明文树或 Docker mutation。volume probe 结束后，按 `com.docker-manager.volume-probe` 筛选不应有残留容器。prune 应先验证缺少 `--allow-non-atomic-delete` 时 image/volume 候选不会触发任何删除，再在隔离测试资源上显式确认。
 
 清理:
 
 ```bash
 docker rm -f dm_test_container dm_test_restored dm_registry_test >/dev/null 2>&1 || true
+docker volume rm dm_test_prune_volume >/dev/null 2>&1 || true
 rm -rf "$DM_TEST_ROOT"
 unset HTTP_PROXY HTTPS_PROXY NO_PROXY
 ```

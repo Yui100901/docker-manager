@@ -10,6 +10,9 @@ func printPruneReport(w io.Writer, report PruneReport) {
 	fmt.Fprintf(w, "Docker 清理报告 (%s)\n", report.GeneratedAt)
 	printDockerEndpoint(w, report.DockerEndpoint)
 	printPruneScope(w, report.Scope)
+	if hasNonAtomicPruneCandidates(report) {
+		fmt.Fprintf(w, "image/volume 非原子删除确认: %v\n", report.NonAtomicDeleteAcknowledged)
+	}
 	fmt.Fprintf(w, "预计可回收空间: %s\n\n", humanBytes(report.EstimatedBytes))
 	if len(report.Warnings) > 0 {
 		fmt.Fprintln(w, "警告:")

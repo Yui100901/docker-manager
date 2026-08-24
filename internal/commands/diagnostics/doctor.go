@@ -2,12 +2,14 @@ package diagnostics
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"runtime"
 	"time"
 
 	"docker-manager/internal/commandflags"
 	"docker-manager/internal/parallel"
+	"docker-manager/internal/registryauth"
 	rpt "docker-manager/internal/report"
 
 	"github.com/spf13/cobra"
@@ -19,16 +21,20 @@ func NewDoctorCommand() *cobra.Command {
 
 func NewDoctorCommandWithDefaults(defaults func() DoctorDefaults) *cobra.Command {
 	opts := DoctorOptions{
-		ConfigPath:    ".dm.yaml",
-		OutputDir:     ".",
-		Timeout:       5 * time.Second,
-		CheckE2E:      true,
-		MinDiskFreeMB: 1024,
+		ConfigPath:              ".dm.yaml",
+		OutputDir:               ".",
+		Timeout:                 5 * time.Second,
+		CheckE2E:                true,
+		MinDiskFreeMB:           1024,
+		CredentialHelperTimeout: registryauth.DefaultCredentialHelperTimeout,
 	}
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "检查 Docker、registry、代理、磁盘和测试前置条件",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if opts.MinDiskFreeMB < 0 {
+				return fmt.Errorf("--min-disk-free-mb 不能为负数")
+			}
 			if defaults != nil {
 				cfg := defaults()
 				if cfg.ConfigPath != "" {
@@ -36,6 +42,12 @@ func NewDoctorCommandWithDefaults(defaults func() DoctorDefaults) *cobra.Command
 				}
 				if cfg.OutputDir != "" && !cmd.Flags().Changed("output-dir") {
 					opts.OutputDir = cfg.OutputDir
+				}
+				if cfg.DisableCredentialHelpers && !cmd.Flags().Changed("disable-credential-helpers") {
+					opts.DisableCredentialHelpers = true
+				}
+				if cfg.CredentialHelperTimeout > 0 && !cmd.Flags().Changed("credential-helper-timeout") {
+					opts.CredentialHelperTimeout = cfg.CredentialHelperTimeout
 				}
 			}
 			report := runDoctor(cmd.Context(), opts)
@@ -47,6 +59,7 @@ func NewDoctorCommandWithDefaults(defaults func() DoctorDefaults) *cobra.Command
 	cmd.Flags().StringArrayVar(&opts.Registries, "registry", nil, "检查 registry 连通性和凭据，可重复指定")
 	commandflags.AddPlainHTTPFlag(cmd, &opts.PlainHTTP)
 	commandflags.AddDockerConfigFlag(cmd, &opts.DockerConfig)
+	commandflags.AddCredentialHelperFlags(cmd, &opts.DisableCredentialHelpers, &opts.CredentialHelperTimeout, opts.CredentialHelperTimeout)
 	cmd.Flags().StringVar(&opts.OutputDir, "output-dir", opts.OutputDir, "检查磁盘空间的输出目录")
 	cmd.Flags().DurationVar(&opts.Timeout, "timeout", opts.Timeout, "单项网络/Docker 检查超时时间")
 	cmd.Flags().BoolVar(&opts.CheckE2E, "check-e2e", opts.CheckE2E, "检查 scripts/e2e.sh、Go 和 vendor 前置条件")

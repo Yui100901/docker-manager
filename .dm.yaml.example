@@ -1,11 +1,14 @@
 # docker-manager default config
 #
 # Copy this file to .dm.yaml and adjust values as needed.
+# The file must be at most 1 MiB and its YAML document root must be a mapping.
+# Unknown fields, invalid types, multiple documents, and invalid values fail.
 
 # proxy: http://127.0.0.1:7890
 
 # Docker API endpoint. Supported schemes: tcp://, unix://, and npipe://.
-# Leave empty to use local Docker or standard Docker envs:
+# Omit these keys to inherit standard Docker envs. An explicitly empty value
+# clears the matching environment fallback and selects the local/default value.
 # DOCKER_HOST, DOCKER_TLS_VERIFY, DOCKER_CERT_PATH, DOCKER_API_VERSION.
 # docker_host: tcp://docker.example.com:2376
 # A non-empty cert path enables TLS/mTLS and must contain ca.pem, cert.pem,
@@ -14,6 +17,8 @@
 # docker_tls_verify: true
 # docker_cert_path: /root/.docker/certs
 # docker_api_version: "1.46"
+# Docker connect, TLS handshake, and response-header timeout.
+# docker_timeout: 30s
 
 # Optional paths inspected by dm doctor only. They do not modify daemon or
 # registry runtime trust; install registry CAs in system/Docker trust instead.
@@ -24,6 +29,26 @@
 os: linux
 arch: amd64
 output_dir: images
+
+# Candidate readiness timeout used by restore --replace and rerun.
+# ready_timeout: 30s
+
+# Administrator output is visible by default. Set basic or strict when output
+# may be shared. redact_secrets is the legacy boolean alias for basic only when
+# redact_profile is omitted. `none` plus redact_secrets: true is rejected.
+# An explicit CLI --redact-profile takes precedence over --redact-secrets.
+# redact_profile: none
+# redact_secrets: false
+
+# Docker config and credential-helper executables found through PATH are
+# trusted local inputs. Helpers can be disabled or given a shorter deadline.
+# credential_helpers_disabled: false
+# credential_helper_timeout: 5s
+
+# Extra HTTPS auth-service origins allowed to receive registry credentials.
+# Same-origin realms and Docker Hub's built-in realm do not need to be listed.
+# registry_auth_realms:
+#   - https://auth.example.com
 
 verbose: false
 quiet: false

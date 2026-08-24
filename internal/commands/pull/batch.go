@@ -27,20 +27,24 @@ const (
 )
 
 type PullBatchOptions struct {
-	File           string
-	Images         []string
-	To             string
-	OutputDir      string
-	Load           bool
-	DockerConfig   string
-	PlainHTTP      bool
-	Concurrency    int
-	Retries        int
-	SkipExisting   bool
-	Resume         bool
-	StateFile      string
-	ReportFile     string
-	ProgressOutput io.Writer
+	File                     string
+	Images                   []string
+	To                       string
+	OutputDir                string
+	Load                     bool
+	DockerConfig             string
+	PlainHTTP                bool
+	DisableCredentialHelpers bool
+	CredentialHelperTimeout  time.Duration
+	AuthRealmAllowlist       []string
+	Limits                   PullResourceLimits
+	Concurrency              int
+	Retries                  int
+	SkipExisting             bool
+	Resume                   bool
+	StateFile                string
+	ReportFile               string
+	ProgressOutput           io.Writer
 	commandflags.FormatOptions
 }
 
@@ -110,6 +114,12 @@ func runPullBatchWithDeps(ctx context.Context, opts PullBatchOptions, pull pullB
 	}
 	if opts.Retries < 0 {
 		return PullBatchReport{}, fmt.Errorf("--retries 不能小于 0")
+	}
+	if err := validateAuthRealmAllowlist(opts.AuthRealmAllowlist); err != nil {
+		return PullBatchReport{}, err
+	}
+	if err := validatePullResourceLimits(opts.Limits); err != nil {
+		return PullBatchReport{}, err
 	}
 	if opts.OutputDir == "" {
 		opts.OutputDir = "."
@@ -208,16 +218,23 @@ func runPullBatchItem(ctx context.Context, imageName string, opts PullBatchOptio
 		}
 	}
 	pullOpts := PullOptions{
-		Context:        ctx,
-		OutputDir:      opts.OutputDir,
-		Load:           opts.Load,
-		To:             opts.To,
-		DockerConfig:   opts.DockerConfig,
-		PlainHTTP:      opts.PlainHTTP,
-		ProgressOutput: progressOutput,
+		Context:                  ctx,
+		OutputDir:                opts.OutputDir,
+		Load:                     opts.Load,
+		To:                       opts.To,
+		DockerConfig:             opts.DockerConfig,
+		PlainHTTP:                opts.PlainHTTP,
+		DisableCredentialHelpers: opts.DisableCredentialHelpers,
+		CredentialHelperTimeout:  opts.CredentialHelperTimeout,
+		AuthRealmAllowlist:       append([]string(nil), opts.AuthRealmAllowlist...),
+		Limits:                   effectivePullResourceLimits(opts.Limits),
+		ProgressOutput:           progressOutput,
 	}
+	itemCtx, cancel := context.WithTimeout(ctx, pullOpts.Limits.TotalTimeout)
+	defer cancel()
+	pullOpts.Context = itemCtx
 	if opts.SkipExisting {
-		found, err := exists(ctx, imageName, target, pullOpts)
+		found, err := exists(itemCtx, imageName, target, pullOpts)
 		if err != nil {
 			result.Message = "检查目标 manifest 失败: " + err.Error()
 			result.FinishedAt = time.Now().Format(time.RFC3339)
@@ -235,13 +252,13 @@ func runPullBatchItem(ctx context.Context, imageName string, opts PullBatchOptio
 	maxAttempts := opts.Retries + 1
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		result.Attempts = attempt
-		if err := ctx.Err(); err != nil {
+		if err := itemCtx.Err(); err != nil {
 			result.Message = err.Error()
 			result.FinishedAt = time.Now().Format(time.RFC3339)
 			return result
 		}
 		if err := pull(imageName, pullOpts); err != nil {
-			if errors.Is(err, context.Canceled) {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				result.Message = err.Error()
 				result.FinishedAt = time.Now().Format(time.RFC3339)
 				return result
@@ -276,7 +293,8 @@ func (r *PullRunner) targetManifestExists(ctx context.Context, imageName, target
 	}
 	targetOpts := opts
 	targetOpts.PlainHTTP = pushTargetUsesPlainHTTP(opts)
-	_, _, err = r.fetchRegistryBytesOnce(ctx, registryAPIURL(targetOpts, info, "manifests", getReference(info)), headers, nil, info, targetOpts, nil)
+	limit := effectivePullResourceLimits(opts.Limits).ManifestBytes
+	_, _, err = r.fetchRegistryBytesOnceLimit(ctx, registryAPIURL(targetOpts, info, "manifests", getReference(info)), headers, nil, info, targetOpts, nil, limit)
 	if err == nil {
 		return true, nil
 	}

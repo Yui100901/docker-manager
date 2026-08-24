@@ -7,7 +7,16 @@ import (
 )
 
 func checkDoctorDisk(outputDir string, minFreeMB int64) DoctorCheck {
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
+	if minFreeMB < 0 {
+		return DoctorCheck{
+			Name:        "disk",
+			Status:      "failed",
+			Message:     "磁盘剩余空间告警阈值不能为负数",
+			Detail:      fmt.Sprintf("min_free_mb=%d", minFreeMB),
+			Recommended: "将 --min-disk-free-mb 设置为 0 或正整数",
+		}
+	}
+	if err := os.MkdirAll(outputDir, 0700); err != nil {
 		return DoctorCheck{
 			Name:        "disk",
 			Status:      "failed",

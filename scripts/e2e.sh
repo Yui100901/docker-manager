@@ -2,11 +2,19 @@
 set -euo pipefail
 
 ROOT_DIR=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-MODE=${DM_E2E_MODE:-full}
-WORK_DIR=${DM_E2E_WORK_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/dm-e2e-XXXXXX")}
+MODE=${DM_E2E_MODE:-smoke}
+MODE_EXPLICIT=0
+if [ -n "${DM_E2E_MODE+x}" ]; then
+  MODE_EXPLICIT=1
+fi
+CONFIRM_DESTRUCTIVE=${DM_E2E_CONFIRM_DESTRUCTIVE:-0}
+WORK_DIR=${DM_E2E_WORK_DIR:-"${TMPDIR:-/tmp}/dm-e2e-$$_${RANDOM}"}
+WORK_DIR_OWNED=0
+WORK_DIR_TOKEN="dm-e2e:$$_${RANDOM}_$(date +%s)"
+WORK_DIR_SENTINEL=""
 SOURCE_IMAGE=${DM_E2E_IMAGE:-busybox:latest}
 REGISTRY_IMAGE=${DM_E2E_REGISTRY_IMAGE:-registry:2}
-SUFFIX=${DM_E2E_SUFFIX:-$(date +%s)}
+SUFFIX=${DM_E2E_SUFFIX:-$(date +%s)_$$_${RANDOM}}
 LABEL_KEY=${DM_E2E_LABEL_KEY:-dm.e2e}
 LABEL_VALUE=${DM_E2E_LABEL_VALUE:-${SUFFIX}}
 LABEL="${LABEL_KEY}=${LABEL_VALUE}"
@@ -17,6 +25,7 @@ RERUN_CONTAINER_NAME="dm_e2e_rerun_${SUFFIX}"
 STOPPED_CONTAINER_NAME="dm_e2e_stopped_${SUFFIX}"
 RESTORED_NAME="dm_e2e_restored_${SUFFIX}"
 RESTORED_REPLACE_NAME="dm_e2e_replace_${SUFFIX}"
+RUNTIME_PROBE_NAME="dm_e2e_probe_${SUFFIX}"
 VOLUME_NAME="dm_e2e_volume_${SUFFIX}"
 SOURCE_LOCAL_TAG="dm-e2e-source-${SUFFIX}/busybox:latest"
 TARGET_NAMESPACE="dm-e2e-target-${SUFFIX}"
@@ -35,6 +44,7 @@ STALL_PORT=""
 STALL_PORT_FILE="${WORK_DIR}/stall-server.port"
 STALL_SEEN_FILE="${WORK_DIR}/stall-server.seen"
 STALL_LOG="${LOG_DIR}/stall-server.log"
+DOCKER_SCOPE_CLAIMED=0
 
 usage() {
   cat <<'EOF'
@@ -42,15 +52,16 @@ Usage: scripts/e2e.sh [--mode smoke|full|destructive|install|cancel]
 
 Modes:
   smoke        Build or use dm, then run help/version/config/doctor checks without Docker.
-  full         Run the complete Docker e2e matrix. This is the default.
-  destructive  Alias of full, kept as an explicit opt-in label for safety-matrix runs.
+  full         Run the complete Docker e2e matrix; requires --confirm-destructive.
+  destructive  Alias of full; requires --confirm-destructive.
   install      Build or use dm, install into a temporary directory, verify wrapper/config, then uninstall.
   cancel       Verify SIGINT/context cancellation for long-running command paths.
 
 Environment:
   DM_E2E_MODE       Default mode when --mode is not set.
-  DM_E2E_WORK_DIR   Directory for logs and temporary files.
+  DM_E2E_WORK_DIR   New, non-existing directory for logs and temporary files.
   DM_E2E_DM_BIN     Existing dm binary; skips building when set.
+  DM_E2E_CONFIRM_DESTRUCTIVE=1 confirms full/destructive mode.
   DM_E2E_KEEP_WORKDIR=1 keeps the work directory after the run.
   DM_E2E_CANCEL_EXIT_TIMEOUT=10 timeout in seconds after SIGINT before the child is terminated.
 EOF
@@ -60,7 +71,12 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --mode)
       MODE=${2:?missing value for --mode}
+      MODE_EXPLICIT=1
       shift 2
+      ;;
+    --confirm-destructive)
+      CONFIRM_DESTRUCTIVE=1
+      shift
       ;;
     -h|--help)
       usage
@@ -84,7 +100,112 @@ case "${MODE}" in
     ;;
 esac
 
-mkdir -p "${WORK_DIR}" "${LOG_DIR}"
+case "${SUFFIX}" in
+  ""|*[!a-z0-9_.-]*)
+    echo "DM_E2E_SUFFIX contains unsafe characters: ${SUFFIX}" >&2
+    exit 2
+    ;;
+esac
+case "${LABEL_KEY}" in
+  ""|*[!A-Za-z0-9_.-]*)
+    echo "DM_E2E_LABEL_KEY contains unsafe characters: ${LABEL_KEY}" >&2
+    exit 2
+    ;;
+esac
+case "${LABEL_VALUE}" in
+  ""|*[!A-Za-z0-9_.-]*)
+    echo "DM_E2E_LABEL_VALUE contains unsafe characters: ${LABEL_VALUE}" >&2
+    exit 2
+    ;;
+esac
+
+if [ "${MODE}" = "full" ] || [ "${MODE}" = "destructive" ]; then
+  if [ "${MODE_EXPLICIT}" -ne 1 ]; then
+    echo "full/destructive mode must be selected explicitly with --mode or DM_E2E_MODE." >&2
+    exit 2
+  fi
+  if [ "${CONFIRM_DESTRUCTIVE}" != "1" ]; then
+    echo "full/destructive mode requires --confirm-destructive or DM_E2E_CONFIRM_DESTRUCTIVE=1." >&2
+    exit 2
+  fi
+fi
+
+protected_work_dir() {
+  local candidate=$1
+  local home_dir=""
+  if [ -n "${HOME:-}" ] && [ -d "${HOME}" ]; then
+    home_dir=$(CDPATH='' cd -- "${HOME}" && pwd -P)
+  fi
+  [ "${candidate}" = "/" ] || [ "${candidate}" = "${ROOT_DIR}" ] || { [ -n "${home_dir}" ] && [ "${candidate}" = "${home_dir}" ]; }
+}
+
+prepare_work_dir() {
+  local requested=$1 parent leaf parent_real candidate
+  if [ -z "${requested}" ] || [ -e "${requested}" ] || [ -L "${requested}" ]; then
+    echo "DM_E2E_WORK_DIR must name a new, non-existing directory: ${requested}" >&2
+    return 1
+  fi
+  parent=$(dirname -- "${requested}")
+  leaf=$(basename -- "${requested}")
+  if [ -z "${leaf}" ] || [ "${leaf}" = "." ] || [ "${leaf}" = ".." ] || [ ! -d "${parent}" ]; then
+    echo "Invalid DM_E2E_WORK_DIR: ${requested}" >&2
+    return 1
+  fi
+  parent_real=$(CDPATH='' cd -- "${parent}" && pwd -P) || return 1
+  candidate="${parent_real}/${leaf}"
+  if protected_work_dir "${candidate}"; then
+    echo "Refusing protected E2E work directory: ${candidate}" >&2
+    return 1
+  fi
+  umask 077
+  if ! mkdir -- "${candidate}"; then
+    echo "Could not exclusively create E2E work directory: ${candidate}" >&2
+    return 1
+  fi
+  WORK_DIR=${candidate}
+  WORK_DIR_SENTINEL="${WORK_DIR}/.dm-e2e-owned"
+  if ! printf '%s\n' "${WORK_DIR_TOKEN}" >"${WORK_DIR_SENTINEL}" || ! chmod 600 "${WORK_DIR_SENTINEL}"; then
+    rm -f -- "${WORK_DIR_SENTINEL}" >/dev/null 2>&1 || true
+    rmdir -- "${WORK_DIR}" >/dev/null 2>&1 || true
+    return 1
+  fi
+  WORK_DIR_OWNED=1
+}
+
+remove_owned_work_dir() {
+  if [ "${WORK_DIR_OWNED}" -ne 1 ] || [ -z "${WORK_DIR}" ] || [ -L "${WORK_DIR}" ] || [ ! -d "${WORK_DIR}" ]; then
+    echo "Refusing to remove unowned E2E work directory: ${WORK_DIR}" >&2
+    return 1
+  fi
+  if protected_work_dir "${WORK_DIR}" || [ -L "${WORK_DIR_SENTINEL}" ] || [ ! -f "${WORK_DIR_SENTINEL}" ]; then
+    echo "Refusing to remove unsafe E2E work directory: ${WORK_DIR}" >&2
+    return 1
+  fi
+  if [ "$(cat "${WORK_DIR_SENTINEL}")" != "${WORK_DIR_TOKEN}" ]; then
+    echo "Refusing to remove E2E work directory with invalid ownership sentinel: ${WORK_DIR}" >&2
+    return 1
+  fi
+  rm -rf -- "${WORK_DIR}"
+  WORK_DIR_OWNED=0
+}
+
+prepare_work_dir "${WORK_DIR}"
+trap 'remove_owned_work_dir >/dev/null 2>&1 || true' EXIT
+BACKUP_DIR="${WORK_DIR}/backup"
+BACKUP_ARCHIVE="${WORK_DIR}/container-backup.tar.gz"
+BATCH_BACKUP_DIR="${WORK_DIR}/backup-batch"
+MERGED_BACKUP_DIR="${WORK_DIR}/backup-merged"
+MERGED_BACKUP_ARCHIVE="${WORK_DIR}/backup-merged.tar.gz"
+if [ -z "${DM_E2E_DM_BIN:-}" ]; then
+  DM_BIN="${WORK_DIR}/dm"
+fi
+RESULTS_TSV="${WORK_DIR}/results.tsv"
+REPORT_MD="${WORK_DIR}/e2e-report.md"
+LOG_DIR="${WORK_DIR}/logs"
+STALL_PORT_FILE="${WORK_DIR}/stall-server.port"
+STALL_SEEN_FILE="${WORK_DIR}/stall-server.seen"
+STALL_LOG="${LOG_DIR}/stall-server.log"
+mkdir -p "${LOG_DIR}"
 printf 'case\tstatus\texit_code\tseconds\tlog\n' >"${RESULTS_TSV}"
 
 cleanup() {
@@ -92,24 +213,33 @@ cleanup() {
     kill "${STALL_PID}" >/dev/null 2>&1 || true
     wait "${STALL_PID}" >/dev/null 2>&1 || true
   fi
-  docker rm -f \
-    "${CONTAINER_NAME}" \
-    "${SECOND_CONTAINER_NAME}" \
-    "${RERUN_CONTAINER_NAME}" \
-    "${STOPPED_CONTAINER_NAME}" \
-    "${RESTORED_NAME}" \
-    "${RESTORED_REPLACE_NAME}" \
-    "${REGISTRY_NAME}" >/dev/null 2>&1 || true
-  docker volume rm "${VOLUME_NAME}" >/dev/null 2>&1 || true
-  if [ -n "${REGISTRY:-}" ]; then
-    docker image rm "${REGISTRY}/${SOURCE_LOCAL_TAG}" >/dev/null 2>&1 || true
-    docker image ls --format '{{.Repository}}:{{.Tag}}' |
-      grep -E "^${REGISTRY}/${TARGET_NAMESPACE}/|^${REGISTRY}/dm-e2e-" |
-      xargs -r docker image rm >/dev/null 2>&1 || true
+  if [ "${DOCKER_SCOPE_CLAIMED}" -eq 1 ] && command -v docker >/dev/null 2>&1; then
+    for owned_container in \
+      "${CONTAINER_NAME}" \
+      "${SECOND_CONTAINER_NAME}" \
+      "${RERUN_CONTAINER_NAME}" \
+      "${STOPPED_CONTAINER_NAME}" \
+      "${RESTORED_NAME}" \
+      "${RESTORED_REPLACE_NAME}" \
+      "${RUNTIME_PROBE_NAME}" \
+      "${REGISTRY_NAME}"; do
+      if [ "$(docker inspect --format "{{ index .Config.Labels \"${LABEL_KEY}\" }}" "${owned_container}" 2>/dev/null || true)" = "${LABEL_VALUE}" ]; then
+        docker rm -f "${owned_container}" >/dev/null 2>&1 || true
+      fi
+    done
+    if [ "$(docker volume inspect --format "{{ index .Labels \"${LABEL_KEY}\" }}" "${VOLUME_NAME}" 2>/dev/null || true)" = "${LABEL_VALUE}" ]; then
+      docker volume rm "${VOLUME_NAME}" >/dev/null 2>&1 || true
+    fi
+    if [ -n "${REGISTRY:-}" ]; then
+      docker image rm "${REGISTRY}/${SOURCE_LOCAL_TAG}" >/dev/null 2>&1 || true
+      docker image ls --format '{{.Repository}}:{{.Tag}}' |
+        awk -v first="${REGISTRY}/${TARGET_NAMESPACE}/" -v second="${REGISTRY}/dm-e2e-" 'index($0, first) == 1 || index($0, second) == 1' |
+        xargs -r docker image rm >/dev/null 2>&1 || true
+    fi
+    docker image rm "${SOURCE_LOCAL_TAG}" >/dev/null 2>&1 || true
   fi
-  docker image rm "${SOURCE_LOCAL_TAG}" >/dev/null 2>&1 || true
   if [ "${DM_E2E_KEEP_WORKDIR:-0}" != "1" ]; then
-    rm -rf "${WORK_DIR}"
+    remove_owned_work_dir || true
   else
     echo "保留测试目录: ${WORK_DIR}"
   fi
@@ -262,7 +392,7 @@ run_cancel_case() {
   local log_file
   log_file="${LOG_DIR}/$(safe_name "${name}").log"
   local start end code status watchdog
-  log "娴嬭瘯 ${name} (cancel)"
+  log "测试 ${name} (cancel)"
   rm -f "${STALL_SEEN_FILE}"
   start=$(date +%s)
   set +e
@@ -372,21 +502,56 @@ wait_for_registry() {
 }
 
 verify_docker_runtime() {
-  local probe="dm_e2e_probe_${SUFFIX}"
-  docker rm -f "${probe}" >/dev/null 2>&1 || true
-  if ! timeout 20 docker create --name "${probe}" "${SOURCE_IMAGE}" sh -c "echo dm-e2e-probe" >/dev/null; then
+  if docker inspect "${RUNTIME_PROBE_NAME}" >/dev/null 2>&1; then
+    echo "Docker runtime probe name is already in use: ${RUNTIME_PROBE_NAME}" >&2
+    exit 1
+  fi
+  if ! timeout 20 docker create --name "${RUNTIME_PROBE_NAME}" --label "${LABEL}" "${SOURCE_IMAGE}" sh -c "echo dm-e2e-probe" >/dev/null; then
     echo "Docker 无法在 20s 内创建测试容器，full/destructive 测试无法继续。" >&2
     echo "请先确认 Docker/containerd 运行状态，或换用干净测试机。" >&2
-    docker rm -f "${probe}" >/dev/null 2>&1 || true
+    if [ "$(docker inspect --format "{{ index .Config.Labels \"${LABEL_KEY}\" }}" "${RUNTIME_PROBE_NAME}" 2>/dev/null || true)" = "${LABEL_VALUE}" ]; then
+      docker rm -f "${RUNTIME_PROBE_NAME}" >/dev/null 2>&1 || true
+    fi
     exit 1
   fi
-  if ! timeout 20 docker start -a "${probe}" >/dev/null; then
+  if ! timeout 20 docker start -a "${RUNTIME_PROBE_NAME}" >/dev/null; then
     echo "Docker 无法在 20s 内启动测试容器，full/destructive 测试无法继续。" >&2
     echo "请先确认 Docker/containerd 运行状态，或换用干净测试机。" >&2
-    docker rm -f "${probe}" >/dev/null 2>&1 || true
+    if [ "$(docker inspect --format "{{ index .Config.Labels \"${LABEL_KEY}\" }}" "${RUNTIME_PROBE_NAME}" 2>/dev/null || true)" = "${LABEL_VALUE}" ]; then
+      docker rm -f "${RUNTIME_PROBE_NAME}" >/dev/null 2>&1 || true
+    fi
     exit 1
   fi
-  docker rm -f "${probe}" >/dev/null 2>&1 || true
+  if [ "$(docker inspect --format "{{ index .Config.Labels \"${LABEL_KEY}\" }}" "${RUNTIME_PROBE_NAME}" 2>/dev/null || true)" = "${LABEL_VALUE}" ]; then
+    docker rm -f "${RUNTIME_PROBE_NAME}" >/dev/null 2>&1 || true
+  fi
+}
+
+claim_docker_scope() {
+  local candidate
+  for candidate in \
+    "${CONTAINER_NAME}" \
+    "${SECOND_CONTAINER_NAME}" \
+    "${RERUN_CONTAINER_NAME}" \
+    "${STOPPED_CONTAINER_NAME}" \
+    "${RESTORED_NAME}" \
+    "${RESTORED_REPLACE_NAME}" \
+    "${RUNTIME_PROBE_NAME}" \
+    "${REGISTRY_NAME}"; do
+    if docker inspect "${candidate}" >/dev/null 2>&1; then
+      echo "Refusing to reuse existing Docker test container: ${candidate}" >&2
+      exit 1
+    fi
+  done
+  if docker volume inspect "${VOLUME_NAME}" >/dev/null 2>&1; then
+    echo "Refusing to reuse existing Docker test volume: ${VOLUME_NAME}" >&2
+    exit 1
+  fi
+  if docker image inspect "${SOURCE_LOCAL_TAG}" >/dev/null 2>&1; then
+    echo "Refusing to reuse existing Docker test image tag: ${SOURCE_LOCAL_TAG}" >&2
+    exit 1
+  fi
+  DOCKER_SCOPE_CLAIMED=1
 }
 
 build_dm() {
@@ -537,13 +702,14 @@ fi
 if [ "${MODE}" = "cancel" ]; then
   run_cancel_mode
   write_report
-  log "cancel 娴嬭瘯閫氳繃"
-  echo "娴嬭瘯鎶ュ憡: ${REPORT_MD}"
-  echo "娴嬭瘯鏄庣粏: ${RESULTS_TSV}"
+  log "cancel 测试通过"
+  echo "测试报告: ${REPORT_MD}"
+  echo "测试明细: ${RESULTS_TSV}"
   exit 0
 fi
 
 need_cmd docker
+claim_docker_scope
 
 log "准备测试镜像"
 ensure_image "${REGISTRY_IMAGE}"
@@ -551,8 +717,7 @@ ensure_image "${SOURCE_IMAGE}"
 verify_docker_runtime
 
 log "启动临时 registry ${REGISTRY_NAME}"
-docker rm -f "${REGISTRY_NAME}" >/dev/null 2>&1 || true
-docker run -d --name "${REGISTRY_NAME}" -p "127.0.0.1::5000" "${REGISTRY_IMAGE}" >/dev/null
+docker run -d --name "${REGISTRY_NAME}" --label "${LABEL}" -p "127.0.0.1::5000" "${REGISTRY_IMAGE}" >/dev/null
 REGISTRY="127.0.0.1:$(registry_port)"
 TARGET_PREFIX="${REGISTRY}/${TARGET_NAMESPACE}"
 SOURCE_REGISTRY_IMAGE="${REGISTRY}/${SOURCE_LOCAL_TAG}"
@@ -594,9 +759,11 @@ run_case "image load saved dir" "${DM_BIN}" image load "${WORK_DIR}/saved"
 run_case "image tree" "${DM_BIN}" image tree "${SOURCE_IMAGE}" --format markdown --top 5
 
 log "创建测试容器"
-docker rm -f "${CONTAINER_NAME}" "${SECOND_CONTAINER_NAME}" "${RERUN_CONTAINER_NAME}" "${STOPPED_CONTAINER_NAME}" >/dev/null 2>&1 || true
-docker volume rm "${VOLUME_NAME}" >/dev/null 2>&1 || true
 docker volume create --label "${LABEL}" "${VOLUME_NAME}" >/dev/null
+if [ "$(docker volume inspect --format "{{ index .Labels \"${LABEL_KEY}\" }}" "${VOLUME_NAME}" 2>/dev/null || true)" != "${LABEL_VALUE}" ]; then
+  echo "Failed to claim test volume ownership: ${VOLUME_NAME}" >&2
+  exit 1
+fi
 docker run -d --name "${CONTAINER_NAME}" --label "${LABEL}" -v "${VOLUME_NAME}:/data" "${TARGET_IMAGE}" sh -c "while true; do echo dm-test-primary; sleep 5; done" >/dev/null
 docker run -d --name "${SECOND_CONTAINER_NAME}" --label "${LABEL}" "${TARGET_IMAGE}" sh -c "while true; do echo dm-test-secondary; sleep 5; done" >/dev/null
 docker run -d --name "${RERUN_CONTAINER_NAME}" --label "${LABEL}" "${TARGET_IMAGE}" sh -c "while true; do echo dm-test-rerun; sleep 5; done" >/dev/null

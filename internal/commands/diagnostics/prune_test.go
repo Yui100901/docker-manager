@@ -672,7 +672,7 @@ func TestRunPruneReportApplyRunsExactSnapshotCandidatesInSafeOrder(t *testing.T)
 	restoreFactory := replacePruneServiceFactory(fake)
 	defer restoreFactory()
 
-	report, err := runPruneReport(context.Background(), PruneReportOptions{Apply: true, Confirm: true})
+	report, err := runPruneReport(context.Background(), PruneReportOptions{Apply: true, Confirm: true, AllowNonAtomicDelete: true})
 	if err != nil {
 		t.Fatalf("runPruneReport() error = %v", err)
 	}
@@ -722,9 +722,10 @@ func TestRunPruneReportApplyOnlyRunsSelectedOperations(t *testing.T) {
 	defer restoreFactory()
 
 	report, err := runPruneReport(context.Background(), PruneReportOptions{
-		Apply:   true,
-		Confirm: true,
-		Only:    []string{"container,volume"},
+		Apply:                true,
+		Confirm:              true,
+		AllowNonAtomicDelete: true,
+		Only:                 []string{"container,volume"},
 	})
 	if err != nil {
 		t.Fatalf("runPruneReport() error = %v", err)

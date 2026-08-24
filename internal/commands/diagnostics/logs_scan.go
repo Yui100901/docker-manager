@@ -229,7 +229,7 @@ func buildLogsScanContainerResult(ctx context.Context, svc logsScanDockerService
 			result.err = err
 			return result
 		}
-		result.item.Error = fmt.Sprintf("??????: %v", err)
+		result.item.Error = fmt.Sprintf("读取容器日志失败: %v", err)
 		result.summary.Errors++
 		return result
 	}

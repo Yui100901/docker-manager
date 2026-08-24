@@ -153,6 +153,52 @@ func (cm *ContainerManager) StartContext(ctx context.Context, containerID string
 	return err
 }
 
+func (cm *ContainerManager) RenameContext(ctx context.Context, containerID, newName string) error {
+	ctx, cancel := contextWithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	_, err := cm.cli.ContainerRename(ctx, containerID, client.ContainerRenameOptions{NewName: newName})
+	return err
+}
+
+func (cm *ContainerManager) CreateFromInspectContext(ctx context.Context, inspect container.InspectResponse, name string) (string, error) {
+	resp, err := cm.CreateContext(ctx, inspect.Config, inspect.HostConfig, cm.buildNetworkingConfigContext(ctx, inspect), nil, name)
+	return resp.ID, err
+}
+
+func (cm *ContainerManager) WaitReadyContext(ctx context.Context, containerID string, requireHealthy bool) error {
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		inspect, err := cm.InspectContext(ctx, containerID)
+		if err != nil {
+			return err
+		}
+		if inspect.State == nil || !inspect.State.Running {
+			status := "unknown"
+			if inspect.State != nil {
+				status = string(inspect.State.Status)
+			}
+			return fmt.Errorf("container is not running after start (status=%s)", status)
+		}
+		if !requireHealthy {
+			return nil
+		}
+		if inspect.State.Health != nil {
+			switch inspect.State.Health.Status {
+			case container.Healthy:
+				return nil
+			case container.Unhealthy:
+				return fmt.Errorf("container healthcheck reported unhealthy")
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("wait for container readiness: %w", ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
 func (cm *ContainerManager) buildNetworkingConfig(inspect container.InspectResponse) *network.NetworkingConfig {
 	return cm.buildNetworkingConfigContext(context.Background(), inspect)
 }

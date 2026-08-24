@@ -2,8 +2,12 @@ package sensitive
 
 import (
 	"fmt"
+	"io"
+	"reflect"
 	"regexp"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"unicode"
 )
 
@@ -63,9 +67,68 @@ var authorizationHeaderPattern = regexp.MustCompile(`(?i)\b(authorization)(\s*:\
 var cookieHeaderPattern = regexp.MustCompile(`(?i)\b(cookie|set-cookie)(\s*:\s*)([^\r\n]+)`)
 var urlCredentialPattern = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://[^/\s:@]+):([^@\s/]+)@`)
 var sensitiveQueryPattern = regexp.MustCompile(`(?i)([?&](?:password|passwd|secret|token|access[_-]?key|secret[_-]?key|client[_-]?secret|api[_-]?key|apikey|auth|session|jwt)=)([^&#\s]+)`)
-var bearerTokenPattern = regexp.MustCompile(`(?i)\b(bearer\s+)([a-z0-9._~+/\-]+=*)`)
+var authSchemeTokenPattern = regexp.MustCompile(`(?i)\b((?:basic|bearer)\s+)([a-z0-9._~+/\-]+=*)`)
 var jwtPattern = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b`)
 var privateKeyBlockPattern = regexp.MustCompile(`(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----`)
+
+var defaultProfile atomic.Uint32
+
+const (
+	profileNoneValue uint32 = iota
+	profileBasicValue
+	profileStrictValue
+)
+
+// SetDefaultProfile changes the process-wide output policy. The CLI executes
+// one command per process; atomic storage also keeps package tests and report
+// rendering race-free.
+func SetDefaultProfile(profile Profile) {
+	switch profile {
+	case ProfileBasic:
+		defaultProfile.Store(profileBasicValue)
+	case ProfileStrict:
+		defaultProfile.Store(profileStrictValue)
+	default:
+		defaultProfile.Store(profileNoneValue)
+	}
+}
+
+func DefaultProfile() Profile {
+	switch defaultProfile.Load() {
+	case profileBasicValue:
+		return ProfileBasic
+	case profileStrictValue:
+		return ProfileStrict
+	default:
+		return ProfileNone
+	}
+}
+
+type dynamicWriter struct {
+	out io.Writer
+	mu  sync.Mutex
+}
+
+// NewDynamicWriter redacts each write using the profile active at write time.
+// This lets persistent CLI logging be configured before command flags are
+// resolved without buffering sensitive log output.
+func NewDynamicWriter(out io.Writer) io.Writer {
+	if out == nil {
+		out = io.Discard
+	}
+	return &dynamicWriter{out: out}
+}
+
+func (w *dynamicWriter) Write(p []byte) (int, error) {
+	redacted := []byte(RedactText(string(p), DefaultProfile()))
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	_, err := w.out.Write(redacted)
+	if err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
 
 func NormalizeProfile(value string, redactSecrets bool) (Profile, error) {
 	value = strings.ToLower(strings.TrimSpace(value))
@@ -133,15 +196,106 @@ func RedactText(text string, profile Profile) string {
 		text = sensitiveAssignmentPattern.ReplaceAllString(text, `${1}${2}`+RedactedValue)
 		text = urlCredentialPattern.ReplaceAllString(text, `${1}:`+RedactedValue+`@`)
 		text = sensitiveQueryPattern.ReplaceAllString(text, `${1}`+RedactedValue)
+		text = authSchemeTokenPattern.ReplaceAllString(text, `${1}`+RedactedValue)
 		if profile == ProfileStrict {
 			text = cookieHeaderPattern.ReplaceAllString(text, `${1}${2}`+RedactedValue)
-			text = bearerTokenPattern.ReplaceAllString(text, `${1}`+RedactedValue)
 			text = jwtPattern.ReplaceAllString(text, RedactedValue)
 			text = privateKeyBlockPattern.ReplaceAllString(text, RedactedValue)
 		}
 		return text
 	default:
 		return RedactText(text, ProfileBasic)
+	}
+}
+
+// RedactValue returns a deep copy with string values redacted according to
+// their field/map key and content. The concrete report type is preserved so
+// Markdown and HTML rendering retain their normal titles and table layouts.
+func RedactValue(value interface{}, profile Profile) interface{} {
+	if value == nil || profile == ProfileNone || profile == "" {
+		return value
+	}
+	return redactReflectValue(reflect.ValueOf(value), "", profile).Interface()
+}
+
+func redactReflectValue(value reflect.Value, key string, profile Profile) reflect.Value {
+	if !value.IsValid() {
+		return value
+	}
+	switch value.Kind() {
+	case reflect.Interface:
+		if value.IsNil() {
+			return reflect.Zero(value.Type())
+		}
+		item := redactReflectValue(value.Elem(), key, profile)
+		result := reflect.New(value.Type()).Elem()
+		result.Set(item)
+		return result
+	case reflect.Pointer:
+		if value.IsNil() {
+			return reflect.Zero(value.Type())
+		}
+		result := reflect.New(value.Type().Elem())
+		result.Elem().Set(redactReflectValue(value.Elem(), key, profile))
+		return result
+	case reflect.Struct:
+		result := reflect.New(value.Type()).Elem()
+		result.Set(value)
+		typeInfo := value.Type()
+		for i := 0; i < value.NumField(); i++ {
+			fieldInfo := typeInfo.Field(i)
+			if !fieldInfo.IsExported() || !result.Field(i).CanSet() {
+				continue
+			}
+			fieldKey := fieldInfo.Name
+			if jsonName := strings.Split(fieldInfo.Tag.Get("json"), ",")[0]; jsonName != "" && jsonName != "-" {
+				fieldKey = jsonName
+			}
+			result.Field(i).Set(redactReflectValue(value.Field(i), fieldKey, profile))
+		}
+		return result
+	case reflect.Map:
+		if value.IsNil() {
+			return reflect.Zero(value.Type())
+		}
+		result := reflect.MakeMapWithSize(value.Type(), value.Len())
+		iterator := value.MapRange()
+		for iterator.Next() {
+			mapKey := iterator.Key()
+			itemKey := key
+			if mapKey.Kind() == reflect.String {
+				itemKey = mapKey.String()
+			}
+			result.SetMapIndex(mapKey, redactReflectValue(iterator.Value(), itemKey, profile))
+		}
+		return result
+	case reflect.Slice:
+		if value.IsNil() {
+			return reflect.Zero(value.Type())
+		}
+		result := reflect.MakeSlice(value.Type(), value.Len(), value.Len())
+		for i := 0; i < value.Len(); i++ {
+			result.Index(i).Set(redactReflectValue(value.Index(i), key, profile))
+		}
+		return result
+	case reflect.Array:
+		result := reflect.New(value.Type()).Elem()
+		for i := 0; i < value.Len(); i++ {
+			result.Index(i).Set(redactReflectValue(value.Index(i), key, profile))
+		}
+		return result
+	case reflect.String:
+		text := value.String()
+		if IsSensitiveKey(key, profile) {
+			text = RedactedValue
+		} else {
+			text = RedactText(text, profile)
+		}
+		result := reflect.New(value.Type()).Elem()
+		result.SetString(text)
+		return result
+	default:
+		return value
 	}
 }
 

@@ -196,7 +196,7 @@ func buildHealthContainerResult(ctx context.Context, svc healthDockerService, su
 				Severity:  "warn",
 				Container: result.item.Name,
 				Type:      "logs-unavailable",
-				Message:   fmt.Sprintf("??????: %v", err),
+				Message:   fmt.Sprintf("读取容器日志失败: %v", err),
 			})
 		} else if len(matches) > 0 {
 			result.item.LogMatches = matches

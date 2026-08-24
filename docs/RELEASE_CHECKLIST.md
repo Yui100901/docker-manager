@@ -33,14 +33,16 @@ Windows:
 
 - [ ] 开发构建通过: `scripts/dev-build.sh --vet` 或 `scripts/dev-build.ps1 -Vet`。
 - [ ] 发布打包通过: `scripts/package-release.sh --version vX.Y.Z` 或 `scripts/package-release.ps1 -Version vX.Y.Z`。
-- [ ] `dist/checksums.txt`、`dist/release-manifest.json`、`dist/release-summary.md` 已生成。
-- [ ] 每个发布归档包含二进制、`README.md`、`LICENSE`、`dm.yaml.example`、`INSTALL.md` 和目标平台对应的安装/卸载脚本。
+- [ ] `dist/<version>-<commit>/checksums.txt`、`release-manifest.json`、`release-summary.md` 已生成并通过结构化 manifest/digest 校验。
+- [ ] 每个发布归档包含二进制、`README.md`、`CHANGELOG.md`、`docs/TESTING.md`、`docs/RELEASE_CHECKLIST.md`、`docs/DOCKER_API_MIGRATION.md`、`LICENSE`、`dm.yaml.example`、`INSTALL.md` 和目标平台对应的安装/卸载脚本。
 - [ ] Windows 包只包含 PowerShell 安装/卸载脚本；Linux/macOS 包只包含 shell 安装/卸载脚本。
 
 ## 4. 安装和卸载
 
 - [ ] Linux/macOS 默认安装路径、自定义安装路径、配置目录、数据目录可用。
 - [ ] Windows 默认安装路径、自定义安装路径、配置目录、用户级环境变量可用。
+- [ ] Windows 多安装目录按 `install.json` 所有权链恢复环境变量；用户后续改写的 `DM_CONFIG`、`DM_HOME`、`DM_OUTPUT_DIR` 和 `PATH` 不被卸载清空。
+- [ ] Windows install/uninstall/purge 对路径链和树内 junction/reparse 在 mutation 前拒绝，外部目标未被修改。
 - [ ] 默认 completion 安装行为符合平台预期。
 - [ ] `--no-completion` / `-NoCompletion` 可关闭 completion 安装。
 - [ ] 卸载默认保留配置和数据，`--purge` / `-Purge` 会清理配置和数据。
@@ -50,6 +52,9 @@ Windows:
 
 - [ ] 已按 [TESTING.md](TESTING.md) 完成当前发布所需的本地、远程或企业环境验收。
 - [ ] 破坏性命令测试只作用于测试 label、测试容器、测试 volume 或临时 registry。
+- [ ] image/volume prune 未传 `--allow-non-atomic-delete` 时零删除，显式确认后只删除固定测试候选。
+- [ ] 分卷备份成功后 commit manifest/digest 完整且无 pending/staging 残留；中断恢复不删除 foreign replacement。
+- [ ] restore/rerun 回滚只清理稳定 ID 与本次 owner label 同时匹配的候选；volume probe 结束后无 helper 容器残留。
 - [ ] 远程测试完成后已清理临时容器、volume、network、registry 和测试目录。
 - [ ] 新增失败、跳过或非阻断项已记录到 `CHANGELOG.md`。
 

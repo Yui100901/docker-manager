@@ -3,7 +3,9 @@ package cli
 import (
 	"bytes"
 	"context"
+	"docker-manager/internal/appconfig"
 	"docker-manager/internal/docker"
+	"docker-manager/internal/sensitive"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -13,6 +15,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -60,6 +63,345 @@ func TestResolveConfigPathKeepsExplicitConfig(t *testing.T) {
 
 	if got != "explicit.yaml" {
 		t.Fatalf("resolveConfigPath() = %q, want explicit path", got)
+	}
+}
+
+func TestRootCommandRejectsExplicitMissingConfig(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.yaml")
+	cfg := appConfig{}
+	opts := outputOptions{}
+	cmd := newRootCommand(&cfg, &opts)
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--config", missing, "version"})
+
+	err := cmd.Execute()
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Execute() error = %v, want explicit missing config failure", err)
+	}
+}
+
+func TestRootCommandRejectsMissingDMConfig(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.yaml")
+	t.Setenv(configEnvName, missing)
+	cfg := appConfig{}
+	opts := outputOptions{}
+	cmd := newRootCommand(&cfg, &opts)
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"version"})
+
+	err := cmd.Execute()
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Execute() error = %v, want missing DM_CONFIG failure", err)
+	}
+}
+
+func TestRootCommandRejectsUnknownConfigField(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dm.yaml")
+	if err := os.WriteFile(path, []byte("unknown_option: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := appConfig{}
+	opts := outputOptions{}
+	cmd := newRootCommand(&cfg, &opts)
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--config", path, "version"})
+
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "field unknown_option not found") {
+		t.Fatalf("Execute() error = %v, want strict field failure", err)
+	}
+}
+
+func TestExplicitRedactionAppliesBeforeConfigLoadError(t *testing.T) {
+	t.Cleanup(func() { sensitive.SetDefaultProfile(sensitive.ProfileNone) })
+	path := filepath.Join(t.TempDir(), "dm.yaml")
+	if err := os.WriteFile(path, []byte("docker_timeout: token=load-secret\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := appConfig{}
+	opts := outputOptions{}
+	cmd := newRootCommand(&cfg, &opts)
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--config", path, "--redact-profile", "strict", "version"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want invalid duration")
+	}
+	var out bytes.Buffer
+	writeCommandError(&out, err, opts)
+	if strings.Contains(out.String(), "load-secret") || !strings.Contains(out.String(), sensitive.RedactedValue) {
+		t.Fatalf("error output = %q, want pre-load redaction", out.String())
+	}
+}
+
+func TestConfigValidateAndShowSources(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dm.yaml")
+	if err := os.WriteFile(path, []byte("proxy: http://admin:secret@proxy.example\nready_timeout: 45s\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("validate", func(t *testing.T) {
+		cfg := appConfig{}
+		opts := outputOptions{}
+		cmd := newRootCommand(&cfg, &opts)
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&bytes.Buffer{})
+		cmd.SetArgs([]string{"--config", path, "config", "validate"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out.String(), "配置有效") || !strings.Contains(out.String(), path) {
+			t.Fatalf("validate output = %q", out.String())
+		}
+	})
+
+	t.Run("effective sources retain sensitive values by default", func(t *testing.T) {
+		cfg := appConfig{}
+		opts := outputOptions{}
+		cmd := newRootCommand(&cfg, &opts)
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&bytes.Buffer{})
+		cmd.SetArgs([]string{"--config", path, "--docker-host", "tcp://flag.example:2375", "--docker-timeout", "7s", "config", "show", "--effective", "--show-source", "--format", "json"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		var report configShowReport
+		if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+			t.Fatalf("json.Unmarshal() error = %v, output=%q", err, out.String())
+		}
+		if report.Values["proxy"] != "http://admin:secret@proxy.example" {
+			t.Fatalf("proxy = %#v, want default unredacted administrator output", report.Values["proxy"])
+		}
+		if report.Values["ready_timeout"] != "45s" || report.Sources["ready_timeout"] != "config:"+path {
+			t.Fatalf("ready timeout report = %#v %#v", report.Values, report.Sources)
+		}
+		if report.Values["docker_host"] != "tcp://flag.example:2375" || report.Sources["docker_host"] != "flag:--docker-host" {
+			t.Fatalf("docker host report = %#v %#v", report.Values, report.Sources)
+		}
+		if report.Values["docker_timeout"] != "7s" || report.Sources["docker_timeout"] != "flag:--docker-timeout" {
+			t.Fatalf("docker timeout report = %#v %#v", report.Values, report.Sources)
+		}
+		if report.Values["credential_helper_timeout"] != configuredCredentialHelperTimeout(&appConfig{}).String() {
+			t.Fatalf("credential helper timeout = %#v", report.Values["credential_helper_timeout"])
+		}
+	})
+}
+
+func TestConfigShowReportsEffectivePullPlatformDefaultsAndSources(t *testing.T) {
+	tests := []struct {
+		name       string
+		config     string
+		wantOS     string
+		wantArch   string
+		wantSource string
+	}{
+		{name: "defaults", wantOS: defaultPullOS, wantArch: defaultPullArch, wantSource: "default"},
+		{name: "configured", config: "os: windows\narch: arm64\n", wantOS: "windows", wantArch: "arm64", wantSource: "config"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "dm.yaml")
+			if err := os.WriteFile(path, []byte(tt.config), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg := appConfig{}
+			opts := outputOptions{}
+			cmd := newRootCommand(&cfg, &opts)
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs([]string{"--config", path, "config", "show", "--effective", "--show-source", "--format", "json"})
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+
+			var report configShowReport
+			if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+				t.Fatalf("json.Unmarshal() error = %v, output=%q", err, out.String())
+			}
+			if report.Values["os"] != tt.wantOS || report.Values["arch"] != tt.wantArch {
+				t.Fatalf("platform = os:%#v arch:%#v, want %s/%s", report.Values["os"], report.Values["arch"], tt.wantOS, tt.wantArch)
+			}
+			wantSource := tt.wantSource
+			if wantSource == "config" {
+				wantSource += ":" + path
+			}
+			if report.Sources["os"] != wantSource || report.Sources["arch"] != wantSource {
+				t.Fatalf("platform sources = os:%q arch:%q, want %q", report.Sources["os"], report.Sources["arch"], wantSource)
+			}
+		})
+	}
+}
+
+func TestConfigShowReportsRedactSecretsCompatibilityValueAndSource(t *testing.T) {
+	tests := []struct {
+		name              string
+		effective         bool
+		cfg               appConfig
+		fields            map[string]bool
+		redactSecretsFlag string
+		redactProfileFlag string
+		wantSecrets       bool
+		wantSecretsSource string
+		wantProfile       string
+		wantProfileSource string
+	}{
+		{name: "raw default", wantProfile: "none", wantSecretsSource: "default", wantProfileSource: "default"},
+		{name: "raw legacy config", cfg: appConfig{RedactSecrets: true}, fields: map[string]bool{"redact_secrets": true}, wantSecrets: true, wantSecretsSource: "config:test.yaml", wantProfile: "basic", wantProfileSource: "config:test.yaml"},
+		{name: "effective legacy config", effective: true, cfg: appConfig{RedactSecrets: true}, fields: map[string]bool{"redact_secrets": true}, wantSecrets: true, wantSecretsSource: "config:test.yaml", wantProfile: "basic", wantProfileSource: "config:test.yaml"},
+		{name: "effective legacy flag", effective: true, redactSecretsFlag: "true", wantSecrets: true, wantSecretsSource: "flag:--redact-secrets", wantProfile: "basic", wantProfileSource: "flag:--redact-secrets"},
+		{name: "effective profile flag keeps compatibility input separate", effective: true, redactProfileFlag: "strict", wantSecretsSource: "default", wantProfile: "strict", wantProfileSource: "flag:--redact-profile"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := &cobra.Command{Use: "dm"}
+			root.PersistentFlags().Bool("redact-secrets", false, "")
+			root.PersistentFlags().String("redact-profile", "", "")
+			show := &cobra.Command{Use: "show"}
+			root.AddCommand(show)
+			if tt.redactSecretsFlag != "" {
+				if err := root.PersistentFlags().Set("redact-secrets", tt.redactSecretsFlag); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tt.redactProfileFlag != "" {
+				if err := root.PersistentFlags().Set("redact-profile", tt.redactProfileFlag); err != nil {
+					t.Fatal(err)
+				}
+			}
+			loaded := appconfig.Loaded{Path: "test.yaml", Exists: true, Fields: tt.fields}
+			report := buildConfigShowReport(show, &tt.cfg, &loaded, tt.effective, true)
+			if report.Values["redact_secrets"] != tt.wantSecrets || report.Sources["redact_secrets"] != tt.wantSecretsSource {
+				t.Fatalf("redact_secrets = %#v source=%q, want %v source=%q", report.Values["redact_secrets"], report.Sources["redact_secrets"], tt.wantSecrets, tt.wantSecretsSource)
+			}
+			if report.Values["redact_profile"] != tt.wantProfile || report.Sources["redact_profile"] != tt.wantProfileSource {
+				t.Fatalf("redact_profile = %#v source=%q, want %q source=%q", report.Values["redact_profile"], report.Sources["redact_profile"], tt.wantProfile, tt.wantProfileSource)
+			}
+		})
+	}
+}
+
+func TestConfigShowReportsExplicitEmptyDockerHostOverride(t *testing.T) {
+	t.Cleanup(func() { docker.Configure(docker.Options{}) })
+	t.Setenv("DOCKER_HOST", "tcp://environment.example:2375")
+	path := filepath.Join(t.TempDir(), "dm.yaml")
+	if err := os.WriteFile(path, []byte("docker_host: \"\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := appConfig{}
+	opts := outputOptions{}
+	cmd := newRootCommand(&cfg, &opts)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--config", path, "config", "show", "--effective", "--show-source", "--format", "json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	var report configShowReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v, output=%q", err, out.String())
+	}
+	if got := report.Values["docker_host"]; got == "tcp://environment.example:2375" || got != docker.Endpoint() {
+		t.Fatalf("docker_host = %#v, endpoint=%q", got, docker.Endpoint())
+	}
+	if got := report.Sources["docker_host"]; got != "config:"+path {
+		t.Fatalf("docker_host source = %q", got)
+	}
+}
+
+func TestConfigShowReportsRedactionFlagOverrideSource(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dm.yaml")
+	if err := os.WriteFile(path, []byte("redact_profile: strict\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := appConfig{}
+	opts := outputOptions{}
+	cmd := newRootCommand(&cfg, &opts)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--config", path, "--redact-profile", "none", "config", "show", "--effective", "--show-source", "--format", "json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	var report configShowReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v, output=%q", err, out.String())
+	}
+	if report.Values["redact_profile"] != "none" || report.Sources["redact_profile"] != "flag:--redact-profile" {
+		t.Fatalf("redact profile report = %#v %#v", report.Values, report.Sources)
+	}
+}
+
+func TestConfigShowReportsEffectiveOutputModeAndSource(t *testing.T) {
+	tests := []struct {
+		name          string
+		config        string
+		flags         []string
+		wantVerbose   bool
+		wantQuiet     bool
+		verboseSource string
+		quietSource   string
+	}{
+		{name: "quiet overrides configured verbose", config: "verbose: true\n", flags: []string{"--quiet"}, wantQuiet: true, verboseSource: "flag:--quiet", quietSource: "flag:--quiet"},
+		{name: "verbose overrides configured quiet", config: "quiet: true\n", flags: []string{"--verbose"}, wantVerbose: true, verboseSource: "flag:--verbose", quietSource: "flag:--verbose"},
+		{name: "explicit false quiet keeps configured verbose", config: "verbose: true\n", flags: []string{"--quiet=false"}, wantVerbose: true, verboseSource: "config", quietSource: "flag:--quiet"},
+		{name: "explicit false verbose keeps configured quiet", config: "quiet: true\n", flags: []string{"--verbose=false"}, wantQuiet: true, verboseSource: "flag:--verbose", quietSource: "config"},
+		{name: "verbose wins when both true flags are present", flags: []string{"--verbose", "--quiet"}, wantVerbose: true, verboseSource: "flag:--verbose", quietSource: "flag:--verbose"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "dm.yaml")
+			if err := os.WriteFile(path, []byte(tt.config), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg := appConfig{}
+			opts := outputOptions{}
+			cmd := newRootCommand(&cfg, &opts)
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&bytes.Buffer{})
+			args := []string{"--config", path}
+			args = append(args, tt.flags...)
+			args = append(args, "config", "show", "--effective", "--show-source", "--format", "json")
+			cmd.SetArgs(args)
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+
+			var report configShowReport
+			if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+				t.Fatalf("json.Unmarshal() error = %v, output=%q", err, out.String())
+			}
+			if report.Values["verbose"] != tt.wantVerbose || report.Values["quiet"] != tt.wantQuiet {
+				t.Fatalf("output modes = verbose:%#v quiet:%#v", report.Values["verbose"], report.Values["quiet"])
+			}
+			wantVerboseSource := tt.verboseSource
+			if wantVerboseSource == "config" {
+				wantVerboseSource += ":" + path
+			}
+			wantQuietSource := tt.quietSource
+			if wantQuietSource == "config" {
+				wantQuietSource += ":" + path
+			}
+			if report.Sources["verbose"] != wantVerboseSource || report.Sources["quiet"] != wantQuietSource {
+				t.Fatalf("output sources = verbose:%q quiet:%q, want verbose:%q quiet:%q", report.Sources["verbose"], report.Sources["quiet"], wantVerboseSource, wantQuietSource)
+			}
+		})
 	}
 }
 
@@ -147,7 +489,7 @@ func TestRootCommandAppliesDockerConfigDefaults(t *testing.T) {
 	t.Cleanup(func() { docker.Configure(docker.Options{}) })
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "dm.yaml")
-	if err := os.WriteFile(configPath, []byte("docker_host: tcp://configured.example:2376\ndocker_tls_verify: true\ndocker_cert_path: /configured/certs\ndocker_api_version: \"1.45\"\n"), 0644); err != nil {
+	if err := os.WriteFile(configPath, []byte("docker_host: tcp://configured.example:2376\ndocker_tls_verify: true\ndocker_cert_path: /configured/certs\ndocker_api_version: \"1.45\"\ndocker_timeout: 42s\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -167,6 +509,9 @@ func TestRootCommandAppliesDockerConfigDefaults(t *testing.T) {
 	}
 	if got.TLSVerify == nil || !*got.TLSVerify {
 		t.Fatalf("docker tls verify = %#v, want true", got.TLSVerify)
+	}
+	if got.Timeout != 42*time.Second {
+		t.Fatalf("docker timeout = %v, want 42s", got.Timeout)
 	}
 }
 
@@ -189,6 +534,7 @@ func TestRootCommandDockerFlagsOverrideConfig(t *testing.T) {
 		"--docker-tls-verify=false",
 		"--docker-cert-path", "/flag/certs",
 		"--docker-api-version", "1.46",
+		"--docker-timeout", "3s",
 		"version",
 	})
 
@@ -201,6 +547,9 @@ func TestRootCommandDockerFlagsOverrideConfig(t *testing.T) {
 	}
 	if got.TLSVerify == nil || *got.TLSVerify {
 		t.Fatalf("docker tls verify = %#v, want false", got.TLSVerify)
+	}
+	if got.Timeout != 3*time.Second {
+		t.Fatalf("docker timeout = %v, want 3s", got.Timeout)
 	}
 }
 

@@ -85,3 +85,12 @@ func AddDockerConfigFlag(cmd *cobra.Command, dockerConfig *string) {
 func AddPlainHTTPFlag(cmd *cobra.Command, plainHTTP *bool) {
 	cmd.Flags().BoolVar(plainHTTP, "plain-http", false, plainHTTPHelp)
 }
+
+func AddCredentialHelperFlags(cmd *cobra.Command, disabled *bool, timeout *time.Duration, timeoutDefault time.Duration) {
+	cmd.Flags().BoolVar(disabled, "disable-credential-helpers", false, "禁用 Docker credential helper，仅使用 config.json 的 auths")
+	cmd.Flags().DurationVar(timeout, "credential-helper-timeout", timeoutDefault, "单次 Docker credential helper 调用超时时间")
+}
+
+func AddAuthRealmAllowlistFlag(cmd *cobra.Command, allowlist *[]string) {
+	cmd.Flags().StringArrayVar(allowlist, "auth-realm", nil, "额外允许接收 registry 凭据的 HTTPS Bearer realm host/origin，可重复指定")
+}

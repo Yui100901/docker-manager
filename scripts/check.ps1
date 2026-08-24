@@ -4,7 +4,15 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$RootDir = Resolve-Path (Join-Path $PSScriptRoot "..")
+$oldOutputEncoding = $OutputEncoding
+$oldConsoleOutputEncoding = [Console]::OutputEncoding
+$hadOutFileEncoding = $PSDefaultParameterValues.ContainsKey("Out-File:Encoding")
+$oldOutFileEncoding = $PSDefaultParameterValues["Out-File:Encoding"]
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+$OutputEncoding = $utf8NoBom
+[Console]::OutputEncoding = $utf8NoBom
+$PSDefaultParameterValues["Out-File:Encoding"] = "utf8"
+$RootDir = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 
 function Invoke-Native {
     param(
@@ -67,13 +75,23 @@ try {
         $shellcheck = Get-Command shellcheck -ErrorAction SilentlyContinue
         if ($shellcheck) {
             Write-Host "==> shellcheck"
-            Invoke-Native { shellcheck scripts/*.sh }
+            $shellFiles = @(Get-ChildItem -Path scripts -Filter *.sh | ForEach-Object { $_.FullName })
+            Invoke-Native { & $shellcheck.Source @shellFiles }
         } else {
-            Write-Host "shellcheck not found; skipped"
+            throw "shellcheck not found. Install ShellCheck or explicitly pass -NoShellCheck."
         }
+    } else {
+        Write-Host "==> shellcheck explicitly skipped (-NoShellCheck)"
     }
 
-    Write-Host "All checks passed."
+    Write-Host "All requested checks passed."
 } finally {
     Pop-Location
+    $OutputEncoding = $oldOutputEncoding
+    [Console]::OutputEncoding = $oldConsoleOutputEncoding
+    if ($hadOutFileEncoding) {
+        $PSDefaultParameterValues["Out-File:Encoding"] = $oldOutFileEncoding
+    } else {
+        $PSDefaultParameterValues.Remove("Out-File:Encoding")
+    }
 }

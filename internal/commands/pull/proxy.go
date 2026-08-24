@@ -2,13 +2,15 @@ package pull
 
 import (
 	"fmt"
-	"github.com/Yui100901/MyGo/network/http_utils"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/Yui100901/MyGo/network/http_utils"
+	"golang.org/x/net/http/httpproxy"
 )
 
 func newPullHTTPClient(proxy string, timeout time.Duration) (*http_utils.HTTPClient, error) {
@@ -34,7 +36,8 @@ func newPullHTTPClient(proxy string, timeout time.Duration) (*http_utils.HTTPCli
 	}
 	return &http_utils.HTTPClient{
 		Client: &http.Client{
-			Transport: transport,
+			Transport:     transport,
+			CheckRedirect: secureRegistryRedirectPolicy,
 		},
 	}, nil
 }
@@ -58,23 +61,7 @@ func proxyFromEnvironment(req *http.Request) (*url.URL, error) {
 	if req == nil || req.URL == nil {
 		return nil, nil
 	}
-	if shouldBypassProxy(req.URL.Hostname()) {
-		return nil, nil
-	}
-
-	proxy := proxyEnvForScheme(req.URL.Scheme)
-	if proxy == "" {
-		return nil, nil
-	}
-
-	proxyURL, err := url.Parse(proxy)
-	if err != nil {
-		return nil, err
-	}
-	if proxyURL.Scheme == "" || proxyURL.Host == "" {
-		return nil, fmt.Errorf("无效环境变量代理地址 %q: 必须包含 scheme 和 host", proxy)
-	}
-	return proxyURL, nil
+	return environmentProxyConfig().ProxyFunc()(req.URL)
 }
 
 func proxyEnvForScheme(scheme string) string {
@@ -97,26 +84,79 @@ func firstEnv(names ...string) string {
 	return ""
 }
 
+func environmentProxyConfig() *httpproxy.Config {
+	return &httpproxy.Config{
+		HTTPProxy:  firstEnv("HTTP_PROXY", "http_proxy"),
+		HTTPSProxy: firstEnv("HTTPS_PROXY", "https_proxy"),
+		NoProxy:    firstEnv("NO_PROXY", "no_proxy"),
+		CGI:        os.Getenv("REQUEST_METHOD") != "",
+	}
+}
+
 func shouldBypassProxy(host string) bool {
-	noProxy := firstEnv("NO_PROXY", "no_proxy")
-	if noProxy == "" || host == "" {
+	if strings.TrimSpace(host) == "" {
 		return false
 	}
+	config := environmentProxyConfig()
+	config.HTTPProxy = "http://proxy.invalid"
+	config.HTTPSProxy = "http://proxy.invalid"
+	proxyURL, err := config.ProxyFunc()(&url.URL{Scheme: "https", Host: host})
+	return err == nil && proxyURL == nil
+}
 
-	for _, item := range strings.Split(noProxy, ",") {
-		item = strings.TrimSpace(item)
-		if item == "" {
-			continue
-		}
-		if item == "*" || item == host {
-			return true
-		}
-		if strings.HasPrefix(item, ".") && strings.HasSuffix(host, item) {
-			return true
-		}
-		if strings.HasPrefix(host, item+".") {
-			return true
+func secureRegistryRedirectPolicy(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return fmt.Errorf("stopped after 10 redirects")
+	}
+	if len(via) == 0 {
+		return nil
+	}
+	previous := via[len(via)-1].URL
+	if strings.EqualFold(previous.Scheme, "https") && !strings.EqualFold(req.URL.Scheme, "https") {
+		return fmt.Errorf("refusing HTTPS redirect downgrade to %s", req.URL.Redacted())
+	}
+	if !sameOriginURL(via[0].URL, req.URL) {
+		stripSensitiveRedirectHeaders(req.Header)
+	}
+	return nil
+}
+
+func sameOriginRedirectPolicy(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return fmt.Errorf("stopped after 10 redirects")
+	}
+	if len(via) == 0 {
+		return nil
+	}
+	if !sameOriginURL(via[0].URL, req.URL) {
+		return fmt.Errorf("refusing cross-origin authentication redirect from %s to %s", via[0].URL.Redacted(), req.URL.Redacted())
+	}
+	return secureRegistryRedirectPolicy(req, via)
+}
+
+func sameOriginURL(left, right *url.URL) bool {
+	if left == nil || right == nil || !strings.EqualFold(left.Scheme, right.Scheme) {
+		return false
+	}
+	return canonicalURLHost(left) == canonicalURLHost(right)
+}
+
+func canonicalURLHost(value *url.URL) string {
+	host := strings.ToLower(value.Hostname())
+	port := value.Port()
+	if port == "" {
+		switch strings.ToLower(value.Scheme) {
+		case "http":
+			port = "80"
+		case "https":
+			port = "443"
 		}
 	}
-	return false
+	return net.JoinHostPort(host, port)
+}
+
+func stripSensitiveRedirectHeaders(header http.Header) {
+	for _, name := range []string{"Authorization", "Proxy-Authorization", "Cookie", "X-Registry-Auth"} {
+		header.Del(name)
+	}
 }

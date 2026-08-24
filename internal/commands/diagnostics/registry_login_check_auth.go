@@ -20,6 +20,14 @@ func resolveRegistryCredential(ctx context.Context, cfg dockerConfigFile, regist
 	return registryauth.ResolveCredential(ctx, cfg, registryName, runDockerCredentialHelper)
 }
 
+func resolveRegistryCredentialWithOptions(ctx context.Context, cfg dockerConfigFile, registryName string, opts RegistryLoginCheckOptions) registryCredential {
+	return registryauth.ResolveCredentialWithOptions(ctx, cfg, registryName, registryauth.ResolveOptions{
+		DisableHelpers: opts.DisableCredentialHelpers,
+		HelperTimeout:  opts.CredentialHelperTimeout,
+		RunHelper:      runDockerCredentialHelper,
+	})
+}
+
 func findCredentialHelper(cfg dockerConfigFile, keys []string) (string, string) {
 	return registryauth.FindCredentialHelper(cfg, keys)
 }

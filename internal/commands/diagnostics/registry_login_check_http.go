@@ -4,13 +4,51 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 )
 
-var registryCheckHTTPClient httpDoer = http.DefaultClient
+var registryCheckHTTPClient httpDoer = &http.Client{CheckRedirect: registryCredentialRedirectPolicy}
 
 type httpDoer interface {
 	Do(req *http.Request) (*http.Response, error)
+}
+
+func registryCredentialRedirectPolicy(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return fmt.Errorf("stopped after 10 redirects")
+	}
+	if len(via) == 0 {
+		return nil
+	}
+	if strings.EqualFold(via[len(via)-1].URL.Scheme, "https") && !strings.EqualFold(req.URL.Scheme, "https") {
+		return fmt.Errorf("refusing registry HTTPS redirect downgrade to %s", req.URL.Redacted())
+	}
+	if !sameRegistryOrigin(via[0].URL, req.URL) {
+		return fmt.Errorf("refusing registry credential redirect from %s to %s", via[0].URL.Redacted(), req.URL.Redacted())
+	}
+	return nil
+}
+
+func sameRegistryOrigin(left, right *url.URL) bool {
+	if left == nil || right == nil || !strings.EqualFold(left.Scheme, right.Scheme) {
+		return false
+	}
+	return registryURLHost(left) == registryURLHost(right)
+}
+
+func registryURLHost(value *url.URL) string {
+	port := value.Port()
+	if port == "" {
+		if strings.EqualFold(value.Scheme, "https") {
+			port = "443"
+		} else if strings.EqualFold(value.Scheme, "http") {
+			port = "80"
+		}
+	}
+	return net.JoinHostPort(strings.ToLower(value.Hostname()), port)
 }
 
 func pingRegistryV2(ctx context.Context, registryName string, plainHTTP bool, cred registryCredential) CheckResult {

@@ -2,6 +2,7 @@ package backup
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -76,7 +77,7 @@ func backupContainersSeparate(ctx context.Context, targets []string, opts Backup
 	return result, nil
 }
 
-func backupContainersMerged(ctx context.Context, targets []string, opts BackupOptions) (BackupContainersResult, error) {
+func backupContainersMerged(ctx context.Context, targets []string, opts BackupOptions) (result BackupContainersResult, resultErr error) {
 	if err := checkBackupContext(ctx); err != nil {
 		return BackupContainersResult{}, err
 	}
@@ -93,6 +94,28 @@ func backupContainersMerged(ctx context.Context, targets []string, opts BackupOp
 			return BackupContainersResult{}, err
 		}
 	}
+	ephemeralPlaintext := opts.Bundle && opts.Encrypt && !opts.DryRun
+	var plaintextDir *privateBackupDirectory
+	if !opts.DryRun {
+		if ephemeralPlaintext {
+			var createErr error
+			plaintextDir, createErr = createPrivateBackupDirectory(root)
+			if createErr != nil {
+				return BackupContainersResult{}, createErr
+			}
+		} else if err := ensurePrivateBackupDirectory(root); err != nil {
+			return BackupContainersResult{}, err
+		}
+		defer func() {
+			if !ephemeralPlaintext {
+				return
+			}
+			if err := plaintextDir.removeAll(); err != nil {
+				resultErr = errors.Join(resultErr, fmt.Errorf("remove encrypted backup plaintext tree %s: %w", root, err))
+				result = BackupContainersResult{}
+			}
+		}()
+	}
 	manifest := BackupManifest{
 		Version:        1,
 		CreatedAt:      time.Now().Format(time.RFC3339),
@@ -108,6 +131,10 @@ func backupContainersMerged(ctx context.Context, targets []string, opts BackupOp
 		childOpts.OutputDir = filepath.Join(root, filepath.FromSlash(childRel))
 		childOpts.Bundle = false
 		childOpts.BundleOutput = ""
+		childOpts.Encrypt = false
+		childOpts.PassphraseFile = ""
+		childOpts.SplitSize = ""
+		childOpts.SigningKey = ""
 		outputDir, err := backupContainer(ctx, target, childOpts)
 		if err != nil {
 			return BackupContainersResult{}, fmt.Errorf("backup %s: %w", target, err)
@@ -155,10 +182,14 @@ func backupContainersMerged(ctx context.Context, targets []string, opts BackupOp
 		}
 	}
 	log.Printf("Backup batch summary: containers=%d output=%s merge=true", len(targets), root)
-	return BackupContainersResult{Paths: []string{root}}, nil
+	resultPath := root
+	if ephemeralPlaintext {
+		resultPath = backupPublishedArchivePath(archivePath, archiveOpts)
+	}
+	return BackupContainersResult{Paths: []string{resultPath}}, nil
 }
 
-func backupContainer(ctx context.Context, name string, opts BackupOptions) (string, error) {
+func backupContainer(ctx context.Context, name string, opts BackupOptions) (resultPath string, resultErr error) {
 	if err := checkBackupContext(ctx); err != nil {
 		return "", err
 	}
@@ -193,6 +224,8 @@ func backupContainer(ctx context.Context, name string, opts BackupOptions) (stri
 			return "", err
 		}
 	}
+	ephemeralPlaintext := opts.Bundle && opts.Encrypt
+	var plaintextDir *privateBackupDirectory
 
 	createdAt := time.Now().Format(time.RFC3339)
 	containerManifest := BackupContainerManifest{
@@ -237,9 +270,23 @@ func backupContainer(ctx context.Context, name string, opts BackupOptions) (stri
 		return outputDir, nil
 	}
 
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
+	if ephemeralPlaintext {
+		plaintextDir, err = createPrivateBackupDirectory(outputDir)
+		if err != nil {
+			return "", err
+		}
+	} else if err := ensurePrivateBackupDirectory(outputDir); err != nil {
 		return "", err
 	}
+	defer func() {
+		if !ephemeralPlaintext {
+			return
+		}
+		if err := plaintextDir.removeAll(); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("remove encrypted backup plaintext tree %s: %w", outputDir, err))
+			resultPath = ""
+		}
+	}()
 	if err := writeJSONFile(filepath.Join(outputDir, backupInspectName), inspect); err != nil {
 		return "", fmt.Errorf("write inspect: %w", err)
 	}
@@ -249,7 +296,7 @@ func backupContainer(ctx context.Context, name string, opts BackupOptions) (stri
 
 	if opts.IncludeImage && containerManifest.Image != "" {
 		imageDir := filepath.Join(outputDir, "images")
-		if err := os.MkdirAll(imageDir, 0755); err != nil {
+		if err := ensurePrivateBackupDirectory(imageDir); err != nil {
 			return "", err
 		}
 		imageFile := filepath.Join("images", safeBackupName(containerManifest.Image)+".tar")
@@ -258,6 +305,9 @@ func backupContainer(ctx context.Context, name string, opts BackupOptions) (stri
 		}
 		if err := svc.SaveImage(ctx, []string{containerManifest.Image}, filepath.Join(outputDir, imageFile)); err != nil {
 			return "", fmt.Errorf("save image %s: %w", containerManifest.Image, err)
+		}
+		if err := os.Chmod(filepath.Join(outputDir, imageFile), 0600); err != nil {
+			return "", fmt.Errorf("secure image archive %s: %w", containerManifest.Image, err)
 		}
 		containerManifest.ImageArchive = filepath.ToSlash(imageFile)
 	}
@@ -304,7 +354,17 @@ func backupContainer(ctx context.Context, name string, opts BackupOptions) (stri
 		return "", fmt.Errorf("write checksums: %w", err)
 	}
 	log.Printf("Backup summary: container=%s output=%s image=%v networks=%d volumes=%d", containerName, outputDir, containerManifest.ImageArchive != "", len(containerManifest.Networks), len(containerManifest.Volumes))
+	if ephemeralPlaintext {
+		return backupPublishedArchivePath(archivePath, archiveOpts), nil
+	}
 	return outputDir, nil
+}
+
+func backupPublishedArchivePath(archivePath string, opts backupArchiveOptions) string {
+	if opts.SplitSize > 0 {
+		return splitPartPath(archivePath, 1)
+	}
+	return archivePath
 }
 
 func resolveBackupBundleOptions(root string, opts BackupOptions) (backupArchiveOptions, string, error) {

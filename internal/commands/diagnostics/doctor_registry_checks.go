@@ -8,9 +8,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"docker-manager/internal/commandflags"
+	"docker-manager/internal/registryauth"
 	rpt "docker-manager/internal/report"
 )
 
@@ -44,11 +44,11 @@ func checkDoctorDockerConfig(ctx context.Context, opts DoctorOptions) []DoctorCh
 		Message: "Docker config.json 可解析",
 		Detail:  configPath,
 	}}
-	checks = append(checks, checkDoctorCredentialHelpers(ctx, cfg)...)
+	checks = append(checks, checkDoctorCredentialHelpers(ctx, cfg, opts)...)
 	return checks
 }
 
-func checkDoctorCredentialHelpers(ctx context.Context, cfg dockerConfigFile) []DoctorCheck {
+func checkDoctorCredentialHelpers(ctx context.Context, cfg dockerConfigFile, opts DoctorOptions) []DoctorCheck {
 	helpers := map[string]bool{}
 	if helper := strings.TrimSpace(cfg.CredsStore); helper != "" {
 		helpers[helper] = true
@@ -65,10 +65,22 @@ func checkDoctorCredentialHelpers(ctx context.Context, cfg dockerConfigFile) []D
 			Message: "Docker config 未配置 credsStore 或 credHelpers",
 		}}
 	}
+	if opts.DisableCredentialHelpers {
+		return []DoctorCheck{{
+			Name:    "docker-credential-helper",
+			Status:  "skipped",
+			Message: "已通过选项禁用 Docker credential helper",
+		}}
+	}
+	helperTimeout := opts.CredentialHelperTimeout
+	if helperTimeout <= 0 {
+		helperTimeout = registryauth.DefaultCredentialHelperTimeout
+	}
 	var checks []DoctorCheck
 	for helper := range helpers {
 		name := "docker-credential-" + helper
-		if _, err := exec.LookPath(name); err != nil {
+		path, err := exec.LookPath(name)
+		if err != nil {
 			checks = append(checks, DoctorCheck{
 				Name:        "docker-credential-helper",
 				Status:      "failed",
@@ -77,8 +89,8 @@ func checkDoctorCredentialHelpers(ctx context.Context, cfg dockerConfigFile) []D
 			})
 			continue
 		}
-		checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		_, err := exec.CommandContext(checkCtx, name, "list").Output()
+		checkCtx, cancel := context.WithTimeout(ctx, helperTimeout)
+		_, err = exec.CommandContext(checkCtx, path, "list").Output()
 		cancel()
 		status := "ok"
 		message := name + " 可执行"
@@ -88,7 +100,7 @@ func checkDoctorCredentialHelpers(ctx context.Context, cfg dockerConfigFile) []D
 			message = name + " 可执行但 list 调用失败: " + err.Error()
 			recommend = "如 registry 凭据读取失败，检查 credential helper 后端是否已登录或解锁"
 		}
-		checks = append(checks, DoctorCheck{Name: "docker-credential-helper", Status: status, Message: message, Recommended: recommend})
+		checks = append(checks, DoctorCheck{Name: "docker-credential-helper", Status: status, Message: message, Detail: path, Recommended: recommend})
 	}
 	return checks
 }
@@ -97,10 +109,12 @@ func checkDoctorRegistry(ctx context.Context, registry string, opts DoctorOption
 	checkCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
 	defer cancel()
 	report, err := runRegistryLoginCheck(checkCtx, registry, RegistryLoginCheckOptions{
-		DockerConfig:  opts.DockerConfig,
-		PlainHTTP:     opts.PlainHTTP,
-		Timeout:       opts.Timeout,
-		FormatOptions: commandflags.FormatOptions{Format: rpt.FormatJSON},
+		DockerConfig:             opts.DockerConfig,
+		PlainHTTP:                opts.PlainHTTP,
+		Timeout:                  opts.Timeout,
+		DisableCredentialHelpers: opts.DisableCredentialHelpers,
+		CredentialHelperTimeout:  opts.CredentialHelperTimeout,
+		FormatOptions:            commandflags.FormatOptions{Format: rpt.FormatJSON},
 	})
 	if err != nil {
 		return []DoctorCheck{{

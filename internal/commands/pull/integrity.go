@@ -29,24 +29,38 @@ func validateDescriptor(descriptor ocispec.Descriptor, subject string) error {
 }
 
 func validateConfigDescriptor(descriptor ocispec.Descriptor) error {
+	return validateConfigDescriptorWithLimit(descriptor, maxConfigBlobSize)
+}
+
+func validateConfigDescriptorWithLimit(descriptor ocispec.Descriptor, limit int64) error {
 	if err := validateDescriptor(descriptor, "镜像 config"); err != nil {
 		return err
 	}
 	if descriptor.Digest.Algorithm() != digest.Canonical {
 		return fmt.Errorf("镜像 config digest 算法不受支持: %s", descriptor.Digest.Algorithm())
 	}
-	if descriptor.Size > maxConfigBlobSize {
-		return fmt.Errorf("镜像 config 大小 %d 超过上限 %d", descriptor.Size, maxConfigBlobSize)
+	if limit <= 0 || limit > maxConfigBlobSize {
+		limit = maxConfigBlobSize
+	}
+	if descriptor.Size > limit {
+		return fmt.Errorf("镜像 config 大小 %d 超过上限 %d", descriptor.Size, limit)
 	}
 	return nil
 }
 
 func validateManifestDescriptor(descriptor ocispec.Descriptor) error {
+	return validateManifestDescriptorWithLimit(descriptor, maxManifestBlobSize)
+}
+
+func validateManifestDescriptorWithLimit(descriptor ocispec.Descriptor, limit int64) error {
 	if err := validateDescriptor(descriptor, "平台 manifest"); err != nil {
 		return err
 	}
-	if descriptor.Size > maxManifestBlobSize {
-		return fmt.Errorf("平台 manifest 大小 %d 超过上限 %d", descriptor.Size, maxManifestBlobSize)
+	if limit <= 0 || limit > maxManifestBlobSize {
+		limit = maxManifestBlobSize
+	}
+	if descriptor.Size > limit {
+		return fmt.Errorf("平台 manifest 大小 %d 超过上限 %d", descriptor.Size, limit)
 	}
 	return nil
 }
@@ -62,7 +76,11 @@ func boundedReadLimit(declaredSize, maxSize int64) int64 {
 }
 
 func configBlobFileName(descriptor ocispec.Descriptor) (string, error) {
-	if err := validateConfigDescriptor(descriptor); err != nil {
+	return configBlobFileNameWithLimit(descriptor, maxConfigBlobSize)
+}
+
+func configBlobFileNameWithLimit(descriptor ocispec.Descriptor, limit int64) (string, error) {
+	if err := validateConfigDescriptorWithLimit(descriptor, limit); err != nil {
 		return "", err
 	}
 

@@ -6,6 +6,8 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	"docker-manager/internal/sensitive"
 )
 
 func TestPrintReportJSON(t *testing.T) {
@@ -94,6 +96,38 @@ func TestPrintReportMarkdownAlias(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "# Sample Report") {
 		t.Fatalf("markdown alias output = %q", out.String())
+	}
+}
+
+func TestPrintWithProfileRedactsEveryFormat(t *testing.T) {
+	type secretReport struct {
+		Authorization string `json:"authorization"`
+		Message       string `json:"message"`
+	}
+	report := secretReport{
+		Authorization: "Basic dXNlcjpwYXNz",
+		Message:       "proxy=http://user:password@proxy.example?token=opaque",
+	}
+
+	for _, format := range []string{FormatText, FormatJSON, FormatMarkdown, FormatHTML} {
+		t.Run(format, func(t *testing.T) {
+			var out bytes.Buffer
+			err := PrintWithProfile(&out, format, report, func(w io.Writer) {
+				_, _ = io.WriteString(w, report.Authorization+" "+report.Message)
+			}, sensitive.ProfileBasic)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := out.String()
+			for _, leaked := range []string{"dXNlcjpwYXNz", "password@", "token=opaque"} {
+				if strings.Contains(got, leaked) {
+					t.Fatalf("%s output leaked %q: %s", format, leaked, got)
+				}
+			}
+			if !strings.Contains(got, "redacted") {
+				t.Fatalf("%s output = %q, want redaction marker", format, got)
+			}
+		})
 	}
 }
 

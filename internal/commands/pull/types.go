@@ -40,21 +40,29 @@ type ImageInfo struct {
 }
 
 type PullOptions struct {
-	Context        context.Context
-	Output         string
-	OutputDir      string
-	Load           bool
-	To             string
-	DockerConfig   string
-	PlainHTTP      bool
-	ProgressOutput io.Writer
+	Context                  context.Context
+	Output                   string
+	OutputDir                string
+	Load                     bool
+	To                       string
+	DockerConfig             string
+	PlainHTTP                bool
+	DisableCredentialHelpers bool
+	CredentialHelperTimeout  time.Duration
+	AuthRealmAllowlist       []string
+	Limits                   PullResourceLimits
+	ProgressOutput           io.Writer
+	resourceBudget           *pullResourceBudget
 }
 
 type CommandDefaults struct {
-	Proxy     string
-	TargetOS  string
-	Arch      string
-	OutputDir string
+	Proxy                    string
+	TargetOS                 string
+	Arch                     string
+	OutputDir                string
+	DisableCredentialHelpers bool
+	CredentialHelperTimeout  time.Duration
+	AuthRealmAllowlist       []string
 }
 
 // PullRunner owns all side-effectful dependencies for pull. Tests replace

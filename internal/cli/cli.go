@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"docker-manager/internal/appconfig"
+	"docker-manager/internal/sensitive"
 )
 
 const defaultConfigPath = appconfig.DefaultPath
@@ -48,10 +49,10 @@ func configureLogging(opts outputOptions) {
 		log.SetOutput(&jsonLogWriter{out: os.Stderr})
 		log.SetFlags(0)
 	case opts.Verbose:
-		log.SetOutput(os.Stderr)
+		log.SetOutput(sensitive.NewDynamicWriter(os.Stderr))
 		log.SetFlags(log.LstdFlags)
 	default:
-		log.SetOutput(os.Stderr)
+		log.SetOutput(sensitive.NewDynamicWriter(os.Stderr))
 		log.SetFlags(0)
 	}
 }
@@ -67,7 +68,7 @@ func (w *jsonLogWriter) Write(p []byte) (int, error) {
 		data, err := json.Marshal(map[string]string{
 			"level":   "info",
 			"time":    time.Now().Format(time.RFC3339),
-			"message": line,
+			"message": sensitive.RedactText(line, sensitive.DefaultProfile()),
 		})
 		if err != nil {
 			return 0, err
@@ -84,17 +85,18 @@ func writeCommandError(out io.Writer, err error, opts outputOptions) {
 		return
 	}
 	err = displayCommandError(err)
+	message := sensitive.RedactText(err.Error(), sensitive.DefaultProfile())
 	if opts.JSON {
 		data, marshalErr := json.Marshal(map[string]string{
 			"level": "error",
-			"error": err.Error(),
+			"error": message,
 		})
 		if marshalErr == nil {
 			_, _ = fmt.Fprintln(out, string(data))
 			return
 		}
 	}
-	_, _ = fmt.Fprintf(out, "Error: %v\n", err)
+	_, _ = fmt.Fprintf(out, "Error: %s\n", message)
 }
 
 func isCommandCanceled(err error) bool {

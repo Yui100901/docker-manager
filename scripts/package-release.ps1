@@ -8,7 +8,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$RootDir = Resolve-Path (Join-Path $PSScriptRoot "..")
+$RootDir = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 if (-not $DistDir) { $DistDir = Join-Path $RootDir "dist" }
 if (-not $Version) { $Version = if ($env:VERSION) { $env:VERSION } else { "dev" } }
 if (-not $Commit) {
@@ -20,6 +20,18 @@ if (-not $BuildDate) {
 }
 if (-not $Platform -or $Platform.Count -eq 0) {
     $Platform = @("linux/amd64", "linux/arm64", "windows/amd64", "darwin/amd64", "darwin/arm64")
+}
+if ($Version -notmatch "^[A-Za-z0-9][A-Za-z0-9._+-]*$") { throw "Invalid version: $Version" }
+if ($Commit -notmatch "^[A-Za-z0-9][A-Za-z0-9._-]*$") { throw "Invalid commit: $Commit" }
+if ($BuildDate -notmatch "^[0-9TZ:.+-]+$") { throw "Invalid build date: $BuildDate" }
+if ($Version.Length -gt 128 -or $Commit.Length -gt 128 -or $BuildDate.Length -gt 128) {
+    throw "Version, commit, and build date must each be at most 128 characters."
+}
+$seenRequestedPlatforms = @{}
+foreach ($item in $Platform) {
+    if ($item -notmatch "^[A-Za-z0-9_]+/[A-Za-z0-9_]+$") { throw "Invalid platform: $item" }
+    if ($seenRequestedPlatforms.ContainsKey($item)) { throw "Duplicate platform: $item" }
+    $seenRequestedPlatforms[$item] = $true
 }
 
 function Assert-Command {
@@ -62,7 +74,7 @@ dm version
 dm doctor --check-e2e=false
 ~~~
 "@
-        Set-Content -Path $Path -Value $content -Encoding UTF8
+        Set-Content -LiteralPath $Path -Value $content -Encoding UTF8
         return
     }
 
@@ -92,7 +104,7 @@ dm version
 dm doctor --check-e2e=false
 ~~~
 "@
-    Set-Content -Path $Path -Value $content -Encoding UTF8
+    Set-Content -LiteralPath $Path -Value $content -Encoding UTF8
 }
 
 function Copy-ReleaseScripts {
@@ -102,38 +114,104 @@ function Copy-ReleaseScripts {
     )
     New-Item -ItemType Directory -Force -Path $ScriptDir | Out-Null
     if ($TargetOS -eq "windows") {
-        Copy-Item -Force (Join-Path $RootDir "scripts/install.ps1") $ScriptDir
-        Copy-Item -Force (Join-Path $RootDir "scripts/uninstall.ps1") $ScriptDir
+        Copy-Item -LiteralPath (Join-Path $RootDir "scripts/install.ps1") -Destination $ScriptDir -Force
+        Copy-Item -LiteralPath (Join-Path $RootDir "scripts/uninstall.ps1") -Destination $ScriptDir -Force
         return
     }
-    Copy-Item -Force (Join-Path $RootDir "scripts/install.sh") $ScriptDir
-    Copy-Item -Force (Join-Path $RootDir "scripts/uninstall.sh") $ScriptDir
+    Copy-Item -LiteralPath (Join-Path $RootDir "scripts/install.sh") -Destination $ScriptDir -Force
+    Copy-Item -LiteralPath (Join-Path $RootDir "scripts/uninstall.sh") -Destination $ScriptDir -Force
+}
+
+function Copy-ReleaseDocumentation {
+    param([string]$PackageDir)
+    Copy-Item -LiteralPath (Join-Path $RootDir "README.md") -Destination $PackageDir -Force
+    Copy-Item -LiteralPath (Join-Path $RootDir "CHANGELOG.md") -Destination $PackageDir -Force
+    Copy-Item -LiteralPath (Join-Path $RootDir "LICENSE") -Destination $PackageDir -Force
+    $docsDir = Join-Path $PackageDir "docs"
+    New-Item -ItemType Directory -Path $docsDir | Out-Null
+    foreach ($name in @("TESTING.md", "RELEASE_CHECKLIST.md", "DOCKER_API_MIGRATION.md")) {
+        Copy-Item -LiteralPath (Join-Path $RootDir "docs/$name") -Destination $docsDir -Force
+    }
+}
+
+function Assert-ReleaseManifest {
+    param(
+        [string]$ReleaseDir,
+        [string]$ExpectedVersion,
+        [string]$ExpectedCommit,
+        [int]$ExpectedArtifacts
+    )
+    $manifestPath = Join-Path $ReleaseDir "release-manifest.json"
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    if ($manifest.version -ne $ExpectedVersion -or $manifest.commit -ne $ExpectedCommit) {
+        throw "Release manifest identity mismatch"
+    }
+    if (@($manifest.artifacts).Count -ne $ExpectedArtifacts) {
+        throw "Release manifest artifact count mismatch"
+    }
+    $checksumLines = @(Get-Content -LiteralPath (Join-Path $ReleaseDir "checksums.txt") -Encoding ASCII)
+    $seenPlatforms = @{}
+    $seenArchives = @{}
+    foreach ($artifact in @($manifest.artifacts)) {
+        $archiveName = [string]$artifact.archive
+        if (-not $archiveName -or $archiveName -ne [System.IO.Path]::GetFileName($archiveName)) {
+            throw "Invalid archive path in release manifest: $archiveName"
+        }
+        if ($seenPlatforms.ContainsKey([string]$artifact.platform) -or $seenArchives.ContainsKey($archiveName)) {
+            throw "Duplicate platform or archive in release manifest: $($artifact.platform) / $archiveName"
+        }
+        $seenPlatforms[[string]$artifact.platform] = $true
+        $seenArchives[$archiveName] = $true
+        $archivePath = Join-Path $ReleaseDir $archiveName
+        if (-not (Test-Path -LiteralPath $archivePath -PathType Leaf)) {
+            throw "Release archive is missing: $archiveName"
+        }
+        $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $archivePath).Hash.ToLowerInvariant()
+        if ($actual -ne [string]$artifact.sha256) {
+            throw "Release archive digest mismatch: $archiveName"
+        }
+        if ($checksumLines -notcontains "$actual  $archiveName") {
+            throw "checksums.txt is missing the manifest digest for $archiveName"
+        }
+    }
+    if ($checksumLines.Count -ne $ExpectedArtifacts) {
+        throw "checksums.txt contains unexpected entries"
+    }
 }
 
 Assert-Command go
-New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
-$DistDir = (Resolve-Path $DistDir).Path
-$WorkDir = Join-Path ([System.IO.Path]::GetTempPath()) ("dm-release-" + [guid]::NewGuid())
-New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
+[System.IO.Directory]::CreateDirectory([System.IO.Path]::GetFullPath($DistDir)) | Out-Null
+$DistRoot = (Resolve-Path -LiteralPath $DistDir).Path
+$ReleaseKey = "$Version-$Commit"
+$ReleaseDir = Join-Path $DistRoot $ReleaseKey
+if (Test-Path -LiteralPath $ReleaseDir) {
+    throw "Release directory already exists: $ReleaseDir"
+}
+$DistDir = Join-Path $DistRoot (".$ReleaseKey.staging-" + [guid]::NewGuid().ToString("N"))
+$Published = $false
+$WorkDir = $null
+New-Item -ItemType Directory -Path $DistDir | Out-Null
+try {
+    $WorkDir = Join-Path ([System.IO.Path]::GetTempPath()) ("dm-release-" + [guid]::NewGuid())
+    [System.IO.Directory]::CreateDirectory($WorkDir) | Out-Null
 
-$ChecksumsFile = Join-Path $DistDir "checksums.txt"
-$ManifestFile = Join-Path $DistDir "release-manifest.json"
-$SummaryFile = Join-Path $DistDir "release-summary.md"
-$Artifacts = @()
-$ChecksumLines = New-Object System.Collections.Generic.List[string]
-if (Test-Path $ChecksumsFile) {
-    foreach ($line in Get-Content -Path $ChecksumsFile -Encoding ASCII) {
-        if (-not $line.Trim()) { continue }
-        $parts = $line -split "\s+", 2
-        if ($parts.Count -lt 2) { continue }
-        $archiveName = $parts[1].TrimStart("*")
-        if (Test-Path (Join-Path $DistDir $archiveName)) {
-            $ChecksumLines.Add($line)
+    $ChecksumsFile = Join-Path $DistDir "checksums.txt"
+    $ManifestFile = Join-Path $DistDir "release-manifest.json"
+    $SummaryFile = Join-Path $DistDir "release-summary.md"
+    $Artifacts = @()
+    $ChecksumLines = New-Object System.Collections.Generic.List[string]
+    if (Test-Path -LiteralPath $ChecksumsFile) {
+        foreach ($line in Get-Content -LiteralPath $ChecksumsFile -Encoding ASCII) {
+            if (-not $line.Trim()) { continue }
+            $parts = $line -split "\s+", 2
+            if ($parts.Count -lt 2) { continue }
+            $archiveName = $parts[1].TrimStart("*")
+            if (Test-Path -LiteralPath (Join-Path $DistDir $archiveName)) {
+                $ChecksumLines.Add($line)
+            }
         }
     }
-}
 
-try {
     if (-not $NoTest) {
         Write-Host "==> go test ./..."
         Push-Location $RootDir
@@ -156,9 +234,6 @@ try {
     $summary.Add("| --- | --- | --- | --- |")
 
     foreach ($item in $Platform) {
-        if ($item -notmatch "^[A-Za-z0-9_]+/[A-Za-z0-9_]+$") {
-            throw "Invalid platform: $item"
-        }
         $parts = $item -split "/", 2
         $goos = $parts[0]
         $goarch = $parts[1]
@@ -186,25 +261,24 @@ try {
             Pop-Location
         }
 
-        Copy-Item -Force (Join-Path $RootDir "README.md") $packageDir
-        Copy-Item -Force (Join-Path $RootDir "LICENSE") $packageDir
-        Copy-Item -Force (Join-Path $RootDir ".dm.yaml.example") (Join-Path $packageDir "dm.yaml.example")
+        Copy-ReleaseDocumentation -PackageDir $packageDir
+        Copy-Item -LiteralPath (Join-Path $RootDir ".dm.yaml.example") -Destination (Join-Path $packageDir "dm.yaml.example") -Force
         $scriptDir = Join-Path $packageDir "scripts"
         Copy-ReleaseScripts -TargetOS $goos -ScriptDir $scriptDir
         Write-InstallGuide -Path (Join-Path $packageDir "INSTALL.md") -Binary $binary -TargetPlatform $item -TargetOS $goos
 
         if ($goos -eq "windows") {
             $archive = Join-Path $DistDir "$name.zip"
-            if (Test-Path $archive) { Remove-Item -Force $archive }
-            Compress-Archive -Path $packageDir -DestinationPath $archive
+            if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive -Force }
+            Compress-Archive -LiteralPath $packageDir -DestinationPath $archive
         } else {
             Assert-Command tar
             $archive = Join-Path $DistDir "$name.tar.gz"
-            if (Test-Path $archive) { Remove-Item -Force $archive }
+            if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive -Force }
             tar -C $WorkDir -czf $archive $name
         }
 
-        $sha = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+        $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
         $archiveName = Split-Path -Leaf $archive
         for ($i = $ChecksumLines.Count - 1; $i -ge 0; $i--) {
             if ($ChecksumLines[$i] -match "\s+\*?$([regex]::Escape($archiveName))$") {
@@ -224,19 +298,34 @@ try {
         }
     }
 
-    $ChecksumLines | Set-Content -Path $ChecksumsFile -Encoding ASCII
-    [ordered]@{
+    $ChecksumLines | Set-Content -LiteralPath $ChecksumsFile -Encoding ASCII
+    $manifestJSON = [ordered]@{
         version    = $Version
         commit     = $Commit
         build_date = $BuildDate
-        artifacts  = $Artifacts
-    } | ConvertTo-Json -Depth 5 | Set-Content -Path $ManifestFile -Encoding UTF8
-    $summary | Set-Content -Path $SummaryFile -Encoding UTF8
+        artifacts  = @($Artifacts)
+    } | ConvertTo-Json -Depth 5
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($ManifestFile, $manifestJSON + [Environment]::NewLine, $utf8NoBom)
+    [System.IO.File]::WriteAllLines($SummaryFile, [string[]]$summary, $utf8NoBom)
 
-    Write-Host "Release artifacts written to: $DistDir"
-    Write-Host "Checksums: $ChecksumsFile"
-    Write-Host "Manifest: $ManifestFile"
-    Write-Host "Summary: $SummaryFile"
+    Assert-ReleaseManifest -ReleaseDir $DistDir -ExpectedVersion $Version -ExpectedCommit $Commit -ExpectedArtifacts $Platform.Count
+    & go run (Join-Path $RootDir "scripts/verify-release-manifest.go") --dir $DistDir --version $Version --commit $Commit --count $Platform.Count
+    if ($LASTEXITCODE -ne 0) { throw "Structured release manifest verification failed" }
+    if (Test-Path -LiteralPath $ReleaseDir) {
+        throw "Release directory was created while packaging: $ReleaseDir"
+    }
+    [System.IO.Directory]::Move($DistDir, $ReleaseDir)
+    $Published = $true
+    Write-Host "Release artifacts written to: $ReleaseDir"
+    Write-Host "Checksums: $(Join-Path $ReleaseDir 'checksums.txt')"
+    Write-Host "Manifest: $(Join-Path $ReleaseDir 'release-manifest.json')"
+    Write-Host "Summary: $(Join-Path $ReleaseDir 'release-summary.md')"
 } finally {
-    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $WorkDir
+    if ($WorkDir) {
+        Remove-Item -LiteralPath $WorkDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if (-not $Published) {
+        Remove-Item -LiteralPath $DistDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }

@@ -3,13 +3,19 @@ package diagnostics
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/api/types/volume"
+	mobyclient "github.com/moby/moby/client"
 )
 
 type fakeVolumeDockerService struct {
@@ -49,6 +55,124 @@ func (f *fakeVolumeDockerService) MeasureVolumeSize(ctx context.Context, volumeN
 		return -1, errors.New("missing fake measured size")
 	}
 	return f.measuredSizes[volumeName], nil
+}
+
+func TestVolumeProbeCreateOptionsAreRestrictedAndDigestPinned(t *testing.T) {
+	opts := volumeProbeCreateOptions("/var/lib/docker/volumes/data/_data", volumeDefaultSizeImage, "probe", "probe-id")
+	if opts.Config == nil || opts.Config.Image != volumeDefaultSizeImage || !strings.Contains(opts.Config.Image, "@sha256:") {
+		t.Fatalf("probe image = %#v, want digest-pinned default", opts.Config)
+	}
+	if opts.HostConfig == nil {
+		t.Fatal("probe HostConfig = nil")
+	}
+	host := opts.HostConfig
+	if host.NetworkMode != "none" || !host.ReadonlyRootfs {
+		t.Fatalf("probe isolation = network=%q readonly=%v", host.NetworkMode, host.ReadonlyRootfs)
+	}
+	if len(host.CapDrop) != 1 || host.CapDrop[0] != "ALL" {
+		t.Fatalf("probe CapDrop = %#v, want ALL", host.CapDrop)
+	}
+	if len(host.SecurityOpt) != 1 || host.SecurityOpt[0] != "no-new-privileges:true" {
+		t.Fatalf("probe SecurityOpt = %#v", host.SecurityOpt)
+	}
+	if len(host.Mounts) != 1 || host.Mounts[0].Type != mount.TypeBind || host.Mounts[0].Source != "/var/lib/docker/volumes/data/_data" || !host.Mounts[0].ReadOnly {
+		t.Fatalf("probe mounts = %#v, want one read-only data volume", host.Mounts)
+	}
+	if opts.Config.Labels[volumeProbeOwnerLabel] != "probe-id" || len(opts.Config.Entrypoint) == 0 {
+		t.Fatalf("probe ownership/entrypoint = labels=%#v entrypoint=%#v", opts.Config.Labels, opts.Config.Entrypoint)
+	}
+}
+
+func TestDockerVolumeServiceMeasuresThroughBindMountAndCleansProbe(t *testing.T) {
+	var created, removed atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/v1.49")
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && path == "/volumes/data":
+			_ = json.NewEncoder(w).Encode(volume.Volume{Name: "data", Driver: "local", Mountpoint: "/var/lib/docker/volumes/data/_data"})
+		case r.Method == http.MethodGet && strings.HasPrefix(path, "/images/") && strings.HasSuffix(path, "/json"):
+			_, _ = w.Write([]byte(`{}`))
+		case r.Method == http.MethodPost && path == "/containers/create":
+			var request struct {
+				Image      string                `json:"Image"`
+				Entrypoint []string              `json:"Entrypoint"`
+				Labels     map[string]string     `json:"Labels"`
+				HostConfig *container.HostConfig `json:"HostConfig"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Errorf("decode create request: %v", err)
+			}
+			if request.HostConfig == nil || len(request.HostConfig.Mounts) != 1 {
+				t.Errorf("create HostConfig = %#v", request.HostConfig)
+			} else if got := request.HostConfig.Mounts[0]; got.Type != mount.TypeBind || got.Source != "/var/lib/docker/volumes/data/_data" || !got.ReadOnly {
+				t.Errorf("create probe mount = %#v", got)
+			}
+			if len(request.Entrypoint) == 0 || request.Labels[volumeProbeOwnerLabel] == "" {
+				t.Errorf("create entrypoint/labels = %#v %#v", request.Entrypoint, request.Labels)
+			}
+			created.Store(true)
+			_, _ = w.Write([]byte(`{"Id":"probe-container","Warnings":[]}`))
+		case r.Method == http.MethodPost && path == "/containers/probe-container/start":
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPost && path == "/containers/probe-container/wait":
+			_, _ = w.Write([]byte(`{"StatusCode":0}`))
+		case r.Method == http.MethodGet && path == "/containers/probe-container/logs":
+			w.Header().Set("Content-Type", "application/vnd.docker.raw-stream")
+			payload := []byte("12345\n")
+			header := make([]byte, 8)
+			header[0] = 1
+			binary.BigEndian.PutUint32(header[4:], uint32(len(payload)))
+			_, _ = w.Write(header)
+			_, _ = w.Write(payload)
+		case r.Method == http.MethodDelete && path == "/containers/probe-container":
+			removed.Store(true)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected Docker API request: %s %s", r.Method, r.URL.String())
+			http.Error(w, `{"message":"unexpected request"}`, http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	cli, err := mobyclient.NewClientWithOpts(mobyclient.WithHost(server.URL), mobyclient.WithAPIVersion("1.49"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cli.Close()
+	service := &dockerVolumeService{cli: cli}
+	size, err := service.MeasureVolumeSize(context.Background(), "data", volumeDefaultSizeImage)
+	if err != nil || size != 12345 {
+		t.Fatalf("MeasureVolumeSize() = %d, %v", size, err)
+	}
+	if !created.Load() || !removed.Load() {
+		t.Fatalf("probe lifecycle created=%v removed=%v", created.Load(), removed.Load())
+	}
+}
+
+func TestRemoveVolumeProbeContainerAcceptsResponseErrorWhenInspectConfirmsRemoval(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/v1.49")
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodDelete && path == "/containers/probe":
+			http.Error(w, `{"message":"response lost"}`, http.StatusInternalServerError)
+		case r.Method == http.MethodGet && path == "/containers/probe/json":
+			http.Error(w, `{"message":"not found"}`, http.StatusNotFound)
+		default:
+			http.Error(w, `{"message":"unexpected request"}`, http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	cli, err := mobyclient.NewClientWithOpts(mobyclient.WithHost(server.URL), mobyclient.WithAPIVersion("1.49"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cli.Close()
+	if err := removeVolumeProbeContainer(cli, "probe"); err != nil {
+		t.Fatalf("removeVolumeProbeContainer() error = %v, want confirmed removal", err)
+	}
 }
 
 func TestBuildVolumeReportClassifiesUnusedSuspectedAndUsedVolumes(t *testing.T) {

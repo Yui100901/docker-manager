@@ -12,7 +12,7 @@ import (
 func (rr *ReverseResult) DockerComposeFileString() string {
 	vols, nets := rr.buildTopLevelComposeMeta()
 	yml, _ := yaml.Marshal(ComposeFile{Services: rr.ComposeMap, Volumes: vols, Networks: nets})
-	return string(yml)
+	return rr.redactGeneratedOutput(string(yml))
 }
 
 func (rr *ReverseResult) buildTopLevelComposeMeta() (map[string]interface{}, map[string]interface{}) {

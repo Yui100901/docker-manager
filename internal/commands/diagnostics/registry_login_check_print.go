@@ -13,6 +13,12 @@ func printRegistryLoginCheckReport(w io.Writer, report RegistryLoginCheckReport)
 	if report.Credential.Helper != "" {
 		fmt.Fprintf(w, " helper=%s", report.Credential.Helper)
 	}
+	if report.Credential.HelperSource != "" {
+		fmt.Fprintf(w, " helper来源=%s", report.Credential.HelperSource)
+	}
+	if report.Credential.HelperPath != "" {
+		fmt.Fprintf(w, " helper路径=%s", report.Credential.HelperPath)
+	}
 	if report.Credential.Username != "" {
 		fmt.Fprintf(w, " 用户=%s", report.Credential.Username)
 	}

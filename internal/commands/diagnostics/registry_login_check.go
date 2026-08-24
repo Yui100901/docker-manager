@@ -15,12 +15,25 @@ import (
 )
 
 func NewRegistryReportCommand() *cobra.Command {
-	opts := RegistryLoginCheckOptions{Timeout: 5 * time.Second, FailOnError: true}
+	return NewRegistryReportCommandWithDefaults(nil)
+}
+
+func NewRegistryReportCommandWithDefaults(defaults func() RegistryLoginCheckDefaults) *cobra.Command {
+	opts := RegistryLoginCheckOptions{Timeout: 5 * time.Second, CredentialHelperTimeout: registryauth.DefaultCredentialHelperTimeout, FailOnError: true}
 	cmd := &cobra.Command{
 		Use:   "registry <registry>",
 		Short: "检查 Docker registry 登录配置、凭据和连通性",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if defaults != nil {
+				cfg := defaults()
+				if cfg.DisableCredentialHelpers && !cmd.Flags().Changed("disable-credential-helpers") {
+					opts.DisableCredentialHelpers = true
+				}
+				if cfg.CredentialHelperTimeout > 0 && !cmd.Flags().Changed("credential-helper-timeout") {
+					opts.CredentialHelperTimeout = cfg.CredentialHelperTimeout
+				}
+			}
 			report, err := runRegistryLoginCheck(cmd.Context(), args[0], opts)
 			if err != nil {
 				return fmt.Errorf("检查 registry 登录失败: %w", err)
@@ -34,6 +47,7 @@ func NewRegistryReportCommand() *cobra.Command {
 		},
 	}
 	commandflags.AddRegistryClientFlags(cmd, &opts.DockerConfig, &opts.PlainHTTP, &opts.Timeout, opts.Timeout)
+	commandflags.AddCredentialHelperFlags(cmd, &opts.DisableCredentialHelpers, &opts.CredentialHelperTimeout, opts.CredentialHelperTimeout)
 	cmd.Flags().BoolVar(&opts.FailOnError, "fail-on-error", opts.FailOnError, "registry 检查出现 failed 状态时返回非零退出码")
 	cmd.Flags().BoolVar(&opts.FailOnWarning, "fail-on-warning", false, "registry 检查出现 warning 状态时也返回非零退出码")
 	commandflags.AddReportFormatFlag(cmd, &opts.Format)
@@ -48,6 +62,9 @@ func runRegistryLoginCheck(ctx context.Context, registryName string, opts Regist
 	if opts.Timeout <= 0 {
 		opts.Timeout = 5 * time.Second
 	}
+	if opts.CredentialHelperTimeout <= 0 {
+		opts.CredentialHelperTimeout = registryauth.DefaultCredentialHelperTimeout
+	}
 	ctx, cancel := context.WithTimeout(ctx, opts.Timeout)
 	defer cancel()
 
@@ -60,7 +77,7 @@ func runRegistryLoginCheck(ctx context.Context, registryName string, opts Regist
 	if configErr != nil {
 		cred.Message = configErr.Error()
 	} else {
-		cred = resolveRegistryCredential(ctx, cfg, normalized)
+		cred = resolveRegistryCredentialWithOptions(ctx, cfg, normalized, opts)
 	}
 
 	report := RegistryLoginCheckReport{
@@ -105,11 +122,13 @@ func normalizeRegistryName(input string) (string, error) {
 
 func buildCredentialReport(cred registryCredential, configErr error) CredentialReport {
 	report := CredentialReport{
-		Found:    cred.Found,
-		Source:   cred.Source,
-		Helper:   cred.Helper,
-		Username: cred.Username,
-		Message:  cred.Message,
+		Found:        cred.Found,
+		Source:       cred.Source,
+		Helper:       cred.Helper,
+		HelperSource: cred.HelperSource,
+		HelperPath:   cred.HelperPath,
+		Username:     cred.Username,
+		Message:      cred.Message,
 	}
 	if configErr != nil {
 		report.Message = configErr.Error()

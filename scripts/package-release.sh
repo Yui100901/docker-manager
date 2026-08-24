@@ -70,6 +70,36 @@ done
 if [ "${#PLATFORMS[@]}" -eq 0 ]; then
   PLATFORMS=(linux/amd64 linux/arm64 windows/amd64 darwin/amd64 darwin/arm64)
 fi
+if ! [[ "${VERSION}" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]]; then
+  echo "Invalid version: ${VERSION}" >&2
+  exit 2
+fi
+if ! [[ "${COMMIT}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+  echo "Invalid commit: ${COMMIT}" >&2
+  exit 2
+fi
+if ! [[ "${BUILD_DATE}" =~ ^[0-9TZ:.+-]+$ ]]; then
+  echo "Invalid build date: ${BUILD_DATE}" >&2
+  exit 2
+fi
+if [ "${#VERSION}" -gt 128 ] || [ "${#COMMIT}" -gt 128 ] || [ "${#BUILD_DATE}" -gt 128 ]; then
+  echo "Version, commit, and build date must each be at most 128 characters." >&2
+  exit 2
+fi
+seen_platforms=" "
+for platform in "${PLATFORMS[@]}"; do
+  if ! [[ "${platform}" =~ ^[A-Za-z0-9_]+/[A-Za-z0-9_]+$ ]]; then
+    echo "Invalid platform: ${platform}" >&2
+    exit 2
+  fi
+  case "${seen_platforms}" in
+    *" ${platform} "*)
+      echo "Duplicate platform: ${platform}" >&2
+      exit 2
+      ;;
+  esac
+  seen_platforms="${seen_platforms}${platform} "
+done
 
 need_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -127,6 +157,17 @@ copy_release_scripts() {
     return
   fi
   cp "${ROOT_DIR}/scripts/install.sh" "${ROOT_DIR}/scripts/uninstall.sh" "${package_dir}/scripts/"
+}
+
+copy_release_documentation() {
+  local package_dir="$1"
+  cp "${ROOT_DIR}/README.md" "${ROOT_DIR}/CHANGELOG.md" "${ROOT_DIR}/LICENSE" "${package_dir}/"
+  mkdir -p "${package_dir}/docs"
+  cp \
+    "${ROOT_DIR}/docs/TESTING.md" \
+    "${ROOT_DIR}/docs/RELEASE_CHECKLIST.md" \
+    "${ROOT_DIR}/docs/DOCKER_API_MIGRATION.md" \
+    "${package_dir}/docs/"
 }
 
 write_install_guide() {
@@ -216,8 +257,7 @@ archive_platform() {
       go build -trimpath -ldflags "${LDFLAGS}" -o "${package_dir}/${binary}" .
   )
 
-  cp "${ROOT_DIR}/README.md" "${package_dir}/"
-  cp "${ROOT_DIR}/LICENSE" "${package_dir}/"
+  copy_release_documentation "${package_dir}"
   cp "${ROOT_DIR}/.dm.yaml.example" "${package_dir}/dm.yaml.example"
   copy_release_scripts "${goos}" "${package_dir}"
   write_install_guide "${goos}" "${package_dir}" "${binary}" "${platform}"
@@ -238,9 +278,38 @@ archive_platform() {
 
 need_cmd go
 mkdir -p "${DIST_DIR}"
-DIST_DIR=$(CDPATH='' cd -- "${DIST_DIR}" && pwd)
+DIST_ROOT=$(CDPATH='' cd -- "${DIST_DIR}" && pwd)
+RELEASE_KEY="${VERSION}-${COMMIT}"
+RELEASE_DIR="${DIST_ROOT}/${RELEASE_KEY}"
+if [ -e "${RELEASE_DIR}" ] || [ -L "${RELEASE_DIR}" ]; then
+  echo "Release directory already exists: ${RELEASE_DIR}" >&2
+  exit 2
+fi
+DIST_DIR="${DIST_ROOT}/.${RELEASE_KEY}.staging-$$_${RANDOM}"
+WORK_DIR=""
+PUBLISHED=0
+STAGING_CREATED=0
+RELEASE_CLAIMED=0
+cleanup_release() {
+  if [ "${RELEASE_CLAIMED}" -eq 1 ] && [ "${PUBLISHED}" -ne 1 ]; then
+    rm -rf -- "${RELEASE_DIR}"
+  fi
+  if [ "${STAGING_CREATED}" -eq 1 ] && [ "${PUBLISHED}" -ne 1 ]; then
+    rm -rf -- "${DIST_DIR}"
+  fi
+  if [ -n "${WORK_DIR}" ]; then
+    rm -rf -- "${WORK_DIR}"
+  fi
+}
+trap cleanup_release EXIT
+umask 077
+if mkdir "${DIST_DIR}"; then
+  STAGING_CREATED=1
+else
+  echo "Could not exclusively create release staging directory: ${DIST_DIR}" >&2
+  exit 2
+fi
 WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/dm-release-XXXXXX")
-trap 'rm -rf "${WORK_DIR}"' EXIT
 
 LDFLAGS="-s -w -X docker-manager/internal/version.version=${VERSION} -X docker-manager/internal/version.commit=${COMMIT} -X docker-manager/internal/version.buildDate=${BUILD_DATE}"
 CHECKSUMS_FILE="${DIST_DIR}/checksums.txt"
@@ -276,10 +345,6 @@ EOF
 
 first=1
 for platform in "${PLATFORMS[@]}"; do
-  if ! [[ "${platform}" =~ ^[A-Za-z0-9_]+/[A-Za-z0-9_]+$ ]]; then
-    echo "Invalid platform: ${platform}" >&2
-    exit 2
-  fi
   if [ "${first}" = "1" ]; then
     first=0
   else
@@ -295,7 +360,36 @@ cat >>"${MANIFEST_FILE}" <<'EOF'
 EOF
 cp "${CHECKSUMS_WORK_FILE}" "${CHECKSUMS_FILE}"
 
-echo "Release artifacts written to: ${DIST_DIR}"
-echo "Checksums: ${CHECKSUMS_FILE}"
-echo "Manifest: ${MANIFEST_FILE}"
-echo "Summary: ${SUMMARY_FILE}"
+go run "${ROOT_DIR}/scripts/verify-release-manifest.go" \
+  --dir "${DIST_DIR}" \
+  --version "${VERSION}" \
+  --commit "${COMMIT}" \
+  --count "${#PLATFORMS[@]}"
+if [ -e "${RELEASE_DIR}" ] || [ -L "${RELEASE_DIR}" ]; then
+  echo "Release directory was created while packaging: ${RELEASE_DIR}" >&2
+  exit 2
+fi
+if ! mkdir -- "${RELEASE_DIR}"; then
+  echo "Could not exclusively claim release directory: ${RELEASE_DIR}" >&2
+  exit 2
+fi
+RELEASE_CLAIMED=1
+for release_entry in "${DIST_DIR}"/* "${DIST_DIR}"/.[!.]* "${DIST_DIR}"/..?*; do
+  if [ ! -e "${release_entry}" ] && [ ! -L "${release_entry}" ]; then
+    continue
+  fi
+  if [ "$(basename -- "${release_entry}")" = "release-manifest.json" ]; then
+    continue
+  fi
+  mv -- "${release_entry}" "${RELEASE_DIR}/"
+done
+mv -- "${DIST_DIR}/release-manifest.json" "${RELEASE_DIR}/release-manifest.json"
+rmdir -- "${DIST_DIR}"
+STAGING_CREATED=0
+PUBLISHED=1
+RELEASE_CLAIMED=0
+
+echo "Release artifacts written to: ${RELEASE_DIR}"
+echo "Checksums: ${RELEASE_DIR}/checksums.txt"
+echo "Manifest: ${RELEASE_DIR}/release-manifest.json"
+echo "Summary: ${RELEASE_DIR}/release-summary.md"

@@ -1089,6 +1089,12 @@ func TestConfigureHTTPLogging(t *testing.T) {
 	if buf.Len() != 0 {
 		t.Fatalf("buffer length = %d, want 0 after quiet logging", buf.Len())
 	}
+
+	configureHTTPLoggingTo(true, &buf)
+	http_utils.Logger.Print("Authorization: Bearer debug-token")
+	if !strings.Contains(buf.String(), "Authorization: Bearer debug-token") {
+		t.Fatalf("verbose HTTP output = %q, want configured command writer", buf.String())
+	}
 }
 
 func TestSleepWithContextReturnsOnCancel(t *testing.T) {
@@ -1219,11 +1225,12 @@ func TestFetchManifestAllowsAnonymousRegistry(t *testing.T) {
 
 func TestFetchManifestUsesBearerChallenge(t *testing.T) {
 	var tokenRequested bool
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var server *httptest.Server
+	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v2/team/app/manifests/v1":
 			if r.Header.Get("Authorization") != "Bearer test-token" {
-				w.Header().Set("WWW-Authenticate", `Bearer realm="`+serverURLFromRequest(r)+`/token",service="test-registry",scope="repository:team/app:pull"`)
+				w.Header().Set("WWW-Authenticate", `Bearer realm="`+server.URL+`/token",service="test-registry",scope="repository:team/app:pull"`)
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
@@ -1242,8 +1249,8 @@ func TestFetchManifestUsesBearerChallenge(t *testing.T) {
 	runner := newTestPullRunner()
 	runner.httpClient = &http_utils.HTTPClient{Client: server.Client()}
 
-	info := &ImageInfo{Registry: strings.TrimPrefix(server.URL, "http://"), Repository: "team", Image: "app", Tag: "v1"}
-	_, auth, err := runner.fetchManifest(context.Background(), info, PullOptions{PlainHTTP: true})
+	info := &ImageInfo{Registry: strings.TrimPrefix(server.URL, "https://"), Repository: "team", Image: "app", Tag: "v1"}
+	_, auth, err := runner.fetchManifest(context.Background(), info, PullOptions{})
 	if err != nil {
 		t.Fatalf("fetchManifest() error = %v", err)
 	}
@@ -1310,10 +1317,6 @@ func testOCIManifestJSON() string {
 		},
 		"layers": []
 	}`
-}
-
-func serverURLFromRequest(r *http.Request) string {
-	return "http://" + r.Host
 }
 
 func writePullDockerConfig(t *testing.T, registryName, username, password string) string {

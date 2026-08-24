@@ -9,6 +9,7 @@ import (
 	"github.com/moby/moby/api/types/volume"
 	mobyclient "github.com/moby/moby/client"
 	"io"
+	"time"
 )
 
 const (
@@ -78,6 +79,11 @@ type RestoreOptions struct {
 	PassphraseFile        string
 	SkipChecksum          bool
 	TrustedPublicKey      string
+	ReadyTimeout          time.Duration
+	MaxArchiveBytes       int64
+	MaxExpandedBytes      int64
+	MaxJSONBytes          int64
+	MaxParts              int
 	Output                io.Writer
 }
 

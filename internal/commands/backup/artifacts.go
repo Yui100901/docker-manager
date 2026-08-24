@@ -26,7 +26,7 @@ func writeComposeFile(path string, inspect container.InspectResponse) error {
 		ReverseType:     runconfig.ReverseCompose,
 	})
 	result := newBackupComposeResult([]runconfig.ParsedResult{parser.ToResult()})
-	return os.WriteFile(path, []byte(result.DockerComposeFileString()), 0644)
+	return writePrivateBackupFile(path, []byte(result.DockerComposeFileString()), 0600)
 }
 
 type backupComposeResult struct {
@@ -85,14 +85,11 @@ func isBackupCustomNetwork(name string) bool {
 }
 
 func writeJSONFile(path string, value interface{}) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return err
-	}
 	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(data, '\n'), 0644)
+	return writePrivateBackupFile(path, append(data, '\n'), 0600)
 }
 
 func writeBackupBundleArtifacts(outputDir string, manifest BackupManifest) error {
@@ -176,7 +173,7 @@ func writeBackupReadme(path string, manifest BackupManifest) error {
 		}
 		sb.WriteString(line + "\n")
 	}
-	return os.WriteFile(path, []byte(sb.String()), 0644)
+	return writePrivateBackupFile(path, []byte(sb.String()), 0600)
 }
 
 func writeRestoreScript(path string) error {
@@ -206,10 +203,10 @@ fi
 
 dm restore "$DIR" "$@"
 `
-	if err := os.WriteFile(path, []byte(content), 0755); err != nil {
+	if err := writePrivateBackupFile(path, []byte(content), 0700); err != nil {
 		return err
 	}
-	return os.Chmod(path, 0755)
+	return os.Chmod(path, 0700)
 }
 
 func currentSourcePlatform() string {

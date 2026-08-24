@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,6 +17,8 @@ import (
 	mobyclient "github.com/moby/moby/client"
 )
 
+const DefaultRequestTimeout = 30 * time.Second
+
 var (
 	mobyClient        *mobyclient.Client
 	mobyClientOptions resolvedClientOptions
@@ -26,12 +29,17 @@ var (
 
 // Options describes the explicit Docker daemon settings selected by config or
 // flags. Empty string fields inherit the corresponding DOCKER_* environment
-// value; TLSVerify uses nil to represent inheritance.
+// value unless their Set marker records an explicit empty override;
+// TLSVerify uses nil to represent inheritance.
 type Options struct {
-	Host       string
-	TLSVerify  *bool
-	CertPath   string
-	APIVersion string
+	Host          string
+	HostSet       bool
+	TLSVerify     *bool
+	CertPath      string
+	CertPathSet   bool
+	APIVersion    string
+	APIVersionSet bool
+	Timeout       time.Duration
 }
 
 // ConnectionInfo describes the transport that was built for a Docker client.
@@ -46,6 +54,7 @@ type ConnectionInfo struct {
 	CASource          string
 	ClientCertificate bool
 	APIVersion        string
+	Timeout           time.Duration
 }
 
 type resolvedClientOptions struct {
@@ -54,6 +63,7 @@ type resolvedClientOptions struct {
 	TLSVerifySet bool
 	CertPath     string
 	APIVersion   string
+	Timeout      time.Duration
 }
 
 // NewMobyClient returns the shared Moby API client for migrated code paths.
@@ -130,7 +140,10 @@ func cloneOptions(opts Options) Options {
 }
 
 func sameOptions(a, b Options) bool {
-	if a.Host != b.Host || a.CertPath != b.CertPath || a.APIVersion != b.APIVersion {
+	if a.Host != b.Host || a.HostSet != b.HostSet ||
+		a.CertPath != b.CertPath || a.CertPathSet != b.CertPathSet ||
+		a.APIVersion != b.APIVersion || a.APIVersionSet != b.APIVersionSet ||
+		a.Timeout != b.Timeout {
 		return false
 	}
 	switch {
@@ -144,7 +157,7 @@ func sameOptions(a, b Options) bool {
 }
 
 func resolveClientOptions(explicit Options, lookupEnv func(string) (string, bool)) resolvedClientOptions {
-	resolved := resolvedClientOptions{}
+	resolved := resolvedClientOptions{Timeout: DefaultRequestTimeout}
 	if value, ok := lookupEnv(mobyclient.EnvOverrideHost); ok {
 		resolved.Host = strings.TrimSpace(value)
 	}
@@ -159,18 +172,21 @@ func resolveClientOptions(explicit Options, lookupEnv func(string) (string, bool
 		resolved.TLSVerifySet = true
 	}
 
-	if value := strings.TrimSpace(explicit.Host); value != "" {
+	if value := strings.TrimSpace(explicit.Host); explicit.HostSet || value != "" {
 		resolved.Host = value
 	}
-	if value := strings.TrimSpace(explicit.CertPath); value != "" {
+	if value := strings.TrimSpace(explicit.CertPath); explicit.CertPathSet || value != "" {
 		resolved.CertPath = value
 	}
-	if value := strings.TrimSpace(explicit.APIVersion); value != "" {
+	if value := strings.TrimSpace(explicit.APIVersion); explicit.APIVersionSet || value != "" {
 		resolved.APIVersion = value
 	}
 	if explicit.TLSVerify != nil {
 		resolved.TLSVerify = *explicit.TLSVerify
 		resolved.TLSVerifySet = true
+	}
+	if explicit.Timeout > 0 {
+		resolved.Timeout = explicit.Timeout
 	}
 	return resolved
 }
@@ -180,6 +196,7 @@ func (opts resolvedClientOptions) toOptions() Options {
 		Host:       opts.Host,
 		CertPath:   opts.CertPath,
 		APIVersion: opts.APIVersion,
+		Timeout:    opts.Timeout,
 	}
 	if opts.TLSVerifySet {
 		value := opts.TLSVerify
@@ -234,6 +251,7 @@ func buildMobyClient(opts resolvedClientOptions) (*mobyclient.Client, Connection
 		TLSVerify:  opts.TLSVerify,
 		CertPath:   opts.CertPath,
 		APIVersion: opts.APIVersion,
+		Timeout:    opts.Timeout,
 	}
 
 	hostURL, err := mobyclient.ParseHostURL(host)
@@ -264,7 +282,17 @@ func buildMobyClient(opts resolvedClientOptions) (*mobyclient.Client, Connection
 		return nil, info, fmt.Errorf("Docker TLS verification requires a certificate directory containing ca.pem, cert.pem, and key.pem")
 	}
 
-	clientOpts := make([]mobyclient.Opt, 0, 4)
+	timeout := opts.Timeout
+	if timeout <= 0 {
+		timeout = DefaultRequestTimeout
+	}
+	transport := &http.Transport{
+		MaxIdleConns:          6,
+		IdleConnTimeout:       30 * time.Second,
+		TLSHandshakeTimeout:   timeout,
+		ResponseHeaderTimeout: timeout,
+	}
+	clientOpts := make([]mobyclient.Opt, 0, 6)
 	if tlsEnabled {
 		tlsConfig, caSource, err := loadDockerTLSConfig(opts.CertPath, opts.TLSVerify)
 		info.CASource = caSource
@@ -272,20 +300,22 @@ func buildMobyClient(opts resolvedClientOptions) (*mobyclient.Client, Connection
 			return nil, info, err
 		}
 		info.ClientCertificate = true
-		transport := &http.Transport{
-			TLSClientConfig: tlsConfig,
-			MaxIdleConns:    6,
-			IdleConnTimeout: 30 * time.Second,
-		}
-		httpClient := &http.Client{
-			Transport:     transport,
-			CheckRedirect: mobyclient.CheckRedirect,
-		}
-		clientOpts = append(clientOpts, mobyclient.WithHTTPClient(httpClient))
+		transport.TLSClientConfig = tlsConfig
 	}
+	httpClient := &http.Client{
+		Transport:     transport,
+		CheckRedirect: mobyclient.CheckRedirect,
+	}
+	clientOpts = append(clientOpts, mobyclient.WithHTTPClient(httpClient))
 	clientOpts = append(clientOpts, mobyclient.WithHost(host))
+	if endpointTransport == "tcp" {
+		dialer := &net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}
+		clientOpts = append(clientOpts, mobyclient.WithDialContext(dialer.DialContext))
+	}
 	if tlsEnabled {
 		clientOpts = append(clientOpts, mobyclient.WithScheme("https"))
+	} else {
+		clientOpts = append(clientOpts, mobyclient.WithScheme("http"))
 	}
 	if opts.APIVersion != "" {
 		clientOpts = append(clientOpts, mobyclient.WithAPIVersion(opts.APIVersion))

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -66,6 +67,17 @@ func TestCheckDoctorConfigParsesYaml(t *testing.T) {
 	}
 	if len(checks) != 1 || checks[0].Status != "ok" {
 		t.Fatalf("checks = %#v, want ok", checks)
+	}
+}
+
+func TestCheckDoctorConfigUsesStrictSharedSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".dm.yaml")
+	if err := os.WriteFile(path, []byte("unknown_option: true\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, checks := checkDoctorConfig(path)
+	if len(checks) != 1 || checks[0].Status != "failed" || !strings.Contains(checks[0].Message, "unknown_option") {
+		t.Fatalf("checks = %#v, want shared KnownFields failure", checks)
 	}
 }
 
@@ -170,6 +182,63 @@ func TestCheckDoctorDiskProbesWritableOutputDir(t *testing.T) {
 	}
 	if check.Detail == "" {
 		t.Fatalf("check = %#v, want detail", check)
+	}
+}
+
+func TestCheckDoctorDiskRejectsNegativeThresholdBeforeConversion(t *testing.T) {
+	outputDir := filepath.Join(t.TempDir(), "must-not-be-created")
+	check := checkDoctorDisk(outputDir, -1)
+	if check.Status != "failed" || !strings.Contains(check.Message, "不能为负数") {
+		t.Fatalf("check = %#v, want negative-threshold failure", check)
+	}
+	if _, err := os.Stat(outputDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("output directory should not be created for an invalid threshold: %v", err)
+	}
+}
+
+func TestDoctorCommandRejectsNegativeDiskThreshold(t *testing.T) {
+	cmd := NewDoctorCommand()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--min-disk-free-mb=-1"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--min-disk-free-mb") {
+		t.Fatalf("Execute() error = %v, want negative threshold rejection", err)
+	}
+}
+
+func TestCheckDoctorDiskCreatesPrivateOutputDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not expose Unix permission bits")
+	}
+	outputDir := filepath.Join(t.TempDir(), "doctor-output")
+	check := checkDoctorDisk(outputDir, 1)
+	if check.Status != "ok" {
+		t.Fatalf("check = %#v, want ok", check)
+	}
+	info, err := os.Stat(outputDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0700 {
+		t.Fatalf("output directory permissions = %04o, want 0700", got)
+	}
+}
+
+func TestCheckDoctorDaemonConfigSkipsLocalFileForRemoteDocker(t *testing.T) {
+	t.Setenv("DOCKER_HOST", "")
+	docker.Configure(docker.Options{Host: "tcp://docker.example:2375"})
+	t.Cleanup(func() { docker.Configure(docker.Options{}) })
+
+	checks := checkDoctorDaemonConfig()
+	if len(checks) != 1 || checks[0].Status != "skipped" {
+		t.Fatalf("checks = %#v, want remote daemon config skipped", checks)
+	}
+	if !strings.Contains(checks[0].Message, "远程 daemon") || checks[0].Detail != "tcp://docker.example:2375" {
+		t.Fatalf("check = %#v, want explicit remote endpoint explanation", checks[0])
+	}
+	if strings.Contains(checks[0].Detail, "daemon.json") {
+		t.Fatalf("detail = %q, must not report a local daemon.json path", checks[0].Detail)
 	}
 }
 

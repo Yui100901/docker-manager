@@ -3,6 +3,7 @@ package pull
 import (
 	"context"
 	"docker-manager/internal/commandflags"
+	"docker-manager/internal/registryauth"
 	rpt "docker-manager/internal/report"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"time"
 )
 
 func NewPullCommand() *cobra.Command {
@@ -30,6 +32,10 @@ func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command 
 	var dockerConfig string
 	var plainHTTP bool
 	var verboseHTTP bool
+	var disableCredentialHelpers bool
+	var credentialHelperTimeout = registryauth.DefaultCredentialHelperTimeout
+	var authRealmAllowlist []string
+	limits := defaultPullResourceLimits()
 	timeout := defaultPullTimeout
 	batchOpts := PullBatchOptions{
 		OutputDir:   ".",
@@ -48,11 +54,20 @@ func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command 
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
 			defer stop()
 
-			applyCommandDefaults(cmd, defaults, &proxy, &targetOS, &arch, &outputDir)
+			applyCommandDefaults(cmd, defaults, &proxy, &targetOS, &arch, &outputDir, &disableCredentialHelpers, &credentialHelperTimeout, &authRealmAllowlist)
+			if credentialHelperTimeout <= 0 {
+				return fmt.Errorf("--credential-helper-timeout 必须大于 0")
+			}
+			if err := validateAuthRealmAllowlist(authRealmAllowlist); err != nil {
+				return err
+			}
+			if err := validateConfiguredPullResourceLimits(limits); err != nil {
+				return err
+			}
 			if !cmd.Flags().Changed("output-dir") {
 				batchOpts.OutputDir = outputDir
 			}
-			configureHTTPLogging(verboseHTTP)
+			configureHTTPLoggingTo(verboseHTTP, cmd.ErrOrStderr())
 			imageNameList = args
 			if shouldRunPullBatch(cmd, imageNameList, batchOpts) {
 				if timeout <= 0 {
@@ -71,6 +86,10 @@ func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command 
 				batchOpts.Load = load
 				batchOpts.DockerConfig = dockerConfig
 				batchOpts.PlainHTTP = plainHTTP
+				batchOpts.DisableCredentialHelpers = disableCredentialHelpers
+				batchOpts.CredentialHelperTimeout = credentialHelperTimeout
+				batchOpts.AuthRealmAllowlist = append([]string(nil), authRealmAllowlist...)
+				batchOpts.Limits = limits
 				batchOpts.ProgressOutput = cmd.OutOrStdout()
 				report, err := runPullBatch(ctx, runner, batchOpts)
 				if errors.Is(err, context.Canceled) {
@@ -102,14 +121,18 @@ func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command 
 				return fmt.Errorf("配置代理失败: %w", err)
 			}
 			opts := PullOptions{
-				Context:        ctx,
-				Output:         output,
-				OutputDir:      outputDir,
-				Load:           load,
-				To:             to,
-				DockerConfig:   dockerConfig,
-				PlainHTTP:      plainHTTP,
-				ProgressOutput: cmd.OutOrStdout(),
+				Context:                  ctx,
+				Output:                   output,
+				OutputDir:                outputDir,
+				Load:                     load,
+				To:                       to,
+				DockerConfig:             dockerConfig,
+				PlainHTTP:                plainHTTP,
+				DisableCredentialHelpers: disableCredentialHelpers,
+				CredentialHelperTimeout:  credentialHelperTimeout,
+				AuthRealmAllowlist:       append([]string(nil), authRealmAllowlist...),
+				Limits:                   limits,
+				ProgressOutput:           cmd.OutOrStdout(),
 			}
 			var pullErrs []error
 			success := 0
@@ -141,6 +164,18 @@ func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command 
 	cmd.Flags().BoolVar(&verboseHTTP, "verbose-http", false, "输出底层 HTTP 请求调试日志")
 	cmd.Flags().StringVar(&to, "to", "", "pull 后导入 Docker、tag 并 push 到目标 registry/repository；可用 http:// 或 https:// 指定目标协议")
 	commandflags.AddDockerConfigFlag(cmd, &dockerConfig)
+	commandflags.AddCredentialHelperFlags(cmd, &disableCredentialHelpers, &credentialHelperTimeout, credentialHelperTimeout)
+	commandflags.AddAuthRealmAllowlistFlag(cmd, &authRealmAllowlist)
+	cmd.Flags().Int64Var(&limits.TokenBytes, "max-token-bytes", limits.TokenBytes, "Bearer token 响应最大字节数")
+	cmd.Flags().Int64Var(&limits.ManifestBytes, "max-manifest-bytes", limits.ManifestBytes, "单个 manifest 响应最大字节数")
+	cmd.Flags().Int64Var(&limits.ConfigBytes, "max-config-bytes", limits.ConfigBytes, "镜像 config 响应最大字节数")
+	cmd.Flags().Int64Var(&limits.LayerBytes, "max-layer-bytes", limits.LayerBytes, "单个压缩层 descriptor/下载最大字节数")
+	cmd.Flags().Int64Var(&limits.ExpandedLayerBytes, "max-expanded-layer-bytes", limits.ExpandedLayerBytes, "单个层展开后最大字节数")
+	cmd.Flags().Int64Var(&limits.TotalLayerBytes, "max-total-layer-bytes", limits.TotalLayerBytes, "单个镜像所有压缩层最大总字节数")
+	cmd.Flags().Int64Var(&limits.TotalExpandedBytes, "max-total-expanded-bytes", limits.TotalExpandedBytes, "单个镜像所有层展开后最大总字节数")
+	cmd.Flags().Int64Var(&limits.TemporaryBytes, "max-temporary-bytes", limits.TemporaryBytes, "单个镜像下载、展开和打包的临时文件峰值上限")
+	cmd.Flags().IntVar(&limits.MaxLayers, "max-layers", limits.MaxLayers, "单个镜像最多层数")
+	cmd.Flags().DurationVar(&limits.TotalTimeout, "total-timeout", limits.TotalTimeout, "单个镜像从 manifest 到归档/推送的总超时时间")
 	cmd.Flags().BoolVar(&plainHTTP, "plain-http", false, "使用 http:// 拉取 registry，适用于未启用 TLS 的内网 registry")
 	cmd.Flags().StringVarP(&batchOpts.File, "file", "f", "", "镜像列表文件，空行和 # 注释会被忽略")
 	cmd.Flags().IntVar(&batchOpts.Concurrency, "concurrency", batchOpts.Concurrency, "批量模式并发数量")
@@ -180,7 +215,7 @@ func completePullValues(values ...string) cobra.CompletionFunc {
 	}
 }
 
-func applyCommandDefaults(cmd *cobra.Command, defaults func() CommandDefaults, proxy, targetOS, arch, outputDir *string) {
+func applyCommandDefaults(cmd *cobra.Command, defaults func() CommandDefaults, proxy, targetOS, arch, outputDir *string, disableCredentialHelpers *bool, credentialHelperTimeout *time.Duration, authRealmAllowlist *[]string) {
 	if defaults == nil {
 		return
 	}
@@ -197,5 +232,14 @@ func applyCommandDefaults(cmd *cobra.Command, defaults func() CommandDefaults, p
 	}
 	if cfg.OutputDir != "" && !flags.Changed("output-dir") {
 		*outputDir = cfg.OutputDir
+	}
+	if cfg.DisableCredentialHelpers && !flags.Changed("disable-credential-helpers") {
+		*disableCredentialHelpers = true
+	}
+	if cfg.CredentialHelperTimeout > 0 && !flags.Changed("credential-helper-timeout") {
+		*credentialHelperTimeout = cfg.CredentialHelperTimeout
+	}
+	if len(cfg.AuthRealmAllowlist) > 0 && !flags.Changed("auth-realm") {
+		*authRealmAllowlist = append([]string(nil), cfg.AuthRealmAllowlist...)
 	}
 }

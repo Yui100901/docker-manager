@@ -8,6 +8,8 @@ import (
 	"log"
 	"os"
 	"time"
+
+	"docker-manager/internal/sensitive"
 )
 
 func NewPullRunner(proxy, targetOS, arch string) (*PullRunner, error) {
@@ -37,6 +39,14 @@ func (r *PullRunner) getImage(imageName string, opts PullOptions) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if err := validatePullResourceLimits(opts.Limits); err != nil {
+		return err
+	}
+	opts.Limits = effectivePullResourceLimits(opts.Limits)
+	var cancel context.CancelFunc
+	ctx, cancel = context.WithTimeout(ctx, opts.Limits.TotalTimeout)
+	defer cancel()
+	opts.Context = ctx
 
 	imageInfo, err := parseImageInfo(imageName)
 	if err != nil {
@@ -62,6 +72,9 @@ func (r *PullRunner) getImage(imageName string, opts PullOptions) error {
 	if err != nil {
 		return fmt.Errorf("获取清单失败: %w", err)
 	}
+	if err := validateManifestLayers(manifest, opts.Limits); err != nil {
+		return err
+	}
 
 	if err := ctx.Err(); err != nil {
 		return err
@@ -75,6 +88,14 @@ func (r *PullRunner) getImage(imageName string, opts PullOptions) error {
 	err = r.downloadConfig(ctx, imageInfo, manifest, auth, opts, tempDir)
 	if err != nil {
 		return fmt.Errorf("下载配置文件失败: %w", err)
+	}
+	initialTemporaryBytes, err := workspaceRegularBytes(ctx, tempDir)
+	if err != nil {
+		return fmt.Errorf("统计临时文件失败: %w", err)
+	}
+	opts.resourceBudget, err = newPullResourceBudget(opts.Limits, initialTemporaryBytes)
+	if err != nil {
+		return err
 	}
 
 	err = r.downloadLayers(ctx, imageInfo, manifest, auth, opts, tempDir)
@@ -90,6 +111,9 @@ func (r *PullRunner) getImage(imageName string, opts PullOptions) error {
 	if err != nil {
 		return fmt.Errorf("解析输出路径失败: %w", err)
 	}
+	if err := validatePackageTemporaryBudget(ctx, tempDir, opts.Limits.TemporaryBytes); err != nil {
+		return err
+	}
 	err = packageImage(ctx, tempDir, outputFile)
 	if err != nil {
 		return fmt.Errorf("打包镜像失败: %w", err)
@@ -103,9 +127,13 @@ func (r *PullRunner) getImage(imageName string, opts PullOptions) error {
 }
 
 func configureHTTPLogging(verbose bool) {
-	if verbose {
-		http_utils.Logger.SetOutput(os.Stdout)
+	configureHTTPLoggingTo(verbose, os.Stdout)
+}
+
+func configureHTTPLoggingTo(verbose bool, output io.Writer) {
+	if !verbose || output == nil {
+		http_utils.Logger.SetOutput(io.Discard)
 		return
 	}
-	http_utils.Logger.SetOutput(io.Discard)
+	http_utils.Logger.SetOutput(sensitive.NewDynamicWriter(output))
 }

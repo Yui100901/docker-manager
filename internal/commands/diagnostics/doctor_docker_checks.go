@@ -40,19 +40,26 @@ func checkDoctorDocker(ctx context.Context, timeout time.Duration) []DoctorCheck
 			Recommended: dockerDaemonFailureRecommendation(info),
 		})
 	}
-	checks := []DoctorCheck{dockerEndpointCheck(info, svc.ClientVersion(), nil)}
+	clientVersion := svc.ClientVersion()
+	if strings.TrimSpace(clientVersion) == "" {
+		clientVersion = ping.APIVersion
+	}
+	version, versionErr := svc.ServerVersion(checkCtx)
+	if strings.TrimSpace(clientVersion) == "" && versionErr == nil {
+		clientVersion = version.APIVersion
+	}
+	checks := []DoctorCheck{dockerEndpointCheck(info, clientVersion, nil)}
 	checks = append(checks, DoctorCheck{
 		Name:    "docker-daemon",
 		Status:  "ok",
 		Message: "Docker daemon 可访问",
 		Detail:  "api_version=" + ping.APIVersion + " os_type=" + ping.OSType,
 	})
-	version, err := svc.ServerVersion(checkCtx)
-	if err != nil {
+	if versionErr != nil {
 		checks = append(checks, DoctorCheck{
 			Name:        "docker-version",
 			Status:      "warning",
-			Message:     err.Error(),
+			Message:     versionErr.Error(),
 			Recommended: "Docker ping 可用但版本读取失败，建议检查 daemon API 兼容性",
 		})
 		return checks
@@ -135,6 +142,16 @@ func dockerDaemonFailureRecommendation(info docker.ConnectionInfo) string {
 }
 
 func checkDoctorDaemonConfig() []DoctorCheck {
+	if docker.IsRemoteEndpoint() {
+		endpoint := docker.Endpoint()
+		return []DoctorCheck{{
+			Name:        "docker-daemon-config",
+			Status:      "skipped",
+			Message:     "当前 Docker endpoint 是远程 daemon，跳过客户端主机的 daemon.json",
+			Detail:      endpoint,
+			Recommended: "请在远程 Docker 主机上检查 daemon.json，或通过 daemon API/运维平台核对 registry 配置",
+		}}
+	}
 	path := dockerDaemonConfigPath()
 	data, err := os.ReadFile(path)
 	if err != nil {

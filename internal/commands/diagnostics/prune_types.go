@@ -11,28 +11,30 @@ import (
 )
 
 type PruneReportOptions struct {
-	Apply         bool
-	Confirm       bool
-	Only          []string
-	Filters       []string
-	Until         string
-	UntilValues   []string
-	ProtectLabels []string
+	Apply                bool
+	Confirm              bool
+	AllowNonAtomicDelete bool
+	Only                 []string
+	Filters              []string
+	Until                string
+	UntilValues          []string
+	ProtectLabels        []string
 	commandflags.FormatOptions
 }
 
 type PruneReport struct {
-	GeneratedAt       string               `json:"generated_at"`
-	DockerEndpoint    string               `json:"docker_endpoint"`
-	StoppedContainers []PruneContainerRef  `json:"stopped_containers,omitempty"`
-	DanglingImages    []PruneImageRef      `json:"dangling_images,omitempty"`
-	UnusedVolumes     []PruneVolumeRef     `json:"unused_volumes,omitempty"`
-	BuildCaches       []PruneBuildCacheRef `json:"build_caches,omitempty"`
-	EstimatedBytes    uint64               `json:"estimated_bytes"`
-	Warnings          []string             `json:"warnings,omitempty"`
-	Applied           bool                 `json:"applied"`
-	Scope             PruneScope           `json:"scope"`
-	ApplyResult       *PruneApplyResult    `json:"apply_result,omitempty"`
+	GeneratedAt                 string               `json:"generated_at"`
+	DockerEndpoint              string               `json:"docker_endpoint"`
+	StoppedContainers           []PruneContainerRef  `json:"stopped_containers,omitempty"`
+	DanglingImages              []PruneImageRef      `json:"dangling_images,omitempty"`
+	UnusedVolumes               []PruneVolumeRef     `json:"unused_volumes,omitempty"`
+	BuildCaches                 []PruneBuildCacheRef `json:"build_caches,omitempty"`
+	EstimatedBytes              uint64               `json:"estimated_bytes"`
+	Warnings                    []string             `json:"warnings,omitempty"`
+	Applied                     bool                 `json:"applied"`
+	Scope                       PruneScope           `json:"scope"`
+	ApplyResult                 *PruneApplyResult    `json:"apply_result,omitempty"`
+	NonAtomicDeleteAcknowledged bool                 `json:"non_atomic_delete_acknowledged,omitempty"`
 }
 
 type PruneScope struct {

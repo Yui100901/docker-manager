@@ -1,10 +1,17 @@
 package runconfig
 
-import "docker-manager/internal/sensitive"
+import (
+	"strings"
+
+	"docker-manager/internal/sensitive"
+)
 
 const redactedValue = sensitive.RedactedValue
 
 func normalizeRedactProfile(profile string, redactSecrets bool) (sensitive.Profile, error) {
+	if strings.TrimSpace(profile) == "" && !redactSecrets {
+		return sensitive.DefaultProfile(), nil
+	}
 	return sensitive.NormalizeProfile(profile, redactSecrets)
 }
 

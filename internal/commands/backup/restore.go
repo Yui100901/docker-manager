@@ -51,8 +51,15 @@ func restoreBackupDir(ctx context.Context, backupDir string, opts RestoreOptions
 	if opts.Output == nil {
 		opts.Output = io.Discard
 	}
-	manifest, err := readBackupManifest(backupDir)
+	limits, err := resolveRestoreLimits(opts)
 	if err != nil {
+		return err
+	}
+	manifest, err := readBackupManifestWithLimit(backupDir, limits.jsonBytes)
+	if err != nil {
+		return err
+	}
+	if err := validateRestoreJSONBudgetWithLimit(backupDir, manifest, limits.jsonBytes); err != nil {
 		return err
 	}
 	if len(manifest.Containers) == 0 {

@@ -1,46 +1,36 @@
 package diagnostics
 
 import (
-	"errors"
 	"fmt"
 	"net/url"
 	"os"
 	"sort"
 	"strings"
 
+	"docker-manager/internal/appconfig"
 	"docker-manager/internal/docker"
-
-	"gopkg.in/yaml.v3"
 )
 
 func checkDoctorConfig(path string) (doctorConfig, []DoctorCheck) {
-	var cfg doctorConfig
-	data, err := os.ReadFile(path)
+	loaded, err := appconfig.LoadWithOptions(path, appconfig.LoadOptions{})
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return cfg, []DoctorCheck{{
-				Name:        "dm-config",
-				Status:      "skipped",
-				Message:     "未找到配置文件 " + path,
-				Recommended: "如需默认代理、平台或输出目录，可复制 .dm.yaml.example 为 .dm.yaml",
-			}}
-		}
-		return cfg, []DoctorCheck{{
+		return doctorConfig{}, []DoctorCheck{{
 			Name:        "dm-config",
 			Status:      "failed",
 			Message:     err.Error(),
 			Recommended: "检查配置文件路径和读取权限",
 		}}
 	}
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	cfg := loaded.Config
+	if !loaded.Exists {
 		return cfg, []DoctorCheck{{
 			Name:        "dm-config",
-			Status:      "failed",
-			Message:     err.Error(),
-			Recommended: "检查 YAML 格式，可参考 .dm.yaml.example",
+			Status:      "skipped",
+			Message:     "未找到配置文件 " + loaded.Path,
+			Recommended: "如需默认代理、平台或输出目录，可复制 .dm.yaml.example 为 .dm.yaml",
 		}}
 	}
-	check := DoctorCheck{Name: "dm-config", Status: "ok", Message: "配置文件可解析", Detail: path}
+	check := DoctorCheck{Name: "dm-config", Status: "ok", Message: "配置文件通过严格校验", Detail: loaded.Path}
 	if cfg.Proxy != "" {
 		if _, err := url.ParseRequestURI(cfg.Proxy); err != nil {
 			check.Status = "warning"

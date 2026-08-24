@@ -42,6 +42,7 @@ func NewPruneReportCommand() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&opts.Apply, "apply", false, "根据报告执行清理")
 	cmd.Flags().BoolVar(&opts.Confirm, "confirm", false, "确认执行 --apply 清理操作")
+	cmd.Flags().BoolVar(&opts.AllowNonAtomicDelete, "allow-non-atomic-delete", false, "显式接受 Docker 对 image/volume 不提供 compare-and-delete 的竞态边界")
 	cmd.Flags().StringArrayVar(&opts.Only, "only", nil, "只处理指定资源类型，可重复指定: container | image | volume | build-cache")
 	cmd.Flags().StringArrayVarP(&opts.Filters, "filter", "f", nil, "清理筛选条件，支持 label=key、label=key=value、label!=key、until=<duration|timestamp>，可重复指定")
 	cmd.Flags().StringArrayVar(&opts.UntilValues, "until", nil, "仅清理该时间之前创建的资源，例如 24h、168h 或 RFC3339 时间；重复值必须一致")
@@ -95,7 +96,14 @@ func runPruneReport(ctx context.Context, opts PruneReportOptions) (PruneReport, 
 	if err != nil {
 		return report, err
 	}
+	report.NonAtomicDeleteAcknowledged = opts.AllowNonAtomicDelete
+	if hasNonAtomicPruneCandidates(report) {
+		report.Warnings = append(report.Warnings, "Docker API 不提供 image/volume compare-and-delete；apply 默认拒绝这些候选，只有明确接受竞态边界后才可执行")
+	}
 	if opts.Apply {
+		if hasNonAtomicPruneCandidates(report) && !opts.AllowNonAtomicDelete {
+			return report, fmt.Errorf("清理快照包含 image 或 volume 候选，但 Docker API 不支持 compare-and-delete；未执行任何删除，请复核 dry-run 后显式添加 --allow-non-atomic-delete")
+		}
 		applyResult, err := applyPruneReport(ctx, svc, report)
 		report.Applied = true
 		report.ApplyResult = &applyResult
@@ -104,6 +112,10 @@ func runPruneReport(ctx context.Context, opts PruneReportOptions) (PruneReport, 
 		}
 	}
 	return report, nil
+}
+
+func hasNonAtomicPruneCandidates(report PruneReport) bool {
+	return len(report.DanglingImages) > 0 || len(report.UnusedVolumes) > 0
 }
 
 func validatePruneReportFormat(format string) error {

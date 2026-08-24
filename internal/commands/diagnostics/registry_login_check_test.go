@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"docker-manager/internal/sensitive"
 	"github.com/moby/moby/api/types/registry"
 )
 
@@ -65,6 +67,27 @@ func TestResolveRegistryCredentialUsesCredentialHelper(t *testing.T) {
 	cred := resolveRegistryCredential(context.Background(), cfg, "registry.local:5000")
 	if !cred.Found || cred.Source != "credential-helper" || cred.Helper != "pass" || cred.Username != "helper-user" {
 		t.Fatalf("credential = %#v, want helper credential", cred)
+	}
+}
+
+func TestResolveRegistryCredentialRedactsOpaqueHelperFailure(t *testing.T) {
+	previousRunner := runDockerCredentialHelper
+	previousProfile := sensitive.DefaultProfile()
+	sensitive.SetDefaultProfile(sensitive.ProfileStrict)
+	const opaqueSecret = "diagnostics-helper-value-2d61"
+	runDockerCredentialHelper = func(context.Context, string, string) (registryCredential, error) {
+		return registryCredential{}, errors.New("fatal helper response: " + opaqueSecret)
+	}
+	t.Cleanup(func() {
+		runDockerCredentialHelper = previousRunner
+		sensitive.SetDefaultProfile(previousProfile)
+	})
+
+	cfg := dockerConfigFile{CredHelpers: map[string]string{"registry.local:5000": "pass"}}
+	cred := resolveRegistryCredentialWithOptions(context.Background(), cfg, "registry.local:5000", RegistryLoginCheckOptions{})
+	report := buildCredentialReport(cred, nil)
+	if strings.Contains(report.Message, opaqueSecret) || !strings.Contains(report.Message, sensitive.RedactedValue) {
+		t.Fatalf("credential report message = %q, want opaque helper detail redacted", report.Message)
 	}
 }
 

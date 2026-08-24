@@ -49,8 +49,15 @@ func buildRestorePlanReport(ctx context.Context, backupPath string, opts Restore
 }
 
 func buildRestorePlanReportFromDir(ctx context.Context, svc backupDockerService, backupDir, source string, checksumText, signatureText string, opts RestoreOptions) (RestorePlanReport, error) {
-	manifest, err := readBackupManifest(backupDir)
+	limits, err := resolveRestoreLimits(opts)
 	if err != nil {
+		return RestorePlanReport{}, err
+	}
+	manifest, err := readBackupManifestWithLimit(backupDir, limits.jsonBytes)
+	if err != nil {
+		return RestorePlanReport{}, err
+	}
+	if err := validateRestoreJSONBudgetWithLimit(backupDir, manifest, limits.jsonBytes); err != nil {
 		return RestorePlanReport{}, err
 	}
 	if len(manifest.Containers) == 0 {

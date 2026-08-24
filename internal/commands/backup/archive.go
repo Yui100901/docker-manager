@@ -5,7 +5,6 @@ import (
 	"compress/gzip"
 	"context"
 	"docker-manager/internal/resourcefilter"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/moby/moby/api/types/container"
@@ -29,8 +28,17 @@ func createBackupArchiveWithContext(ctx context.Context, sourceDir, archivePath 
 }
 
 func createBackupArchiveWithOptions(ctx context.Context, sourceDir, archivePath string, opts backupArchiveOptions) error {
+	ctx, cancel := context.WithTimeout(backupContext(ctx), maxBackupArchiveOperationTime)
+	defer cancel()
 	if err := checkBackupContext(ctx); err != nil {
 		return err
+	}
+	sourceInfo, err := os.Lstat(sourceDir)
+	if err != nil {
+		return err
+	}
+	if sourceInfo.Mode()&os.ModeSymlink != 0 || !sourceInfo.IsDir() {
+		return fmt.Errorf("backup archive source must be a real directory: %s", sourceDir)
 	}
 	if err := requireBackupPathOutsideRoot(sourceDir, archivePath, "bundle output"); err != nil {
 		return err
@@ -42,6 +50,7 @@ func createBackupArchiveWithOptions(ctx context.Context, sourceDir, archivePath 
 	}
 	gz := gzip.NewWriter(file)
 	tw := tar.NewWriter(gz)
+	var tarBudget backupTarBudget
 
 	walkErr := filepath.WalkDir(sourceDir, func(path string, entry os.DirEntry, walkErr error) error {
 		if err := checkBackupContext(ctx); err != nil {
@@ -61,15 +70,25 @@ func createBackupArchiveWithOptions(ctx context.Context, sourceDir, archivePath 
 		if rel == "." {
 			return nil
 		}
+		archiveName := filepath.ToSlash(rel)
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("backup archive source contains a symbolic link: %s", path)
+		}
 		info, err := entry.Info()
 		if err != nil {
+			return err
+		}
+		if !entry.IsDir() && !info.Mode().IsRegular() {
+			return fmt.Errorf("backup archive source contains a non-regular file: %s", path)
+		}
+		if err := tarBudget.Add(archiveName, info.Size(), info.Mode().IsRegular()); err != nil {
 			return err
 		}
 		header, err := tar.FileInfoHeader(info, "")
 		if err != nil {
 			return err
 		}
-		header.Name = filepath.ToSlash(rel)
+		header.Name = archiveName
 		if err := tw.WriteHeader(header); err != nil {
 			return err
 		}
@@ -83,12 +102,23 @@ func createBackupArchiveWithOptions(ctx context.Context, sourceDir, archivePath 
 		if err != nil {
 			return err
 		}
-		copyErr := backupCopyWithContext(ctx, tw, in)
+		copyErr := backupCopyNWithContext(ctx, tw, in, info.Size())
 		closeErr := in.Close()
 		return errors.Join(copyErr, closeErr)
 	})
-	closeErr := errors.Join(tw.Close(), gz.Close(), file.Close())
-	if err := errors.Join(walkErr, closeErr); err != nil {
+	if walkErr != nil {
+		_ = tw.Close()
+		_ = gz.Close()
+		return errors.Join(walkErr, file.Abort())
+	}
+	if err := tw.Close(); err != nil {
+		_ = gz.Close()
+		return errors.Join(err, file.Abort())
+	}
+	if err := gz.Close(); err != nil {
+		return errors.Join(err, file.Abort())
+	}
+	if err := file.Close(); err != nil {
 		return errors.Join(err, file.Abort())
 	}
 	return nil
@@ -103,6 +133,12 @@ func resolveRestoreBackupDirWithContext(ctx context.Context, path string) (strin
 }
 
 func resolveRestoreBackupDirWithOptions(ctx context.Context, path string, opts RestoreOptions) (string, func(), error) {
+	ctx, cancelOperation := context.WithTimeout(backupContext(ctx), maxBackupArchiveOperationTime)
+	defer cancelOperation()
+	limits, err := resolveRestoreLimits(opts)
+	if err != nil {
+		return "", nil, err
+	}
 	if err := checkBackupContext(ctx); err != nil {
 		return "", nil, err
 	}
@@ -113,7 +149,7 @@ func resolveRestoreBackupDirWithOptions(ctx context.Context, path string, opts R
 			}
 		}
 		if opts.Confirm && !opts.DryRun {
-			return snapshotRestoreBackupDir(ctx, path)
+			return snapshotRestoreBackupDir(ctx, path, limits)
 		}
 		return path, nil, nil
 	}
@@ -133,9 +169,10 @@ func resolveRestoreBackupDirWithOptions(ctx context.Context, path string, opts R
 		return "", nil, err
 	}
 	archivePath := path
+	diskBudget := newBackupByteBudget("restore temporary files", limits.temporaryBytes())
 	if isBackupArchivePart(path) {
 		joined := filepath.Join(workDir, strings.TrimSuffix(filepath.Base(path), ".part-001"))
-		if err := joinBackupArchivePartsWithContext(ctx, path, joined); err != nil {
+		if err := joinBackupArchivePartsWithLimits(ctx, path, joined, diskBudget, limits); err != nil {
 			cleanup()
 			return "", nil, err
 		}
@@ -143,13 +180,13 @@ func resolveRestoreBackupDirWithOptions(ctx context.Context, path string, opts R
 	}
 	if isEncryptedBackupArchive(archivePath) {
 		decrypted := filepath.Join(workDir, strings.TrimSuffix(filepath.Base(archivePath), ".enc"))
-		if err := decryptBackupArchiveWithContext(ctx, archivePath, decrypted, opts.PassphraseFile); err != nil {
+		if err := decryptBackupArchiveWithLimits(ctx, archivePath, decrypted, opts.PassphraseFile, diskBudget, limits); err != nil {
 			cleanup()
 			return "", nil, err
 		}
 		archivePath = decrypted
 	}
-	if err := extractBackupArchiveWithContext(ctx, archivePath, extractDir); err != nil {
+	if err := extractBackupArchiveWithLimits(ctx, archivePath, extractDir, diskBudget, limits); err != nil {
 		cleanup()
 		return "", nil, err
 	}
@@ -179,8 +216,26 @@ func extractBackupArchive(archivePath, destDir string) error {
 }
 
 func extractBackupArchiveWithContext(ctx context.Context, archivePath, destDir string) error {
+	return extractBackupArchiveWithBudget(ctx, archivePath, destDir, newBackupByteBudget("restore temporary files", maxBackupTemporaryBytes))
+}
+
+func extractBackupArchiveWithBudget(ctx context.Context, archivePath, destDir string, diskBudget *backupByteBudget) error {
+	return extractBackupArchiveWithLimits(ctx, archivePath, destDir, diskBudget, defaultBackupLimits())
+}
+
+func extractBackupArchiveWithLimits(ctx context.Context, archivePath, destDir string, diskBudget *backupByteBudget, limits backupLimits) error {
 	if err := checkBackupContext(ctx); err != nil {
 		return err
+	}
+	archiveInfo, err := os.Lstat(archivePath)
+	if err != nil {
+		return err
+	}
+	if !archiveInfo.Mode().IsRegular() || archiveInfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("backup archive must be a regular file")
+	}
+	if archiveInfo.Size() > limits.archiveBytes {
+		return fmt.Errorf("backup archive exceeds the %d-byte limit", limits.archiveBytes)
 	}
 	file, err := os.Open(archivePath)
 	if err != nil {
@@ -193,6 +248,8 @@ func extractBackupArchiveWithContext(ctx context.Context, archivePath, destDir s
 	}
 	defer gz.Close()
 	tr := tar.NewReader(gz)
+	tarBudget := backupTarBudget{maxExpanded: limits.expandedBytes}
+	seen := make(map[string]struct{})
 	for {
 		if err := checkBackupContext(ctx); err != nil {
 			return err
@@ -208,26 +265,50 @@ func extractBackupArchiveWithContext(ctx context.Context, archivePath, destDir s
 		if err != nil {
 			return err
 		}
+		if err := rejectBackupPathSymlinks(target); err != nil {
+			return err
+		}
+		if _, exists := seen[header.Name]; exists {
+			return fmt.Errorf("backup archive contains duplicate path %q", header.Name)
+		}
+		seen[header.Name] = struct{}{}
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0755); err != nil {
+			if err := tarBudget.Add(header.Name, header.Size, false); err != nil {
+				return err
+			}
+			if header.Size != 0 {
+				return fmt.Errorf("backup archive directory %q has a non-zero size", header.Name)
+			}
+			if err := os.MkdirAll(target, 0700); err != nil {
 				return err
 			}
 		case tar.TypeReg, tar.TypeRegA:
-			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			if err := tarBudget.Add(header.Name, header.Size, true); err != nil {
 				return err
 			}
-			out, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(header.Mode))
+			if err := diskBudget.Add(header.Size); err != nil {
+				return err
+			}
+			if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
+				return err
+			}
+			out, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 			if err != nil {
 				return err
 			}
-			if err := backupCopyWithContext(ctx, out, tr); err != nil {
+			if err := backupCopyNWithContext(ctx, out, tr, header.Size); err != nil {
 				_ = out.Close()
 				return err
 			}
 			if err := out.Close(); err != nil {
 				return err
 			}
+		default:
+			if err := tarBudget.Add(header.Name, header.Size, false); err != nil {
+				return err
+			}
+			return fmt.Errorf("backup archive contains unsupported entry type %d at %q", header.Typeflag, header.Name)
 		}
 	}
 }
@@ -270,13 +351,16 @@ func isSingleBackupDir(dir string) bool {
 }
 
 func readBackupManifest(backupDir string) (BackupManifest, error) {
+	return readBackupManifestWithLimit(backupDir, maxBackupManifestJSONBytes)
+}
+
+func readBackupManifestWithLimit(backupDir string, limit int64) (BackupManifest, error) {
 	var manifest BackupManifest
-	data, err := os.ReadFile(filepath.Join(backupDir, backupManifestName))
-	if err != nil {
-		return manifest, fmt.Errorf("read manifest: %w", err)
+	if limit <= 0 || limit > maxBackupManifestJSONBytes {
+		limit = maxBackupManifestJSONBytes
 	}
-	if err := json.Unmarshal(data, &manifest); err != nil {
-		return manifest, fmt.Errorf("parse manifest: %w", err)
+	if err := readLimitedBackupJSON(filepath.Join(backupDir, backupManifestName), limit, &manifest); err != nil {
+		return manifest, fmt.Errorf("read manifest: %w", err)
 	}
 	if manifest.Version != 1 {
 		return manifest, fmt.Errorf("unsupported backup manifest version %d", manifest.Version)
@@ -311,7 +395,7 @@ func readContainerInspect(backupDir string, manifest BackupContainerManifest) (c
 	if err != nil {
 		return inspect, err
 	}
-	if err := readJSON(path, &inspect); err != nil {
+	if err := readLimitedBackupJSON(path, maxBackupInspectJSONBytes, &inspect); err != nil {
 		return inspect, fmt.Errorf("read container inspect: %w", err)
 	}
 	return inspect, nil
@@ -323,7 +407,7 @@ func readNetworkInspect(backupDir string, ref BackupResourceRef) (network.Inspec
 	if err != nil {
 		return value, err
 	}
-	if err := readJSON(path, &value); err != nil {
+	if err := readLimitedBackupJSON(path, maxBackupResourceJSONBytes, &value); err != nil {
 		return value, fmt.Errorf("read network %s: %w", ref.Name, err)
 	}
 	return value, nil
@@ -335,7 +419,7 @@ func readVolumeInspect(backupDir string, ref BackupResourceRef) (volume.Volume, 
 	if err != nil {
 		return value, err
 	}
-	if err := readJSON(path, &value); err != nil {
+	if err := readLimitedBackupJSON(path, maxBackupResourceJSONBytes, &value); err != nil {
 		return value, fmt.Errorf("read volume %s: %w", ref.Name, err)
 	}
 	return value, nil
@@ -361,14 +445,6 @@ func canonicalBackupRelativePath(name string) (string, error) {
 		return "", fmt.Errorf("path is not local")
 	}
 	return local, nil
-}
-
-func readJSON(path string, value interface{}) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	return json.Unmarshal(data, value)
 }
 
 func normalizeContainerName(name string) string {

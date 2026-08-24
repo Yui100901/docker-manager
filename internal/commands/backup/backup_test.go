@@ -19,6 +19,7 @@ import (
 	"sync"
 	"testing"
 
+	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/api/types/network"
@@ -26,32 +27,39 @@ import (
 )
 
 type fakeBackupDockerService struct {
-	mu                sync.Mutex
-	inspect           container.InspectResponse
-	inspects          map[string]container.InspectResponse
-	inspectErrors     map[string]error
-	containers        []container.Summary
-	network           network.Inspect
-	volume            volume.Volume
-	containerExists   bool
-	imageMissing      bool
-	calls             []string
-	loadOutput        io.Writer
-	loadErr           error
-	createErr         error
-	createIDOnError   string
-	createCommitError bool
-	startErr          error
-	stopErr           error
-	renameErr         error
-	removeErr         error
-	startErrors       map[string]error
-	renameErrors      map[string]error
-	removeErrors      map[string]error
-	cancelAfterCreate context.CancelFunc
-	cancelAfterStart  context.CancelFunc
-	readyErr          error
-	renameCommitError map[string]bool
+	mu                    sync.Mutex
+	inspect               container.InspectResponse
+	inspects              map[string]container.InspectResponse
+	inspectErrors         map[string]error
+	containers            []container.Summary
+	network               network.Inspect
+	volume                volume.Volume
+	containerExists       bool
+	imageMissing          bool
+	calls                 []string
+	loadOutput            io.Writer
+	loadErr               error
+	createErr             error
+	createIDOnError       string
+	createCommitError     bool
+	startErr              error
+	stopErr               error
+	renameErr             error
+	removeErr             error
+	startErrors           map[string]error
+	renameErrors          map[string]error
+	removeErrors          map[string]error
+	startCommitError      map[string]bool
+	removeCommitError     map[string]bool
+	stopCommit            bool
+	renameBeforeCommitErr error
+	removedContainers     map[string]bool
+	cancelAfterCreate     context.CancelFunc
+	cancelAfterStart      context.CancelFunc
+	cancelAfterSave       context.CancelFunc
+	afterSave             func(string) error
+	readyErr              error
+	renameCommitError     map[string]bool
 }
 
 func (f *fakeBackupDockerService) ListContainers(ctx context.Context, all bool) ([]container.Summary, error) {
@@ -68,6 +76,9 @@ func (f *fakeBackupDockerService) InspectContainer(ctx context.Context, name str
 	if err := f.inspectErrors[name]; err != nil {
 		return container.InspectResponse{}, err
 	}
+	if f.removedContainers[name] {
+		return container.InspectResponse{}, cerrdefs.ErrNotFound
+	}
 	if inspect, ok := f.inspects[name]; ok {
 		return inspect, nil
 	}
@@ -81,7 +92,16 @@ func (f *fakeBackupDockerService) SaveImage(ctx context.Context, refs []string, 
 	if err := os.MkdirAll(filepath.Dir(outputFile), 0755); err != nil {
 		return err
 	}
-	return os.WriteFile(outputFile, []byte("image tar"), 0644)
+	if err := os.WriteFile(outputFile, []byte("image tar"), 0644); err != nil {
+		return err
+	}
+	if f.cancelAfterSave != nil {
+		f.cancelAfterSave()
+	}
+	if f.afterSave != nil {
+		return f.afterSave(outputFile)
+	}
+	return nil
 }
 
 func (f *fakeBackupDockerService) LoadImage(ctx context.Context, inputFile string, output io.Writer) error {
@@ -132,8 +152,12 @@ func (f *fakeBackupDockerService) CreateVolume(ctx context.Context, vol volume.V
 
 func (f *fakeBackupDockerService) ContainerExists(ctx context.Context, name string) (bool, error) {
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, "container-exists:"+name)
-	f.mu.Unlock()
+	if strings.Contains(name, "-dm-restore-candidate-") {
+		_, exists := f.inspects[name]
+		return exists, nil
+	}
 	return f.containerExists, nil
 }
 
@@ -142,6 +166,9 @@ func (f *fakeBackupDockerService) RemoveContainer(ctx context.Context, name stri
 	f.calls = append(f.calls, "remove-container:"+name)
 	f.mu.Unlock()
 	if err := f.removeErrors[name]; err != nil {
+		if f.removeCommitError[name] {
+			f.recordRemovedContainer(name)
+		}
 		return err
 	}
 	return f.removeErr
@@ -151,6 +178,9 @@ func (f *fakeBackupDockerService) StopContainer(ctx context.Context, id string) 
 	f.mu.Lock()
 	f.calls = append(f.calls, "stop-container:"+id)
 	f.mu.Unlock()
+	if f.stopCommit {
+		f.recordContainerRunningState(id, false)
+	}
 	return f.stopErr
 }
 
@@ -163,6 +193,9 @@ func (f *fakeBackupDockerService) RenameContainer(ctx context.Context, id, name 
 			f.recordRenamedContainer(id, name)
 		}
 		return err
+	}
+	if f.renameBeforeCommitErr != nil {
+		return f.renameBeforeCommitErr
 	}
 	f.recordRenamedContainer(id, name)
 	return f.renameErr
@@ -181,6 +214,8 @@ func (f *fakeBackupDockerService) recordRenamedContainer(id, name string) {
 	inspect.Name = "/" + name
 	f.inspects[id] = inspect
 	f.inspects[name] = inspect
+	delete(f.removedContainers, id)
+	delete(f.removedContainers, name)
 }
 
 func (f *fakeBackupDockerService) CreateContainer(ctx context.Context, inspect container.InspectResponse, name string) (string, error) {
@@ -214,6 +249,8 @@ func (f *fakeBackupDockerService) recordCreatedContainer(id, name string, inspec
 	inspect.Name = "/" + name
 	f.inspects[id] = inspect
 	f.inspects[name] = inspect
+	delete(f.removedContainers, id)
+	delete(f.removedContainers, name)
 }
 
 func (f *fakeBackupDockerService) StartContainer(ctx context.Context, id string) error {
@@ -224,9 +261,57 @@ func (f *fakeBackupDockerService) StartContainer(ctx context.Context, id string)
 		f.cancelAfterStart()
 	}
 	if err := f.startErrors[id]; err != nil {
+		if f.startCommitError[id] {
+			f.recordContainerRunningState(id, true)
+		}
 		return err
 	}
 	return f.startErr
+}
+
+func (f *fakeBackupDockerService) recordRemovedContainer(id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.removedContainers == nil {
+		f.removedContainers = make(map[string]bool)
+	}
+	f.removedContainers[id] = true
+	for key, inspect := range f.inspects {
+		if key == id || inspect.ID == id {
+			f.removedContainers[key] = true
+			delete(f.inspects, key)
+		}
+	}
+	if f.inspect.ID == id {
+		f.inspect = container.InspectResponse{}
+	}
+}
+
+func (f *fakeBackupDockerService) recordContainerRunningState(id string, running bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.inspects == nil {
+		f.inspects = make(map[string]container.InspectResponse)
+	}
+	updated := false
+	for key, inspect := range f.inspects {
+		if key != id && inspect.ID != id {
+			continue
+		}
+		if inspect.ID == "" {
+			inspect.ID = id
+		}
+		if inspect.State == nil {
+			inspect.State = &container.State{}
+		}
+		inspect.State.Running = running
+		f.inspects[key] = inspect
+		f.inspects[id] = inspect
+		updated = true
+	}
+	if !updated {
+		f.inspects[id] = container.InspectResponse{ID: id, State: &container.State{Running: running}}
+	}
 }
 
 func (f *fakeBackupDockerService) WaitContainerReady(ctx context.Context, id string, requireHealthy bool) error {
@@ -791,11 +876,10 @@ func TestRestoreBackupSupportsTarGzArchive(t *testing.T) {
 	if err := restoreBackup(context.Background(), archive, RestoreOptions{NoStart: true, Confirm: true, SkipChecksum: true}); err != nil {
 		t.Fatalf("restoreBackup() error = %v", err)
 	}
-	for _, want := range []string{"container-exists:demo", "create-container:demo"} {
-		if !hasCall(fake.calls, want) {
-			t.Fatalf("calls = %#v, want %s", fake.calls, want)
-		}
+	if !hasCall(fake.calls, "container-exists:demo") {
+		t.Fatalf("calls = %#v, want target preflight", fake.calls)
 	}
+	assertRestoreCandidateCommitted(t, fake.calls, "demo")
 	if hasCallPrefix(fake.calls, "start-container:") {
 		t.Fatalf("calls = %#v, start-container should not run with NoStart", fake.calls)
 	}
@@ -830,9 +914,7 @@ func TestRestoreBackupSupportsEncryptedArchive(t *testing.T) {
 	if err := restoreBackup(context.Background(), archive, RestoreOptions{NoStart: true, Confirm: true, SkipChecksum: true, PassphraseFile: passFile}); err != nil {
 		t.Fatalf("restoreBackup() encrypted archive error = %v", err)
 	}
-	if !hasCall(fake.calls, "create-container:demo") {
-		t.Fatalf("calls = %#v, want create-container", fake.calls)
-	}
+	assertRestoreCandidateCommitted(t, fake.calls, "demo")
 }
 
 func TestRestoreBackupSupportsSplitArchive(t *testing.T) {
@@ -866,9 +948,7 @@ func TestRestoreBackupSupportsSplitArchive(t *testing.T) {
 	if err := restoreBackup(context.Background(), splitPartPath(archive, 1), RestoreOptions{NoStart: true, Confirm: true, SkipChecksum: true}); err != nil {
 		t.Fatalf("restoreBackup() split archive error = %v", err)
 	}
-	if !hasCall(fake.calls, "create-container:demo") {
-		t.Fatalf("calls = %#v, want create-container", fake.calls)
-	}
+	assertRestoreCandidateCommitted(t, fake.calls, "demo")
 }
 
 func TestBackupCommandEncryptRequiresPassphraseFile(t *testing.T) {
@@ -926,14 +1006,14 @@ func TestRestoreBackupSupportsBatchManifest(t *testing.T) {
 	}
 	for _, want := range []string{
 		"container-exists:api",
-		"create-container:api",
 		"container-exists:worker",
-		"create-container:worker",
 	} {
 		if !hasCall(fake.calls, want) {
 			t.Fatalf("calls = %#v, want %s", fake.calls, want)
 		}
 	}
+	assertRestoreCandidateCommitted(t, fake.calls, "api")
+	assertRestoreCandidateCommitted(t, fake.calls, "worker")
 	if hasCallPrefix(fake.calls, "start-container:") {
 		t.Fatalf("calls = %#v, start-container should not run with NoStart", fake.calls)
 	}
@@ -1036,9 +1116,10 @@ func TestRestoreBackupCanSkipChecksumVerification(t *testing.T) {
 	if err := restoreBackup(context.Background(), dir, RestoreOptions{NoStart: true, Confirm: true, SkipChecksum: true}); err != nil {
 		t.Fatalf("restoreBackup() error = %v", err)
 	}
-	if !hasCall(fake.calls, "container-exists:demo") || !hasCall(fake.calls, "create-container:demo") {
+	if !hasCall(fake.calls, "container-exists:demo") {
 		t.Fatalf("calls = %#v, want restore to continue when checksum is skipped", fake.calls)
 	}
+	assertRestoreCandidateCommitted(t, fake.calls, "demo")
 }
 
 func TestRestoreBackupDryRunPrintsPlanWithoutDockerMutations(t *testing.T) {
@@ -1391,9 +1472,7 @@ func TestRestoreUnsafeHostConfigCanOnlyPreviewUnlessExplicitlyAllowed(t *testing
 	if err := restoreBackup(context.Background(), dir, RestoreOptions{Confirm: true, AllowUnsafeHostConfig: true, NoStart: true, SkipChecksum: true}); err != nil {
 		t.Fatalf("explicitly allowed restore error = %v", err)
 	}
-	if !hasCall(fake.calls, "create-container:dangerous") {
-		t.Fatalf("calls = %#v, want explicitly allowed create", fake.calls)
-	}
+	assertRestoreCandidateCommitted(t, fake.calls, "dangerous")
 }
 
 func TestBackupSignatureAuthenticatesChecksumFile(t *testing.T) {
@@ -1762,4 +1841,25 @@ func hasCallPrefix(calls []string, prefix string) bool {
 		}
 	}
 	return false
+}
+
+func assertRestoreCandidateCommitted(t *testing.T, calls []string, target string) {
+	t.Helper()
+	createPrefix := "create-container:" + target + "-dm-restore-candidate-"
+	createIndex := -1
+	renameIndex := -1
+	for i, call := range calls {
+		if createIndex < 0 && strings.HasPrefix(call, createPrefix) {
+			createIndex = i
+		}
+		if strings.HasPrefix(call, "rename-container:") && strings.HasSuffix(call, ":"+target) {
+			renameIndex = i
+		}
+	}
+	if createIndex < 0 || renameIndex <= createIndex {
+		t.Fatalf("calls = %#v, want candidate create followed by commit rename for %s", calls, target)
+	}
+	if hasCall(calls, "create-container:"+target) {
+		t.Fatalf("calls = %#v, final container name must not be created directly", calls)
+	}
 }

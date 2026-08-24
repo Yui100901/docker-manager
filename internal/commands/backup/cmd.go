@@ -3,6 +3,7 @@ package backup
 import (
 	"fmt"
 	"io"
+	"time"
 
 	"docker-manager/internal/commandflags"
 	"docker-manager/internal/completion"
@@ -55,14 +56,46 @@ func NewBackupCommand() *cobra.Command {
 	return cmd
 }
 
+const defaultRestoreReadyTimeout = 30 * time.Second
+
+type RestoreCommandDefaults struct {
+	ReadyTimeout time.Duration
+}
+
 func NewRestoreCommand() *cobra.Command {
-	opts := RestoreOptions{}
+	return NewRestoreCommandWithDefaults(nil)
+}
+
+func NewRestoreCommandWithDefaults(defaults func() RestoreCommandDefaults) *cobra.Command {
+	opts := RestoreOptions{ReadyTimeout: defaultRestoreReadyTimeout}
+	var maxArchiveSize, maxExpandedSize, maxJSONSize string
 	cmd := &cobra.Command{
 		Use:   "restore <backup-dir-or-archive...>",
 		Short: "从 backup 生成的目录、批量目录或 tar.gz 离线包恢复镜像、网络、volume 和容器",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			runOpts := opts
+			var err error
+			if runOpts.MaxArchiveBytes, err = parseBackupByteSize("--max-archive-size", maxArchiveSize); err != nil {
+				return err
+			}
+			if runOpts.MaxExpandedBytes, err = parseBackupByteSize("--max-expanded-size", maxExpandedSize); err != nil {
+				return err
+			}
+			if runOpts.MaxJSONBytes, err = parseBackupByteSize("--max-json-size", maxJSONSize); err != nil {
+				return err
+			}
+			if _, err := resolveRestoreLimits(runOpts); err != nil {
+				return err
+			}
+			if !cmd.Flags().Changed("ready-timeout") && defaults != nil {
+				if value := defaults().ReadyTimeout; value > 0 {
+					runOpts.ReadyTimeout = value
+				}
+			}
+			if runOpts.ReadyTimeout <= 0 {
+				return fmt.Errorf("--ready-timeout 必须大于 0")
+			}
 			runOpts.Output = cmd.OutOrStdout()
 			if runOpts.Name != "" && len(args) > 1 {
 				return fmt.Errorf("--name 只支持恢复单个备份")
@@ -146,6 +179,11 @@ func NewRestoreCommand() *cobra.Command {
 	cmd.Flags().StringVar(&opts.PassphraseFile, "passphrase-file", "", "解密加密备份包使用的口令文件")
 	cmd.Flags().BoolVar(&opts.SkipChecksum, "skip-checksum", false, "跳过 checksums.txt 完整性校验")
 	cmd.Flags().StringVar(&opts.TrustedPublicKey, "trusted-public-key", "", "使用 PEM Ed25519 公钥验证 checksums.txt.sig 和备份来源")
+	cmd.Flags().DurationVar(&opts.ReadyTimeout, "ready-timeout", defaultRestoreReadyTimeout, "replace 候选容器等待 running/healthy 的最长时间")
+	cmd.Flags().StringVar(&maxArchiveSize, "max-archive-size", "", "最大归档/密文输入大小，可用 K/M/G/T 后缀；默认 512G，只允许下调")
+	cmd.Flags().StringVar(&maxExpandedSize, "max-expanded-size", "", "归档最大展开总大小，可用 K/M/G/T 后缀；默认 1T，只允许下调")
+	cmd.Flags().StringVar(&maxJSONSize, "max-json-size", "", "manifest/inspect/network/volume JSON 累计最大大小，可用 K/M/G/T 后缀；默认 256M，只允许下调")
+	cmd.Flags().IntVar(&opts.MaxParts, "max-parts", 0, "分卷恢复允许的最大连续分卷数；默认 999，只允许下调")
 	commandflags.AddReportFormatFlag(cmd, &opts.Format)
 	return cmd
 }

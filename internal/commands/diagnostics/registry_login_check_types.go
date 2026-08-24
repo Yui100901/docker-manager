@@ -8,12 +8,19 @@ import (
 )
 
 type RegistryLoginCheckOptions struct {
-	DockerConfig  string
-	PlainHTTP     bool
-	Timeout       time.Duration
-	FailOnError   bool
-	FailOnWarning bool
+	DockerConfig             string
+	PlainHTTP                bool
+	Timeout                  time.Duration
+	FailOnError              bool
+	FailOnWarning            bool
+	DisableCredentialHelpers bool
+	CredentialHelperTimeout  time.Duration
 	commandflags.FormatOptions
+}
+
+type RegistryLoginCheckDefaults struct {
+	DisableCredentialHelpers bool
+	CredentialHelperTimeout  time.Duration
 }
 
 type RegistryLoginCheckReport struct {
@@ -27,11 +34,13 @@ type RegistryLoginCheckReport struct {
 }
 
 type CredentialReport struct {
-	Found    bool   `json:"found"`
-	Source   string `json:"source,omitempty"`
-	Helper   string `json:"helper,omitempty"`
-	Username string `json:"username,omitempty"`
-	Message  string `json:"message,omitempty"`
+	Found        bool   `json:"found"`
+	Source       string `json:"source,omitempty"`
+	Helper       string `json:"helper,omitempty"`
+	HelperSource string `json:"helper_source,omitempty"`
+	HelperPath   string `json:"helper_path,omitempty"`
+	Username     string `json:"username,omitempty"`
+	Message      string `json:"message,omitempty"`
 }
 
 type CheckResult struct {

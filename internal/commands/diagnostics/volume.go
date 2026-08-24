@@ -29,7 +29,7 @@ const (
 	volumeSizeModeDockerRun = "docker-run"
 	volumeSizeModeLocalGo   = "local-go"
 	volumeSizeModeAuto      = "auto"
-	volumeDefaultSizeImage  = "busybox:latest"
+	volumeDefaultSizeImage  = "busybox:1.36.1@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662"
 )
 
 type volumeDockerService interface {
@@ -227,7 +227,7 @@ func probeVolumeSizes(ctx context.Context, svc volumeDockerService, report *Volu
 		}
 		if result.err != nil {
 			vol.SizeError = result.err.Error()
-			report.Warnings = append(report.Warnings, fmt.Sprintf("volume %s ??????: %v", vol.Name, result.err))
+			report.Warnings = append(report.Warnings, fmt.Sprintf("volume %s 大小探测失败: %v", vol.Name, result.err))
 			continue
 		}
 		vol.Size = result.size
@@ -316,7 +316,7 @@ func inspectVolumeContainerRefs(ctx context.Context, svc containerInspectService
 		inspect, err := svc.InspectContainer(ctx, c.ID)
 		if err != nil {
 			if ctx.Err() == nil {
-				warningsByIndex[i] = fmt.Sprintf("inspect ?? %s ?????????????: %v", containerDisplayName(c), err)
+				warningsByIndex[i] = fmt.Sprintf("inspect 容器 %s 失败，回退到列表中的挂载信息: %v", containerDisplayName(c), err)
 			}
 			appendSummaryVolumeRefs(localRefs, c)
 			refsByIndex[i] = localRefs

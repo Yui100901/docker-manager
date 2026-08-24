@@ -65,7 +65,7 @@ func writeChecksumsWithContext(ctx context.Context, root string) error {
 		return err
 	}
 	sort.Strings(lines)
-	return os.WriteFile(filepath.Join(root, backupChecksumName), []byte(strings.Join(lines, "\n")+"\n"), 0644)
+	return writePrivateBackupFile(filepath.Join(root, backupChecksumName), []byte(strings.Join(lines, "\n")+"\n"), 0600)
 }
 
 func verifyBackupChecksums(root string) (bool, error) {

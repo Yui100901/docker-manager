@@ -3,6 +3,9 @@ package diagnostics
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -10,12 +13,15 @@ import (
 
 	"docker-manager/internal/docker"
 
+	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/api/types/volume"
 	mobyclient "github.com/moby/moby/client"
 )
+
+const volumeProbeOwnerLabel = "com.docker-manager.volume-probe"
 
 func (s *dockerVolumeService) ListVolumes(ctx context.Context) (volume.ListResponse, error) {
 	result, err := s.cli.VolumeList(ctx, mobyclient.VolumeListOptions{Filters: mobyclient.Filters{}})
@@ -41,38 +47,41 @@ func (s *dockerVolumeService) InspectContainer(ctx context.Context, id string) (
 	return docker.ConvertDockerType[container.InspectResponse](result.Container)
 }
 
-func (s *dockerVolumeService) MeasureVolumeSize(ctx context.Context, volumeName, helperImage string) (int64, error) {
+func (s *dockerVolumeService) MeasureVolumeSize(ctx context.Context, volumeName, helperImage string) (size int64, retErr error) {
+	size = -1
 	if strings.TrimSpace(helperImage) == "" {
 		helperImage = volumeDefaultSizeImage
+	}
+	volumeResult, err := s.cli.VolumeInspect(ctx, volumeName, mobyclient.VolumeInspectOptions{})
+	if err != nil {
+		return -1, fmt.Errorf("inspect volume %q before size probe: %w", volumeName, err)
+	}
+	if volumeResult.Volume.Driver != "local" {
+		return -1, fmt.Errorf("volume %q uses unsupported driver %q", volumeName, volumeResult.Volume.Driver)
+	}
+	if strings.TrimSpace(volumeResult.Volume.Mountpoint) == "" {
+		return -1, fmt.Errorf("volume %q has no mountpoint", volumeName)
 	}
 	if _, err := s.cli.ImageInspect(ctx, helperImage); err != nil {
 		return -1, fmt.Errorf("helper image %q is not available on target Docker: %w", helperImage, err)
 	}
 
-	containerName := "dm_volume_size_" + time.Now().Format("20060102150405") + "_" + safeVolumeProbeName(volumeName)
-	resp, err := s.cli.ContainerCreate(ctx, mobyclient.ContainerCreateOptions{
-		Config: &container.Config{
-			Image: helperImage,
-			Cmd: []string{
-				"sh",
-				"-c",
-				`bytes=$(du -sb /mnt/volume 2>/dev/null | awk '{print $1}'); if [ -n "$bytes" ]; then echo "$bytes"; else du -sk /mnt/volume 2>/dev/null | awk '{print $1 * 1024}'; fi`,
-			},
-		},
-		HostConfig: &container.HostConfig{
-			Mounts: []mount.Mount{{
-				Type:     mount.TypeVolume,
-				Source:   volumeName,
-				Target:   "/mnt/volume",
-				ReadOnly: true,
-			}},
-		},
-		Name: containerName,
-	})
+	probeID := newVolumeProbeID()
+	containerName := "dm_volume_size_" + safeVolumeProbeName(volumeName) + "_" + probeID
+	resp, err := s.cli.ContainerCreate(ctx, volumeProbeCreateOptions(volumeResult.Volume.Mountpoint, helperImage, containerName, probeID))
 	if err != nil {
-		return -1, fmt.Errorf("create size probe container failed: %w", err)
+		cleanupErr := removeOwnedVolumeProbeContainer(s.cli, containerName, probeID)
+		return -1, errors.Join(fmt.Errorf("create size probe container failed: %w", err), cleanupErr)
 	}
-	defer removeVolumeProbeContainer(s.cli, resp.ID)
+	if strings.TrimSpace(resp.ID) == "" {
+		cleanupErr := removeOwnedVolumeProbeContainer(s.cli, containerName, probeID)
+		return -1, errors.Join(errors.New("create size probe container returned an empty ID"), cleanupErr)
+	}
+	defer func() {
+		if cleanupErr := removeVolumeProbeContainer(s.cli, resp.ID); cleanupErr != nil {
+			retErr = errors.Join(retErr, cleanupErr)
+		}
+	}()
 
 	if _, err := s.cli.ContainerStart(ctx, resp.ID, mobyclient.ContainerStartOptions{}); err != nil {
 		return -1, fmt.Errorf("start size probe container failed: %w", err)
@@ -100,11 +109,36 @@ func (s *dockerVolumeService) MeasureVolumeSize(ctx context.Context, volumeName,
 	if len(fields) == 0 {
 		return -1, fmt.Errorf("size probe container produced no output")
 	}
-	size, err := strconv.ParseInt(fields[0], 10, 64)
+	size, err = strconv.ParseInt(fields[0], 10, 64)
 	if err != nil {
 		return -1, fmt.Errorf("parse size probe output %q failed: %w", strings.TrimSpace(stdout), err)
 	}
 	return size, nil
+}
+
+func volumeProbeCreateOptions(volumeMountpoint, helperImage, containerName, probeID string) mobyclient.ContainerCreateOptions {
+	const command = `bytes=$(du -sb /mnt/volume 2>/dev/null | awk '{print $1}'); if [ -n "$bytes" ]; then echo "$bytes"; else du -sk /mnt/volume 2>/dev/null | awk '{print $1 * 1024}'; fi`
+	return mobyclient.ContainerCreateOptions{
+		Config: &container.Config{
+			Image:      helperImage,
+			Entrypoint: []string{"sh", "-c"},
+			Cmd:        []string{command},
+			Labels:     map[string]string{volumeProbeOwnerLabel: probeID},
+		},
+		HostConfig: &container.HostConfig{
+			NetworkMode:    "none",
+			ReadonlyRootfs: true,
+			CapDrop:        []string{"ALL"},
+			SecurityOpt:    []string{"no-new-privileges:true"},
+			Mounts: []mount.Mount{{
+				Type:     mount.TypeBind,
+				Source:   volumeMountpoint,
+				Target:   "/mnt/volume",
+				ReadOnly: true,
+			}},
+		},
+		Name: containerName,
+	}
 }
 
 func readVolumeProbeLogs(ctx context.Context, cli *mobyclient.Client, containerID string, stderrOnly bool) string {
@@ -124,10 +158,51 @@ func readVolumeProbeLogs(ctx context.Context, cli *mobyclient.Client, containerI
 	return stderr.String()
 }
 
-func removeVolumeProbeContainer(cli *mobyclient.Client, containerID string) {
+func removeVolumeProbeContainer(cli *mobyclient.Client, containerID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	_, _ = cli.ContainerRemove(ctx, containerID, mobyclient.ContainerRemoveOptions{Force: true})
+	_, removeErr := cli.ContainerRemove(ctx, containerID, mobyclient.ContainerRemoveOptions{Force: true})
+	cancel()
+	if removeErr == nil || cerrdefs.IsNotFound(removeErr) {
+		return nil
+	}
+	verifyCtx, verifyCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	_, inspectErr := cli.ContainerInspect(verifyCtx, containerID, mobyclient.ContainerInspectOptions{})
+	verifyCancel()
+	if cerrdefs.IsNotFound(inspectErr) {
+		return nil
+	}
+	if inspectErr != nil {
+		return errors.Join(fmt.Errorf("remove size probe container %s: %w", containerID, removeErr), fmt.Errorf("verify size probe cleanup %s: %w", containerID, inspectErr))
+	}
+	return fmt.Errorf("remove size probe container %s: %w; container still exists after verification", containerID, removeErr)
+}
+
+func removeOwnedVolumeProbeContainer(cli *mobyclient.Client, containerName, probeID string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	result, err := cli.ContainerInspect(ctx, containerName, mobyclient.ContainerInspectOptions{})
+	cancel()
+	if cerrdefs.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("reconcile size probe container %s after create error: %w", containerName, err)
+	}
+	if result.Container.Config == nil || result.Container.Config.Labels[volumeProbeOwnerLabel] != probeID {
+		return fmt.Errorf("container %s exists after probe create error but is not owned by this probe; refusing cleanup", containerName)
+	}
+	id := result.Container.ID
+	if id == "" {
+		id = containerName
+	}
+	return removeVolumeProbeContainer(cli, id)
+}
+
+func newVolumeProbeID() string {
+	random := make([]byte, 8)
+	if _, err := rand.Read(random); err == nil {
+		return hex.EncodeToString(random)
+	}
+	return strconv.FormatInt(time.Now().UnixNano(), 36)
 }
 
 func safeVolumeProbeName(name string) string {

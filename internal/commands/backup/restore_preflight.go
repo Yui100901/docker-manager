@@ -283,6 +283,10 @@ func (prepared *preparedRestoreBackup) Close() {
 }
 
 func prepareRestoreBackup(ctx context.Context, source string, opts RestoreOptions) (prepared *preparedRestoreBackup, resultErr error) {
+	limits, err := resolveRestoreLimits(opts)
+	if err != nil {
+		return nil, err
+	}
 	resolvedDir, cleanup, err := resolveRestoreBackupDirWithOptions(ctx, source, opts)
 	if err != nil {
 		return nil, err
@@ -311,8 +315,11 @@ func prepareRestoreBackup(ctx context.Context, source string, opts RestoreOption
 	} else {
 		log.Printf("Skip checksum verification: %s", resolvedDir)
 	}
-	prepared.manifest, err = readBackupManifest(resolvedDir)
+	prepared.manifest, err = readBackupManifestWithLimit(resolvedDir, limits.jsonBytes)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateRestoreJSONBudgetWithLimit(resolvedDir, prepared.manifest, limits.jsonBytes); err != nil {
 		return nil, err
 	}
 	if len(prepared.manifest.Containers) == 0 {

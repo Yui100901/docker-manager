@@ -4,15 +4,78 @@ import (
 	"bytes"
 	"log"
 	"net/netip"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"docker-manager/internal/sensitive"
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/api/types/volume"
 )
+
+func TestSaveOutputUsesPrivateFilePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not expose Unix permission bits")
+	}
+	t.Chdir(t.TempDir())
+	for _, path := range []string{"docker_run_command.sh", "docker-compose.reverse.yml"} {
+		if err := os.WriteFile(path, []byte("old"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result := NewReverseResult([]ParsedResult{{
+		Name:    "api",
+		Command: []string{"docker", "run", "busybox:latest"},
+		Compose: ComposeService{Image: "busybox:latest"},
+	}}, ReverseOptions{ReverseType: ReverseAll})
+	if err := result.saveOutput(); err != nil {
+		t.Fatalf("saveOutput() error = %v", err)
+	}
+
+	for _, path := range []string{"docker_run_command.sh", "docker-compose.reverse.yml"} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat %s: %v", path, err)
+		}
+		if got := info.Mode().Perm(); got != 0600 {
+			t.Errorf("%s permissions = %04o, want 0600", path, got)
+		}
+	}
+}
+
+func TestOpenPrivateOutputRejectsSymlinkWithoutChangingTarget(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.txt")
+	if err := os.WriteFile(target, []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	outputDir := filepath.Join(dir, "output")
+	if err := os.Mkdir(outputDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(outputDir, "docker_run_command.sh")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink creation unavailable: %v", err)
+	}
+	t.Chdir(outputDir)
+
+	if _, err := openPrivateOutput("docker_run_command.sh"); err == nil {
+		t.Fatal("openPrivateOutput() error = nil, want symlink rejection")
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "keep" {
+		t.Fatalf("symlink target changed to %q", data)
+	}
+}
 
 func TestShellQuote(t *testing.T) {
 	tests := []struct {
@@ -314,6 +377,94 @@ func TestParserStrictRedactsAdditionalKeys(t *testing.T) {
 	}
 	if !strings.Contains(run, "PUBLIC_KEY=<redacted>") || result.Compose.Labels["owner"] != "team-a" {
 		t.Fatalf("strict redaction = run=%s labels=%#v", run, result.Compose.Labels)
+	}
+}
+
+func TestParserInheritsGlobalRedactProfileForGeneratedOutput(t *testing.T) {
+	previous := sensitive.DefaultProfile()
+	sensitive.SetDefaultProfile(sensitive.ProfileStrict)
+	t.Cleanup(func() { sensitive.SetDefaultProfile(previous) })
+
+	parsed := NewParser(container.InspectResponse{
+		Name:       "/demo",
+		HostConfig: &container.HostConfig{LogConfig: container.LogConfig{Type: "json-file"}},
+		Config: &container.Config{
+			Image:  "nginx",
+			Env:    []string{"PUBLIC_KEY=ssh-rsa inherited-secret", "MODE=prod"},
+			Labels: map[string]string{"session_id": "inherited-session", "owner": "team-a"},
+		},
+	}, ReverseOptions{}).ToResult()
+
+	run := strings.Join(parsed.Command, " ")
+	compose := strings.Join(parsed.Compose.Environment, ",")
+	for _, leaked := range []string{"inherited-secret", "inherited-session"} {
+		if strings.Contains(run, leaked) || strings.Contains(compose, leaked) {
+			t.Fatalf("generated output leaked %q: run=%s compose=%s labels=%#v", leaked, run, compose, parsed.Compose.Labels)
+		}
+	}
+	if !strings.Contains(run, "PUBLIC_KEY=<redacted>") || parsed.Compose.Labels["session_id"] != "<redacted>" {
+		t.Fatalf("generated output did not inherit strict profile: run=%s labels=%#v", run, parsed.Compose.Labels)
+	}
+}
+
+func TestParserExplicitNoneOverridesGlobalRedactProfile(t *testing.T) {
+	previous := sensitive.DefaultProfile()
+	sensitive.SetDefaultProfile(sensitive.ProfileStrict)
+	t.Cleanup(func() { sensitive.SetDefaultProfile(previous) })
+
+	parsed := NewParser(container.InspectResponse{
+		Name:       "/demo",
+		HostConfig: &container.HostConfig{},
+		Config: &container.Config{
+			Image:  "nginx",
+			Env:    []string{"PASSWORD=administrator-visible"},
+			Labels: map[string]string{"api_token": "administrator-visible-token"},
+		},
+	}, ReverseOptions{RedactProfile: "none"}).ToResult()
+
+	run := strings.Join(parsed.Command, " ")
+	if !strings.Contains(run, "PASSWORD=administrator-visible") || parsed.Compose.Labels["api_token"] != "administrator-visible-token" {
+		t.Fatalf("explicit none did not override global profile: run=%s labels=%#v", run, parsed.Compose.Labels)
+	}
+}
+
+func TestSaveOutputInheritsGlobalRedactProfileAtWriteBoundary(t *testing.T) {
+	previous := sensitive.DefaultProfile()
+	sensitive.SetDefaultProfile(sensitive.ProfileStrict)
+	t.Cleanup(func() { sensitive.SetDefaultProfile(previous) })
+	t.Chdir(t.TempDir())
+
+	result := NewReverseResult([]ParsedResult{{
+		Name: "api",
+		Command: []string{
+			"docker", "run", "-e", "PASSWORD=write-boundary-secret", CommandSplitMarker, "busybox:latest",
+		},
+		Compose: ComposeService{
+			Image:       "busybox:latest",
+			Environment: []string{"PASSWORD=write-boundary-secret"},
+			Labels:      map[string]string{"session_id": "write-boundary-session"},
+			Volumes:     []string{"api_data:/data"},
+		},
+	}}, ReverseOptions{ReverseType: ReverseAll})
+	result.VolumeMeta["api_data"] = volume.Volume{
+		Name:    "api_data",
+		Options: map[string]string{"api_token": "write-boundary-volume-token"},
+	}
+
+	if err := result.saveOutput(); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"docker_run_command.sh", "docker-compose.reverse.yml"} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		output := string(data)
+		for _, leaked := range []string{"write-boundary-secret", "write-boundary-session", "write-boundary-volume-token"} {
+			if strings.Contains(output, leaked) {
+				t.Fatalf("%s leaked %q: %s", path, leaked, output)
+			}
+		}
 	}
 }
 

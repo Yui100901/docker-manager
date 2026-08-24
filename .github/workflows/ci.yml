@@ -1,0 +1,157 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go mod verify
+      - run: go test -count=1 ./...
+      - run: go vet ./...
+      - name: PowerShell checks
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/check.ps1 -NoShellCheck
+      - name: Shell syntax and ShellCheck
+        if: runner.os == 'Linux'
+        run: bash scripts/check.sh
+
+  security-static:
+    name: Race and security/static analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Race detector
+        run: CGO_ENABLED=1 go test -race -count=1 ./...
+      - name: Install analysis tools
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+      - name: staticcheck debt triage (non-blocking)
+        id: staticcheck
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          staticcheck ./... 2>&1 | tee staticcheck-report.txt
+      - name: Record staticcheck debt
+        if: steps.staticcheck.outcome == 'failure'
+        run: |
+          echo "::warning title=staticcheck debt::staticcheck reported existing P2 debt; see the staticcheck-report artifact."
+          {
+            echo "### staticcheck triage"
+            echo
+            echo "staticcheck failed and remains a visible, non-blocking P2 debt item."
+            echo "The full output is attached as the staticcheck-report artifact."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Vulnerability gate
+        run: govulncheck ./...
+      - name: Upload staticcheck triage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staticcheck-report
+          path: staticcheck-report.txt
+          if-no-files-found: error
+      - name: gosec triage report
+        run: gosec -no-fail -fmt text ./... | tee gosec-report.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gosec-report
+          path: gosec-report.txt
+
+  install-smoke:
+    name: Install smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Linux install smoke
+        if: runner.os == 'Linux'
+        run: bash scripts/e2e.sh --mode install
+      - name: Linux release package smoke
+        if: runner.os == 'Linux'
+        run: |
+          bash scripts/package-release.sh \
+            --dist-dir "$RUNNER_TEMP/dm-release" \
+            --version ci \
+            --commit "$GITHUB_SHA" \
+            --platform linux/amd64 \
+            --no-test
+          archive="$RUNNER_TEMP/dm-release/ci-$GITHUB_SHA/dm_ci_linux_amd64.tar.gz"
+          contents=$(tar -tzf "$archive")
+          grep -q '/CHANGELOG.md$' <<<"$contents"
+          grep -q '/docs/TESTING.md$' <<<"$contents"
+          grep -q '/docs/RELEASE_CHECKLIST.md$' <<<"$contents"
+          grep -q '/docs/DOCKER_API_MIGRATION.md$' <<<"$contents"
+      - name: Windows install smoke
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          go build -o dm.exe .
+          $root = Join-Path $env:RUNNER_TEMP "dm-install-smoke"
+          $config = Join-Path $env:RUNNER_TEMP "dm-install-smoke-config"
+          ./scripts/install.ps1 -Binary ./dm.exe -InstallDir $root -ConfigDir $config -NoEnvironment -NoCompletionProfile
+          & (Join-Path $root "bin/dm.exe") version
+          ./scripts/uninstall.ps1 -InstallDir $root -ConfigDir $config -Purge
+          if ((Test-Path $root) -or (Test-Path $config)) { throw "install smoke cleanup failed" }
+
+  docker-e2e:
+    name: Docker ${{ matrix.docker }} E2E
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        docker: ['24', '27', '29']
+    services:
+      docker:
+        image: docker:${{ matrix.docker }}-dind
+        env:
+          DOCKER_TLS_CERTDIR: ''
+        ports:
+          - 2375:2375
+        options: >-
+          --privileged
+          --health-cmd "docker info"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 24
+    env:
+      DOCKER_HOST: tcp://127.0.0.1:2375
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Docker daemon identity
+        run: docker version
+      - name: Full destructive E2E
+        run: bash scripts/e2e.sh --mode full --confirm-destructive

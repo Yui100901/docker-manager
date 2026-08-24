@@ -87,7 +87,7 @@ func (r *PullRunner) checkPushTargetRegistry(ctx context.Context, target string,
 		return fmt.Errorf("解析目标 registry 失败: %w", err)
 	}
 	registryName := info.Registry
-	cred, credErr := r.loadPullRegistryCredential(ctx, registryName, opts.DockerConfig)
+	cred, credErr := r.loadPullRegistryCredential(ctx, registryName, opts)
 	targetOpts := opts
 	targetOpts.PlainHTTP = pushTargetUsesPlainHTTP(opts)
 	result := r.pingRegistryV2(ctx, registryName, targetOpts, cred, info)
@@ -113,7 +113,7 @@ func (r *PullRunner) dockerPushRegistryAuth(ctx context.Context, target string, 
 	if err != nil {
 		return "", err
 	}
-	cred, err := r.loadPullRegistryCredential(ctx, info.Registry, opts.DockerConfig)
+	cred, err := r.loadPullRegistryCredential(ctx, info.Registry, opts)
 	if err != nil {
 		return "", err
 	}
