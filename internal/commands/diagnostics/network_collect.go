@@ -13,25 +13,6 @@ import (
 	"github.com/moby/moby/api/types/network"
 )
 
-func filterNetworksForContainers(networks []network.Summary, containers []container.Summary) []network.Summary {
-	used := map[string]bool{}
-	for _, c := range containers {
-		if c.NetworkSettings == nil {
-			continue
-		}
-		for name := range c.NetworkSettings.Networks {
-			used[name] = true
-		}
-	}
-	var filtered []network.Summary
-	for _, net := range networks {
-		if used[net.Name] {
-			filtered = append(filtered, net)
-		}
-	}
-	return filtered
-}
-
 func filterNetworksForContainersWithInspect(networks []network.Summary, containers []container.Summary, inspectByID map[string]container.InspectResponse) []network.Summary {
 	used := map[string]bool{}
 	for _, c := range containers {

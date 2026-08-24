@@ -253,7 +253,10 @@ func DefaultRunCredentialHelper(ctx context.Context, helper, server string) (Cre
 		if msg == "" {
 			msg = err.Error()
 		}
-		return Credential{}, fmt.Errorf("docker-credential-%s get failed: %s", helper, msg)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return Credential{}, fmt.Errorf("docker-credential-%s get failed: %s: %w", helper, msg, ctxErr)
+		}
+		return Credential{}, fmt.Errorf("docker-credential-%s get failed: %s: %w", helper, msg, err)
 	}
 	if stdout.truncated {
 		return Credential{}, fmt.Errorf("docker-credential-%s output exceeds %d bytes", helper, maxCredentialHelperStdout)

@@ -21,5 +21,5 @@ func diskFreeBytes(path string) (uint64, error) {
 }
 
 func diskFreeInodes(path string) (uint64, error) {
-	return 0, errors.New("Windows 不提供 inode 语义")
+	return 0, errors.New("inode 语义在 Windows 上不可用")
 }

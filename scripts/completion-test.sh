@@ -6,6 +6,8 @@ DM_BIN="${DM_COMPLETION_TEST_BIN:-${ROOT_DIR}/dm}"
 WORK_DIR="${DM_COMPLETION_TEST_WORK_DIR:-${TMPDIR:-/tmp}/dm-completion-$$_${RANDOM}}"
 KEEP_WORKDIR=0
 NO_DOCKER=0
+REQUIRE_SHELLS=0
+REQUIRE_DOCKER=0
 PASS=0
 FAIL=0
 SKIP=0
@@ -24,6 +26,8 @@ Options:
   --work-dir DIR      New, non-existing directory for logs and reports
   --keep-workdir      Keep temporary work directory
   --no-docker         Skip Docker-backed resource candidate checks
+  --require-shells    Fail when bash-completion, zsh or fish is unavailable
+  --require-docker    Fail when Docker resource candidate checks cannot run
   -h, --help          Show this help
 EOF
 }
@@ -47,6 +51,14 @@ while [ "$#" -gt 0 ]; do
       NO_DOCKER=1
       shift
       ;;
+    --require-shells)
+      REQUIRE_SHELLS=1
+      shift
+      ;;
+    --require-docker)
+      REQUIRE_DOCKER=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -58,6 +70,11 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+if [ "${NO_DOCKER}" -eq 1 ] && [ "${REQUIRE_DOCKER}" -eq 1 ]; then
+  echo "--no-docker and --require-docker cannot be used together." >&2
+  exit 2
+fi
 
 protected_work_dir() {
   local candidate=$1
@@ -143,17 +160,25 @@ run_case() {
   fi
 }
 
-run_shell_case() {
-  local name=$1 want=$2 script=$3
-  run_case "${name}" "${want}" bash -lc "${script}"
+record_unavailable() {
+  local name=$1 note=$2 required=$3
+  if [ "${required}" -eq 1 ]; then
+    record "${name}" FAIL "${note}" ""
+  else
+    record "${name}" SKIP "${note}" ""
+  fi
 }
 
-cleanup_items=()
+cleanup_containers=()
+cleanup_volumes=()
 cleanup() {
   set +e
   local index
-  for ((index=${#cleanup_items[@]} - 1; index >= 0; index--)); do
-    eval "${cleanup_items[index]}" >/dev/null 2>&1 || true
+  for ((index=${#cleanup_containers[@]} - 1; index >= 0; index--)); do
+    docker rm -f -- "${cleanup_containers[index]}" >/dev/null 2>&1 || true
+  done
+  for ((index=${#cleanup_volumes[@]} - 1; index >= 0; index--)); do
+    docker volume rm -- "${cleanup_volumes[index]}" >/dev/null 2>&1 || true
   done
   if [ "${KEEP_WORKDIR}" -eq 0 ]; then
     remove_owned_work_dir || true
@@ -166,58 +191,86 @@ if [ ! -x "${DM_BIN}" ]; then
   exit 2
 fi
 
+DM_COMMAND_SHIM="${WORK_DIR}/dm"
+{
+  printf '%s\n' '#!/usr/bin/env bash'
+  # Expanded when the generated shim runs.
+  # shellcheck disable=SC2016
+  printf '%s\n' 'exec "$DM_COMPLETION_TEST_EXECUTABLE" "$@"'
+} >"${DM_COMMAND_SHIM}"
+chmod 700 "${DM_COMMAND_SHIM}"
+
 run_case "generate-bash" "__start_dm" "${DM_BIN}" completion bash
 run_case "generate-zsh" "_dm" "${DM_BIN}" completion zsh
 run_case "generate-fish" "complete -c dm" "${DM_BIN}" completion fish
 run_case "generate-powershell" "Register-ArgumentCompleter" "${DM_BIN}" completion powershell
 
+export DM_COMPLETION_TEST_EXECUTABLE="${DM_BIN}"
+export DM_COMPLETION_TEST_STATE_DIR="${WORK_DIR}"
+export PATH="${WORK_DIR}:${PATH}"
+
 if command -v bash >/dev/null 2>&1; then
   if [ -r /usr/share/bash-completion/bash_completion ]; then
-    run_shell_case "bash-load" "__start_dm" "source /usr/share/bash-completion/bash_completion; source <('${DM_BIN}' completion bash); declare -F __start_dm"
+    export DM_BASH_COMPLETION_FILE=/usr/share/bash-completion/bash_completion
+    # These variables are expanded by the child Bash process.
+    # shellcheck disable=SC2016
+    run_case "bash-load" "__start_dm" bash --noprofile --norc -c 'source "$DM_BASH_COMPLETION_FILE"; source <("$DM_COMPLETION_TEST_EXECUTABLE" completion bash); declare -F __start_dm'
   else
-    record "bash-load" SKIP "bash-completion is not installed; install package bash-completion" ""
+    record_unavailable "bash-load" "bash-completion is not installed; install package bash-completion" "${REQUIRE_SHELLS}"
   fi
 else
-  record "bash-load" SKIP "bash not found" ""
+  record_unavailable "bash-load" "bash not found" "${REQUIRE_SHELLS}"
 fi
 
 if command -v zsh >/dev/null 2>&1; then
-  run_case "zsh-load" "_dm" zsh -fic "source <('${DM_BIN}' completion zsh); whence _dm"
+  # These variables are expanded by the child zsh process.
+  # shellcheck disable=SC2016
+  run_case "zsh-load" "_dm" zsh -f -c 'autoload -Uz compinit; compinit -d "$DM_COMPLETION_TEST_STATE_DIR/.zcompdump"; source <("$DM_COMPLETION_TEST_EXECUTABLE" completion zsh); whence -w _dm'
 else
-  record "zsh-load" SKIP "zsh not found" ""
+  record_unavailable "zsh-load" "zsh not found" "${REQUIRE_SHELLS}"
 fi
 
 if command -v fish >/dev/null 2>&1; then
-  run_case "fish-command-complete" "report" fish -ic "source ('${DM_BIN}' completion fish | psub); complete -C 'dm re'"
+  # This variable is expanded by the child fish process.
+  # shellcheck disable=SC2016
+  run_case "fish-command-complete" "report" fish -c 'source ("$DM_COMPLETION_TEST_EXECUTABLE" completion fish | psub); complete -C "dm re"'
 else
-  record "fish-command-complete" SKIP "fish not found" ""
+  record_unavailable "fish-command-complete" "fish not found" "${REQUIRE_SHELLS}"
 fi
 
 run_case "cobra-command-complete" "report" "${DM_BIN}" __complete re
 
-if [ "${NO_DOCKER}" -eq 0 ] && command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+if [ "${NO_DOCKER}" -eq 1 ]; then
+  record "docker-resource-complete" SKIP "Docker checks explicitly skipped" ""
+elif ! command -v docker >/dev/null 2>&1; then
+  record_unavailable "docker-resource-complete" "docker command not found" "${REQUIRE_DOCKER}"
+elif ! docker info >/dev/null 2>&1; then
+  record_unavailable "docker-resource-complete" "Docker daemon unavailable" "${REQUIRE_DOCKER}"
+else
   suffix="$(date +%Y%m%d%H%M%S)_$$_${RANDOM}"
   container_name="dm_completion_api_${suffix}"
   volume_name="dm_completion_vol_${suffix}"
   image_ref=$(docker images --format '{{.Repository}}:{{.Tag}}' | grep -v '<none>' | head -1 || true)
 
-  if [ -n "${image_ref}" ]; then
-    docker volume create --label dm.completion="${suffix}" "${volume_name}" >/dev/null
-    cleanup_items+=("docker volume rm '${volume_name}'")
-    if docker run -d --name "${container_name}" --label dm.completion="${suffix}" "${image_ref}" sh -c 'sleep 3600' >/dev/null 2>&1; then
-      cleanup_items+=("docker rm -f '${container_name}'")
-      run_case "cobra-container-complete" "${container_name}" "${DM_BIN}" __complete backup dm_completion
-    else
-      record "cobra-container-complete" SKIP "could not start test container from ${image_ref}" ""
-    fi
-    image_prefix=${image_ref:0:4}
-    run_case "cobra-image-filter-complete" "${image_ref}" "${DM_BIN}" __complete save --filter "${image_prefix}"
+  if docker volume create --label dm.completion="${suffix}" "${volume_name}" >/dev/null; then
+    cleanup_volumes+=("${volume_name}")
     run_case "cobra-volume-filter-complete" "${volume_name}" "${DM_BIN}" __complete volumes --filter ""
   else
-    record "docker-resource-complete" SKIP "no local tagged images; no external pull attempted" ""
+    record_unavailable "cobra-volume-filter-complete" "could not create test volume" "${REQUIRE_DOCKER}"
   fi
-else
-  record "docker-resource-complete" SKIP "Docker unavailable or skipped" ""
+
+  if [ -n "${image_ref}" ]; then
+    image_prefix=${image_ref:0:4}
+    run_case "cobra-image-filter-complete" "${image_ref}" "${DM_BIN}" __complete save --filter "${image_prefix}"
+    cleanup_containers+=("${container_name}")
+    if docker run -d --name "${container_name}" --label dm.completion="${suffix}" "${image_ref}" sh -c 'sleep 3600' >/dev/null 2>&1; then
+      run_case "cobra-container-complete" "${container_name}" "${DM_BIN}" __complete backup dm_completion
+    else
+      record_unavailable "cobra-container-complete" "could not start test container from ${image_ref}" "${REQUIRE_DOCKER}"
+    fi
+  else
+    record_unavailable "docker-image-resource-complete" "no local tagged images; no external pull attempted" "${REQUIRE_DOCKER}"
+  fi
 fi
 
 {

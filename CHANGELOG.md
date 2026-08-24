@@ -1,4 +1,4 @@
-﻿# Changelog
+# Changelog
 
 本文档记录 `docker-manager` 已发布版本的功能、修复、结构调整、已完成优化和已知非阻断项。临时优化清单已归档到本文档，后续不再维护 `OPTIMIZATION_AND_EXTENSIONS.md`。
 

@@ -28,10 +28,6 @@ func validateDescriptor(descriptor ocispec.Descriptor, subject string) error {
 	return nil
 }
 
-func validateConfigDescriptor(descriptor ocispec.Descriptor) error {
-	return validateConfigDescriptorWithLimit(descriptor, maxConfigBlobSize)
-}
-
 func validateConfigDescriptorWithLimit(descriptor ocispec.Descriptor, limit int64) error {
 	if err := validateDescriptor(descriptor, "镜像 config"); err != nil {
 		return err
@@ -46,10 +42,6 @@ func validateConfigDescriptorWithLimit(descriptor ocispec.Descriptor, limit int6
 		return fmt.Errorf("镜像 config 大小 %d 超过上限 %d", descriptor.Size, limit)
 	}
 	return nil
-}
-
-func validateManifestDescriptor(descriptor ocispec.Descriptor) error {
-	return validateManifestDescriptorWithLimit(descriptor, maxManifestBlobSize)
 }
 
 func validateManifestDescriptorWithLimit(descriptor ocispec.Descriptor, limit int64) error {

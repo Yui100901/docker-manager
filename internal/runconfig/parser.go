@@ -184,9 +184,7 @@ func (p *Parser) parsePortBindings() []PortBindingSpec {
 	var result []PortBindingSpec
 	for port, bindings := range p.ci.HostConfig.PortBindings {
 		for _, b := range bindings {
-			for _, binding := range p.resolvePublishedPort(port, b) {
-				result = append(result, binding)
-			}
+			result = append(result, p.resolvePublishedPort(port, b)...)
 		}
 	}
 	return result

@@ -509,22 +509,6 @@ func findLogMatches(text string, keywords []string) []LogMatch {
 	return matches
 }
 
-func publicPortBindings(ports []container.PortSummary) []string {
-	var result []string
-	for _, port := range ports {
-		if port.PublicPort == 0 {
-			continue
-		}
-		hostIP := normalizeHostIP(port.IP)
-		if !isPublicHostIP(hostIP) {
-			continue
-		}
-		result = append(result, fmt.Sprintf("%s:%d->%d/%s", hostIP, port.PublicPort, port.PrivatePort, port.Type))
-	}
-	sort.Strings(result)
-	return result
-}
-
 func normalizeKeywords(keywords []string) []string {
 	seen := map[string]bool{}
 	var result []string

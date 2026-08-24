@@ -18,7 +18,6 @@ type pullRegistryAuth struct {
 
 type pullRegistryCredential = registryauth.Credential
 type pullDockerConfigFile = registryauth.Config
-type pullDockerAuthEntry = registryauth.AuthEntry
 
 type authChallenge struct {
 	Scheme string
@@ -141,7 +140,7 @@ func readQuotedChallengeValue(input string) (string, string) {
 func (r *PullRunner) fetchBearerToken(ctx context.Context, challenge authChallenge, info *ImageInfo, cred pullRegistryCredential, opts PullOptions) (string, error) {
 	realm := challenge.Params["realm"]
 	if realm == "" {
-		return "", fmt.Errorf("Bearer challenge 缺少 realm")
+		return "", fmt.Errorf("bearer challenge 缺少 realm")
 	}
 	realmURL, err := validateBearerRealm(realm, info, opts)
 	if err != nil {
@@ -203,13 +202,13 @@ func bearerTokenQuery(challenge authChallenge, info *ImageInfo) (map[string]stri
 
 func validateBearerService(service string) error {
 	if !utf8.ValidString(service) {
-		return fmt.Errorf("Bearer challenge service 必须是有效 UTF-8")
+		return fmt.Errorf("bearer challenge service 必须是有效 UTF-8")
 	}
 	if len(service) > maxBearerServiceBytes {
-		return fmt.Errorf("Bearer challenge service 超过 %d 字节", maxBearerServiceBytes)
+		return fmt.Errorf("bearer challenge service 超过 %d 字节", maxBearerServiceBytes)
 	}
 	if strings.IndexFunc(service, unicode.IsControl) >= 0 {
-		return fmt.Errorf("Bearer challenge service 不得包含控制字符")
+		return fmt.Errorf("bearer challenge service 不得包含控制字符")
 	}
 	return nil
 }
@@ -217,13 +216,13 @@ func validateBearerService(service string) error {
 func validateBearerRealm(rawRealm string, info *ImageInfo, opts PullOptions) (*url.URL, error) {
 	realmURL, err := url.ParseRequestURI(strings.TrimSpace(rawRealm))
 	if err != nil || realmURL.Scheme == "" || realmURL.Host == "" {
-		return nil, fmt.Errorf("Bearer realm 必须是绝对 HTTPS URL")
+		return nil, fmt.Errorf("bearer realm 必须是绝对 HTTPS URL")
 	}
 	if !strings.EqualFold(realmURL.Scheme, "https") {
-		return nil, fmt.Errorf("Bearer realm 必须使用 HTTPS: %s", realmURL.Redacted())
+		return nil, fmt.Errorf("bearer realm 必须使用 HTTPS: %s", realmURL.Redacted())
 	}
 	if realmURL.User != nil || realmURL.Fragment != "" {
-		return nil, fmt.Errorf("Bearer realm 不得包含 userinfo 或 fragment")
+		return nil, fmt.Errorf("bearer realm 不得包含 userinfo 或 fragment")
 	}
 
 	registryURL, err := url.Parse(registryAPIURL(opts, info, "manifests", getReference(info)))
@@ -242,7 +241,7 @@ func validateBearerRealm(rawRealm string, info *ImageInfo, opts PullOptions) (*u
 			return realmURL, nil
 		}
 	}
-	return nil, fmt.Errorf("Bearer realm origin %s 与 registry 不同源且不在 --auth-realm allowlist", authRealmOrigin(realmURL))
+	return nil, fmt.Errorf("bearer realm origin %s 与 registry 不同源且不在 --auth-realm allowlist", authRealmOrigin(realmURL))
 }
 
 func validateAuthRealmAllowlist(values []string) error {
@@ -301,7 +300,7 @@ func (r *PullRunner) loadPullRegistryCredential(ctx context.Context, registryNam
 		RunHelper:      r.runCredentialHelper,
 	})
 	if !cred.Found && cred.Source == "credential-helper" {
-		return pullRegistryCredential{}, fmt.Errorf("Docker credential helper %q failed: %s", cred.Helper, cred.Message)
+		return pullRegistryCredential{}, fmt.Errorf("docker credential helper %q failed: %s", cred.Helper, cred.Message)
 	}
 	if !cred.Found && cred.Source == "" {
 		return pullRegistryCredential{}, nil
@@ -318,26 +317,10 @@ func readPullDockerConfig(path string) (pullDockerConfigFile, error) {
 	return cfg, err
 }
 
-func findPullCredentialHelper(cfg pullDockerConfigFile, keys []string) (string, string) {
-	return registryauth.FindCredentialHelper(cfg, keys)
-}
-
-func pullRegistryConfigKeys(registryName string) []string {
-	return registryauth.ConfigKeys(registryName)
-}
-
-func pullCredentialFromAuthEntry(entry pullDockerAuthEntry) pullRegistryCredential {
-	return registryauth.CredentialFromAuthEntry(entry)
-}
-
 func defaultRunPullCredentialHelper(ctx context.Context, helper, server string) (pullRegistryCredential, error) {
 	return registryauth.DefaultRunCredentialHelper(ctx, helper, server)
 }
 
 func basicAuthHeader(username, password string) string {
 	return registryauth.BasicAuthHeader(username, password)
-}
-
-func uniquePullStrings(values []string) []string {
-	return registryauth.UniqueStrings(values)
 }

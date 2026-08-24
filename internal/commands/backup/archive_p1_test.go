@@ -76,6 +76,56 @@ func TestExtractBackupArchiveEnforcesHeaderBudgets(t *testing.T) {
 	})
 }
 
+func TestExtractBackupArchiveAcceptsLegacyNULRegularType(t *testing.T) {
+	const payload = "legacy regular file"
+	var rawArchive bytes.Buffer
+	tarWriter := tar.NewWriter(&rawArchive)
+	if err := tarWriter.WriteHeader(&tar.Header{
+		Name:     "legacy.txt",
+		Mode:     0600,
+		Size:     int64(len(payload)),
+		Typeflag: 0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tarWriter.Write([]byte(payload)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Older archives used a NUL typeflag for a regular file. archive/tar
+	// normalizes it before returning the header.
+	archivePath := filepath.Join(t.TempDir(), "legacy.tar.gz")
+	archiveFile, err := os.OpenFile(archivePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gzipWriter := gzip.NewWriter(archiveFile)
+	if _, err := gzipWriter.Write(rawArchive.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := archiveFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	destination := filepath.Join(t.TempDir(), "extract")
+	if err := extractBackupArchive(archivePath, destination); err != nil {
+		t.Fatalf("extract legacy archive: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(destination, "legacy.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != payload {
+		t.Fatalf("legacy payload = %q, want %q", got, payload)
+	}
+}
+
 func TestBackupTarBudgetBoundsEntriesPathsAndExpandedBytes(t *testing.T) {
 	entryBudget := backupTarBudget{entries: maxBackupArchiveEntries - 1}
 	if err := entryBudget.Add("last", 0, false); err != nil {

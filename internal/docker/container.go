@@ -199,10 +199,6 @@ func (cm *ContainerManager) WaitReadyContext(ctx context.Context, containerID st
 	}
 }
 
-func (cm *ContainerManager) buildNetworkingConfig(inspect container.InspectResponse) *network.NetworkingConfig {
-	return cm.buildNetworkingConfigContext(context.Background(), inspect)
-}
-
 func (cm *ContainerManager) buildNetworkingConfigContext(ctx context.Context, inspect container.InspectResponse) *network.NetworkingConfig {
 	ctx, cancel := contextWithTimeout(ctx, 15*time.Second)
 	defer cancel()

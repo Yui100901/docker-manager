@@ -9,10 +9,6 @@ import (
 	"time"
 )
 
-func backupContainerInspect(name, backupDir string) (string, error) {
-	return backupContainerInspectContext(context.Background(), name, backupDir)
-}
-
 func backupContainerInspectContext(ctx context.Context, name, backupDir string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err

@@ -184,15 +184,7 @@ func updatePullBatchStateItem(state pullBatchState, result PullBatchResult) {
 			return
 		}
 	}
-	state.Items[result.Image] = pullBatchStateItem{
-		Image:      result.Image,
-		Target:     result.Target,
-		Status:     result.Status,
-		Attempts:   result.Attempts,
-		Message:    result.Message,
-		StartedAt:  result.StartedAt,
-		FinishedAt: result.FinishedAt,
-	}
+	state.Items[result.Image] = pullBatchStateItem(result)
 }
 
 func runPullBatchItem(ctx context.Context, imageName string, opts PullBatchOptions, state pullBatchState, pull pullBatchFunc, exists pullBatchExistsFunc, progressOutput io.Writer) PullBatchResult {

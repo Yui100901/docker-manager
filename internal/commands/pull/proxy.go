@@ -64,17 +64,6 @@ func proxyFromEnvironment(req *http.Request) (*url.URL, error) {
 	return environmentProxyConfig().ProxyFunc()(req.URL)
 }
 
-func proxyEnvForScheme(scheme string) string {
-	switch strings.ToLower(scheme) {
-	case "https":
-		return firstEnv("HTTPS_PROXY", "https_proxy")
-	case "http":
-		return firstEnv("HTTP_PROXY", "http_proxy")
-	default:
-		return ""
-	}
-}
-
 func firstEnv(names ...string) string {
 	for _, name := range names {
 		if value := os.Getenv(name); value != "" {
@@ -91,17 +80,6 @@ func environmentProxyConfig() *httpproxy.Config {
 		NoProxy:    firstEnv("NO_PROXY", "no_proxy"),
 		CGI:        os.Getenv("REQUEST_METHOD") != "",
 	}
-}
-
-func shouldBypassProxy(host string) bool {
-	if strings.TrimSpace(host) == "" {
-		return false
-	}
-	config := environmentProxyConfig()
-	config.HTTPProxy = "http://proxy.invalid"
-	config.HTTPSProxy = "http://proxy.invalid"
-	proxyURL, err := config.ProxyFunc()(&url.URL{Scheme: "https", Host: host})
-	return err == nil && proxyURL == nil
 }
 
 func secureRegistryRedirectPolicy(req *http.Request, via []*http.Request) error {

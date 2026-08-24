@@ -92,10 +92,6 @@ func writeJSONFile(path string, value interface{}) error {
 	return writePrivateBackupFile(path, append(data, '\n'), 0600)
 }
 
-func writeBackupBundleArtifacts(outputDir string, manifest BackupManifest) error {
-	return writeBackupBundleArtifactsWithContext(context.Background(), outputDir, manifest)
-}
-
 func writeBackupBundleArtifactsWithContext(ctx context.Context, outputDir string, manifest BackupManifest) error {
 	if err := checkBackupContext(ctx); err != nil {
 		return err

@@ -1,4 +1,4 @@
-﻿# docker-manager
+# docker-manager
 
 `docker-manager` 是一个面向 Docker 日常运维、镜像迁移、容器备份恢复和诊断报告的命令行工具，二进制默认名为 `dm`。
 

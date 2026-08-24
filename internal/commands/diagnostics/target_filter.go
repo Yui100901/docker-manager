@@ -23,12 +23,6 @@ func printTargetSelection(w io.Writer, target TargetSelection) {
 	}
 }
 
-func matchesTargetFilters(candidates []string, filters []string) bool {
-	keys := append([]string{}, resourcefilter.ContainerKeys...)
-	keys = append(keys, resourcefilter.VolumeKeys...)
-	return resourcefilter.Match(candidates, filters, keys...)
-}
-
 func filterContainerSummaries(containers []container.Summary, filters []string) []container.Summary {
 	return targets.FilterContainers(containers, filters)
 }

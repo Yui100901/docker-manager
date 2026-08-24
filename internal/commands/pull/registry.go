@@ -216,10 +216,6 @@ func (r *PullRunner) handleOCIIndex(ctx context.Context, info *ImageInfo, index 
 	return manifest, auth, err
 }
 
-func decodeImageManifest(data []byte) (*ocispec.Manifest, error) {
-	return decodeImageManifestWithLimits(data, defaultPullResourceLimits())
-}
-
 func decodeImageManifestWithLimits(data []byte, limits PullResourceLimits) (*ocispec.Manifest, error) {
 	manifest, err := struct_utils.UnmarshalData[ocispec.Manifest](data, struct_utils.JSON)
 	if err != nil {
@@ -269,10 +265,6 @@ func (r *PullRunner) fetchRegistryBytesWithRetryLimit(ctx context.Context, rawUR
 	return nil, currentAuth, lastErr
 }
 
-func (r *PullRunner) fetchRegistryBytesOnce(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, info *ImageInfo, opts PullOptions, auth *pullRegistryAuth) ([]byte, *pullRegistryAuth, error) {
-	return r.fetchRegistryBytesOnceLimit(ctx, rawURL, headers, query, info, opts, auth, effectivePullResourceLimits(opts.Limits).ManifestBytes)
-}
-
 func (r *PullRunner) fetchRegistryBytesOnceLimit(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, info *ImageInfo, opts PullOptions, auth *pullRegistryAuth, maxBytes int64) ([]byte, *pullRegistryAuth, error) {
 	var progressOutput io.Writer
 	if maxBytes > 0 {
@@ -306,15 +298,6 @@ func fetchWithRetry(ctx context.Context, url string, headers map[string]string, 
 	return runner.fetchWithRetry(ctx, url, headers, query)
 }
 
-// saveWithRetry 将 GET 请求的响应直接保存到文件，带重试
-func saveWithRetry(ctx context.Context, url string, headers map[string]string, query map[string]string, outputPath string) error {
-	runner, err := NewPullRunner("", "linux", "amd64")
-	if err != nil {
-		return err
-	}
-	return runner.saveWithRetry(ctx, url, headers, query, outputPath)
-}
-
 func (r *PullRunner) fetchWithRetry(ctx context.Context, url string, headers map[string]string, query map[string]string) ([]byte, error) {
 	return r.fetchWithRetryLimit(ctx, url, headers, query, 0)
 }
@@ -341,41 +324,6 @@ func (r *PullRunner) fetchWithRetryLimit(ctx context.Context, url string, header
 		backoff *= 2
 	}
 	return nil, lastErr
-}
-
-func (r *PullRunner) saveWithRetry(ctx context.Context, url string, headers map[string]string, query map[string]string, outputPath string) error {
-	var lastErr error
-	backoff := initialBackoff
-	for i := 0; i < maxHTTPRetries; i++ {
-		if err := ctx.Err(); err != nil {
-			_ = removePartialDownload(outputPath)
-			return err
-		}
-		if err := r.httpSaveToFile(ctx, url, headers, query, outputPath); err == nil {
-			return nil
-		} else {
-			_ = removePartialDownload(outputPath)
-			if errors.Is(err, context.Canceled) {
-				return err
-			}
-			lastErr = err
-			log.Printf("保存 %s 到 %s 失败（尝试 %d/%d）: %v，稍后重试...", url, outputPath, i+1, maxHTTPRetries, err)
-			if err := sleepWithContext(ctx, backoff); err != nil {
-				_ = removePartialDownload(outputPath)
-				return err
-			}
-			backoff *= 2
-		}
-	}
-	return lastErr
-}
-
-func (r *PullRunner) httpGetBytes(ctx context.Context, rawURL string, headers map[string]string, query map[string]string) ([]byte, error) {
-	return r.httpGetBytesWithStatus(ctx, rawURL, headers, query)
-}
-
-func (r *PullRunner) httpGetBytesWithStatus(ctx context.Context, rawURL string, headers map[string]string, query map[string]string) ([]byte, error) {
-	return r.httpGetBytesWithStatusLimit(ctx, rawURL, headers, query, 0, nil)
 }
 
 func (r *PullRunner) httpGetBytesWithStatusLimit(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, maxBytes int64, progressOutput io.Writer) ([]byte, error) {

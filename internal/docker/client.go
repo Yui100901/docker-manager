@@ -273,13 +273,13 @@ func buildMobyClient(opts resolvedClientOptions) (*mobyclient.Client, Connection
 		}
 	case "unix", "npipe":
 		if tlsEnabled {
-			return nil, info, fmt.Errorf("Docker TLS is only supported for tcp:// endpoints, got %q", host)
+			return nil, info, fmt.Errorf("docker TLS is only supported for tcp:// endpoints, got %q", host)
 		}
 	default:
 		return nil, info, fmt.Errorf("unsupported Docker host scheme %q in %q; use tcp://, unix://, or npipe://", endpointTransport, host)
 	}
 	if opts.TLSVerify && opts.CertPath == "" {
-		return nil, info, fmt.Errorf("Docker TLS verification requires a certificate directory containing ca.pem, cert.pem, and key.pem")
+		return nil, info, fmt.Errorf("docker TLS verification requires a certificate directory containing ca.pem, cert.pem, and key.pem")
 	}
 
 	timeout := opts.Timeout
@@ -331,7 +331,7 @@ func buildMobyClient(opts resolvedClientOptions) (*mobyclient.Client, Connection
 func loadDockerTLSConfig(certPath string, verify bool) (*tls.Config, string, error) {
 	certPath = strings.TrimSpace(certPath)
 	if certPath == "" {
-		return nil, "", fmt.Errorf("Docker TLS certificate directory is empty")
+		return nil, "", fmt.Errorf("docker TLS certificate directory is empty")
 	}
 	caFile := filepath.Join(certPath, "ca.pem")
 	caSource := "verification-disabled"
@@ -343,7 +343,7 @@ func loadDockerTLSConfig(certPath string, verify bool) (*tls.Config, string, err
 		return nil, caSource, fmt.Errorf("inspect Docker TLS certificate directory %q: %w", certPath, err)
 	}
 	if !pathInfo.IsDir() {
-		return nil, caSource, fmt.Errorf("Docker TLS certificate path %q is not a directory", certPath)
+		return nil, caSource, fmt.Errorf("docker TLS certificate path %q is not a directory", certPath)
 	}
 
 	certFile := filepath.Join(certPath, "cert.pem")
@@ -354,7 +354,7 @@ func loadDockerTLSConfig(certPath string, verify bool) (*tls.Config, string, err
 			return nil, caSource, fmt.Errorf("inspect Docker TLS file %q: %w", path, err)
 		}
 		if !fileInfo.Mode().IsRegular() {
-			return nil, caSource, fmt.Errorf("Docker TLS file %q is not a regular file", path)
+			return nil, caSource, fmt.Errorf("docker TLS file %q is not a regular file", path)
 		}
 	}
 	caPEM, err := os.ReadFile(caFile)
@@ -362,7 +362,7 @@ func loadDockerTLSConfig(certPath string, verify bool) (*tls.Config, string, err
 		return nil, caSource, fmt.Errorf("read Docker TLS CA file %q: %w", caFile, err)
 	}
 	if !x509.NewCertPool().AppendCertsFromPEM(caPEM) {
-		return nil, caSource, fmt.Errorf("Docker TLS CA file %q does not contain a valid PEM certificate", caFile)
+		return nil, caSource, fmt.Errorf("docker TLS CA file %q does not contain a valid PEM certificate", caFile)
 	}
 
 	tlsConfig, err := tlsconfig.Client(tlsconfig.Options{

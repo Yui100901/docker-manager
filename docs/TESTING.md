@@ -1,4 +1,4 @@
-﻿# 测试和验收
+# 测试和验收
 
 本文档集中记录 `docker-manager` 的本地检查、远程 Docker 验收、企业 registry 验收和已完成测试结论。README 不再展开测试细节，发布操作清单见 [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)。
 
@@ -9,7 +9,7 @@
 ```bash
 go test ./...
 go vet ./...
-git diff --check
+git diff HEAD --check
 ```
 
 推荐使用脚本:
@@ -28,6 +28,30 @@ Windows:
 
 ShellCheck 是默认门禁；环境未安装 ShellCheck 时脚本会失败。仅在明确由其他 CI job 执行 ShellCheck 时，才使用 `--no-shellcheck` 或 `-NoShellCheck` 显式跳过。
 
+`--no-go-checks` / `-NoGoChecks` 仅供已经单独执行 `go test`、`go vet` 和所需 race job 的 CI 使用，可避免同一 job 重复运行 Go 检查；它会同时跳过 test、vet 和 race，且不能与 `--race` / `-Race` 同时使用。本地和发布前检查不得使用该选项代替默认全量门禁。
+
+`check.sh` 和 `check.ps1` 还会调用同一个 `scripts/text-check.go`，要求仓库文本源码使用 UTF-8 无 BOM、LF 换行、文件末尾换行，且不包含 Unicode replacement character `U+FFFD`。该检查同时覆盖已跟踪文件和未被 ignore 的新增源码。
+
+Linux CI 生成一个 package-local Go coverage profile，并执行全局和关键包双层门禁。本地可用同一命令复现：
+
+```bash
+coverage_profile="${TMPDIR:-/tmp}/dm-coverage-$$.out"
+go test -count=1 -covermode=atomic -coverprofile="$coverage_profile" ./...
+go run ./scripts/coverage-check \
+  -profile "$coverage_profile" \
+  -total 70 \
+  -package internal/appconfig=85 \
+  -package internal/dockerconfig=90 \
+  -package internal/registryauth=85 \
+  -package internal/runconfig=90 \
+  -package internal/targets=95 \
+  -package internal/docker=65 \
+  -package internal/completion=85
+rm -f -- "$coverage_profile"
+```
+
+门禁按 profile 中的 statement block 计数，不使用 `-coverpkg=./...` 将其他包的执行错误归属到当前测试包。Docker service 单测使用真实 Moby SDK 对 fake HTTP daemon 验证请求契约；Docker 24/27/29 的真实 daemon 行为仍由独立 E2E matrix 验证。
+
 本地 smoke:
 
 ```powershell
@@ -37,6 +61,53 @@ $localTestOutput = Join-Path $env:TEMP ("dm-local-test-" + [guid]::NewGuid().ToS
 ```
 
 覆盖范围包括帮助输出、版本输出、completion 生成、`DM_CONFIG`、错误输出格式、PowerShell 安装/卸载和 Docker 不可用时的错误路径。默认运行还会验证 `DM_CONFIG`、`DM_HOME`、`DM_OUTPUT_DIR` 的 User/Process 快照恢复、多安装所有权链、失败回滚和真实 junction/reparse 拒绝；`-NoEnvironment` 用于不允许写用户环境变量的受限环境，并会跳过多安装所有权用例。两种模式都应使用唯一 `-OutputDir`，避免混用旧报告。
+
+## Completion 深度测试
+
+Linux 上的无 Docker shell 门禁需要安装 `bash-completion`、zsh 和 fish：
+
+```bash
+sudo apt-get install --yes --no-install-recommends bash-completion zsh fish
+completion_bin="${TMPDIR:-/tmp}/dm-completion-bin-$$"
+go build -o "$completion_bin" .
+bash scripts/completion-test.sh --dm-bin "$completion_bin" --no-docker --require-shells
+rm -f -- "$completion_bin"
+```
+
+Windows 应分别在 PowerShell 7 和 Windows PowerShell 5.1 执行：
+
+```powershell
+$completionBin = Join-Path $env:TEMP ("dm-completion-bin-" + [guid]::NewGuid().ToString("N") + ".exe")
+go build -o $completionBin .
+try {
+    .\scripts\completion-test.ps1 -DmBin $completionBin -NoDocker
+} finally {
+    Remove-Item -LiteralPath $completionBin -Force -ErrorAction SilentlyContinue
+}
+```
+
+Linux 脚本会在 `compinit` 后加载 zsh completion，并实际加载 bash/fish completion；PowerShell 脚本会 dot-source 生成文件，再通过 `TabExpansion2` 验证 `dm re` 返回 `report`。所有 native case 必须同时满足退出码为 0 和候选内容匹配。测试日志、TSV 和 Markdown 报告统一写为 UTF-8 无 BOM、LF。
+
+Docker 候选测试不拉取外部镜像，需要 daemon 中预先存在一个带 tag、可执行 `sh -c 'sleep 3600'` 的本地镜像：
+
+```bash
+completion_bin="${TMPDIR:-/tmp}/dm-completion-docker-bin-$$"
+go build -o "$completion_bin" .
+bash scripts/completion-test.sh --dm-bin "$completion_bin" --require-shells --require-docker
+rm -f -- "$completion_bin"
+```
+
+```powershell
+$completionBin = Join-Path $env:TEMP ("dm-completion-docker-bin-" + [guid]::NewGuid().ToString("N") + ".exe")
+go build -o $completionBin .
+try {
+    .\scripts\completion-test.ps1 -DmBin $completionBin -RequireDocker
+} finally {
+    Remove-Item -LiteralPath $completionBin -Force -ErrorAction SilentlyContinue
+}
+```
+
+`--require-shells` 会把缺失的 bash-completion、zsh 或 fish 记为 FAIL；`--require-docker` / `-RequireDocker` 会把 daemon、镜像或临时资源不可用记为 FAIL。显式 `--no-docker` / `-NoDocker` 只用于无 Docker 门禁，不能和 require Docker 选项同时使用。需要保留报告时传入一个尚不存在的工作目录；PowerShell 还需同时传 `-KeepWorkDir`。
 
 ## P1 定向回归
 
@@ -246,7 +317,7 @@ OIDC/Keycloak 如受网络影响，可先做降级验收: 大镜像能进入 man
 - Artifactory HTTPS 反向代理: 8 PASS / 0 FAIL，覆盖临时企业 CA、HTTPS 反代、`dm registry`、`dm doctor`、`dm pull`、缺失 CA 失败和 Docker 原生 login/pull。
 - 中等规模资源: 11 PASS / 0 FAIL / 1 INFO，覆盖 24 个 registry 镜像、80 个容器、100 个 volume、`health/logs/volumes/prune`、批量 mirror 和 skip-existing。
 - 取消行为复测: `backup --bundle`、`restore --no-start`、`logs`、`prune` dry-run 收到 SIGINT/context cancel 后输出 `操作已取消` 并以 130 退出。
-- Completion 深度测试: bash/zsh/fish/PowerShell 均验证脚本加载；bash 真实交互依赖系统 `bash-completion`；容器、镜像、volume 候选已覆盖。
+- Completion 历史验收已覆盖容器、镜像和 volume 候选；P2 后四种 shell 的加载证据以本节严格模式和 CI completion artifact 为准，关键依赖被 SKIP 不计作发布通过。
 - Harbor LDAP 身份源: 临时 OpenLDAP、LDAP bind、Harbor `ldap_auth` 配置和 LDAP 用户 API 登录通过；审计 API 可访问但当前页未返回登录记录，记为 SKIP。
 - OIDC/Keycloak 镜像拉取链路降级验收: Keycloak、MySQL、Harbor Core 进入并完成 manifest/layer 拉取流程；busybox/hello-world 完成归档、load 和本地 registry mirror 回拉。
 

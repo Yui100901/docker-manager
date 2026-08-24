@@ -775,10 +775,6 @@ func joinBackupArchivePartsWithLimits(ctx context.Context, firstPart, outputPath
 	return verifyBackupStagedFile(ctx, outputPath, manifest.TotalSize, manifest.ArchiveSHA256)
 }
 
-func validateBackupPartsManifest(base string, manifest backupArchivePartManifest) error {
-	return validateBackupPartsManifestWithLimits(base, manifest, defaultBackupLimits())
-}
-
 func validateBackupPartsManifestWithLimits(base string, manifest backupArchivePartManifest, limits backupLimits) error {
 	if manifest.Version != 1 || manifest.Commit != "complete" {
 		return fmt.Errorf("backup parts manifest is not committed")
@@ -874,14 +870,6 @@ func backupCopyNWithContext(ctx context.Context, dst io.Writer, src io.Reader, r
 		}
 	}
 	return nil
-}
-
-func decryptBackupArchiveWithContext(ctx context.Context, encryptedPath, outputPath, passphraseFile string) error {
-	return decryptBackupArchiveWithBudget(ctx, encryptedPath, outputPath, passphraseFile, newBackupByteBudget("restore temporary files", maxBackupTemporaryBytes))
-}
-
-func decryptBackupArchiveWithBudget(ctx context.Context, encryptedPath, outputPath, passphraseFile string, diskBudget *backupByteBudget) (resultErr error) {
-	return decryptBackupArchiveWithLimits(ctx, encryptedPath, outputPath, passphraseFile, diskBudget, defaultBackupLimits())
 }
 
 func decryptBackupArchiveWithLimits(ctx context.Context, encryptedPath, outputPath, passphraseFile string, diskBudget *backupByteBudget, limits backupLimits) (resultErr error) {

@@ -128,14 +128,14 @@ func TestPushWithAuthOutputSendsRegistryAuthAndCopiesResponse(t *testing.T) {
 			}))
 			defer server.Close()
 
-			cli, err := client.NewClientWithOpts(
+			cli, err := client.New(
 				client.WithHost(server.URL),
 				client.WithHTTPClient(server.Client()),
 				client.WithScheme("http"),
-				client.WithVersion("1.55"),
+				client.WithAPIVersion("1.55"),
 			)
 			if err != nil {
-				t.Fatalf("NewClientWithOpts() error = %v", err)
+				t.Fatalf("New() error = %v", err)
 			}
 			defer func() { _ = cli.Close() }()
 

@@ -344,7 +344,7 @@ func recordBuildCachePruneReport(
 	reported := make(map[string]struct{})
 	for _, id := range cacheReport.CachesDeleted {
 		if strings.TrimSpace(id) == "" {
-			recordPruneApplyFailure(result, pruneKindBuildCache, requestedID, errors.New("Docker reported a deleted cache record with an empty ID"))
+			recordPruneApplyFailure(result, pruneKindBuildCache, requestedID, errors.New("docker reported a deleted cache record with an empty ID"))
 			continue
 		}
 		if alreadySeen(reported, id) {
@@ -354,11 +354,11 @@ func recordBuildCachePruneReport(
 		result.BuildCachesDeleted = append(result.BuildCachesDeleted, id)
 		candidate, inSnapshot := candidates[id]
 		if !inSnapshot {
-			recordPruneApplyFailure(result, pruneKindBuildCache, id, fmt.Errorf("Docker reported deletion outside the fixed snapshot candidate set while pruning %q", requestedID))
+			recordPruneApplyFailure(result, pruneKindBuildCache, id, fmt.Errorf("docker reported deletion outside the fixed snapshot candidate set while pruning %q", requestedID))
 			continue
 		}
 		if id != requestedID {
-			recordPruneApplyFailure(result, pruneKindBuildCache, id, fmt.Errorf("Docker reported deletion beyond the exact requested cache record %q", requestedID))
+			recordPruneApplyFailure(result, pruneKindBuildCache, id, fmt.Errorf("docker reported deletion beyond the exact requested cache record %q", requestedID))
 		}
 		if !confirmed[id] {
 			confirmed[id] = true
@@ -378,7 +378,7 @@ func recheckPruneBuildCacheCandidate(ctx context.Context, svc pruneDockerService
 			continue
 		}
 		if current != nil {
-			return fmt.Errorf("Docker returned duplicate records for cache ID %q", candidate.ID)
+			return fmt.Errorf("docker returned duplicate records for cache ID %q", candidate.ID)
 		}
 		current = cache
 	}
@@ -418,7 +418,7 @@ func reconcileUnconfirmedBuildCacheRemoval(
 ) {
 	removed, known, verificationErr := verifyPruneBuildCacheRemoval(ctx, svc, candidate.ID)
 	if !known {
-		recordPruneApplyUnknown(result, pruneKindBuildCache, candidate.ID, fmt.Errorf("Docker did not confirm deletion of the cache record; removal verification failed: %w", verificationErr))
+		recordPruneApplyUnknown(result, pruneKindBuildCache, candidate.ID, fmt.Errorf("docker did not confirm deletion of the cache record; removal verification failed: %w", verificationErr))
 		return
 	}
 	if removed {
@@ -426,7 +426,7 @@ func reconcileUnconfirmedBuildCacheRemoval(
 		recordConfirmedPruneRemoval(result, pruneKindBuildCache, candidate.ID, candidate.Size)
 		return
 	}
-	recordPruneApplyFailure(result, pruneKindBuildCache, candidate.ID, errors.New("Docker did not confirm deletion of the cache record, and it still exists"))
+	recordPruneApplyFailure(result, pruneKindBuildCache, candidate.ID, errors.New("docker did not confirm deletion of the cache record, and it still exists"))
 }
 
 func verifyPruneBuildCacheRemoval(ctx context.Context, svc pruneDockerService, id string) (removed bool, known bool, err error) {

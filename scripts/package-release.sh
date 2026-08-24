@@ -117,22 +117,6 @@ sha256_file() {
   fi
 }
 
-load_existing_checksums() {
-  : >"${CHECKSUMS_WORK_FILE}"
-  if [ ! -f "${CHECKSUMS_FILE}" ]; then
-    return
-  fi
-  while IFS= read -r line; do
-    [ -n "${line}" ] || continue
-    set -- ${line}
-    local archive_name="${2:-}"
-    archive_name="${archive_name#\*}"
-    if [ -n "${archive_name}" ] && [ -f "${DIST_DIR}/${archive_name}" ]; then
-      printf '%s\n' "${line}" >>"${CHECKSUMS_WORK_FILE}"
-    fi
-  done <"${CHECKSUMS_FILE}"
-}
-
 update_checksum_file() {
   local checksum="$1"
   local archive_name="$2"
@@ -316,7 +300,7 @@ CHECKSUMS_FILE="${DIST_DIR}/checksums.txt"
 MANIFEST_FILE="${DIST_DIR}/release-manifest.json"
 SUMMARY_FILE="${DIST_DIR}/release-summary.md"
 CHECKSUMS_WORK_FILE="${WORK_DIR}/checksums.txt"
-load_existing_checksums
+: >"${CHECKSUMS_WORK_FILE}"
 
 if [ "${RUN_TESTS}" = "1" ]; then
   echo "==> go test ./..."

@@ -1,4 +1,4 @@
-﻿# 发布检查清单
+# 发布检查清单
 
 本清单只记录发布操作需要逐项确认的事项。测试方法和历史验收结论统一维护在 [TESTING.md](TESTING.md)。
 
@@ -12,10 +12,14 @@
 ## 2. 本地检查
 
 - [ ] `gofmt` 无待格式化文件。
+- [ ] 仓库文本通过 `scripts/text-check.go`：UTF-8 无 BOM、LF、末尾换行且无 `U+FFFD`。
 - [ ] `go test ./...` 通过。
+- [ ] 覆盖率门禁通过：全局至少 70%，配置、认证、runconfig、targets、Docker SDK 和 completion 关键包达到 [TESTING.md](TESTING.md) 的独立阈值。
 - [ ] `go vet ./...` 通过。
 - [ ] 可用时执行 `go test -race ./...` 或 `scripts/check.* -Race`。
-- [ ] `git diff --check` 无尾随空格、冲突标记或补丁格式问题。
+- [ ] `staticcheck ./...` 和 `govulncheck ./...` 阻断门禁通过。
+- [ ] ShellCheck 完整通过，未使用 `--no-shellcheck` / `-NoShellCheck` 绕过发布门禁。
+- [ ] `git diff HEAD --check` 无尾随空格、冲突标记或补丁格式问题。
 
 推荐命令:
 
@@ -51,6 +55,9 @@ Windows:
 ## 5. 验收
 
 - [ ] 已按 [TESTING.md](TESTING.md) 完成当前发布所需的本地、远程或企业环境验收。
+- [ ] Linux completion 无 Docker 门禁通过，bash-completion、zsh、fish 加载用例均非 SKIP。
+- [ ] PowerShell 7 和 Windows PowerShell 5.1 均通过 completion dot-source 和 `TabExpansion2` 用例。
+- [ ] Docker completion 使用 `--require-docker` / `-RequireDocker` 通过，容器、镜像、volume 候选均非 SKIP，且无临时资源残留。
 - [ ] 破坏性命令测试只作用于测试 label、测试容器、测试 volume 或临时 registry。
 - [ ] image/volume prune 未传 `--allow-non-atomic-delete` 时零删除，显式确认后只删除固定测试候选。
 - [ ] 分卷备份成功后 commit manifest/digest 完整且无 pending/staging 残留；中断恢复不删除 foreign replacement。

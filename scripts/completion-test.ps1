@@ -2,10 +2,14 @@ param(
     [string]$DmBin = $(Join-Path (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path "dm.exe"),
     [string]$WorkDir = $(Join-Path ([System.IO.Path]::GetTempPath()) ("dm-completion-" + [guid]::NewGuid().ToString("N"))),
     [switch]$NoDocker,
-    [switch]$KeepWorkDir
+    [switch]$KeepWorkDir,
+    [switch]$RequireDocker
 )
 
 $ErrorActionPreference = "Stop"
+if ($NoDocker -and $RequireDocker) {
+    throw "-NoDocker and -RequireDocker cannot be used together."
+}
 $oldOutputEncoding = $OutputEncoding
 $oldConsoleOutputEncoding = [Console]::OutputEncoding
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
@@ -20,6 +24,19 @@ $Cleanup = New-Object System.Collections.Generic.List[scriptblock]
 $WorkDirOwned = $false
 $WorkDirToken = "dm-completion:${PID}:$([guid]::NewGuid().ToString('N'))"
 $WorkDirSentinel = $null
+
+function Write-Utf8Text {
+    param(
+        [string]$Path,
+        [AllowEmptyString()]
+        [string]$Text
+    )
+    $normalized = $Text.Replace("`r`n", "`n").Replace("`r", "`n")
+    if ($normalized.Length -gt 0 -and -not $normalized.EndsWith("`n")) {
+        $normalized += "`n"
+    }
+    [System.IO.File]::WriteAllText($Path, $normalized, $utf8NoBom)
+}
 
 function Get-NormalizedPath {
     param([string]$Path)
@@ -117,45 +134,49 @@ function Add-Result {
     Write-Host "$Name $Status $Note"
 }
 
+function Add-UnavailableResult {
+    param(
+        [string]$Name,
+        [string]$Note,
+        [bool]$Required
+    )
+    if ($Required) {
+        Add-Result $Name "FAIL" $Note
+    } else {
+        Add-Result $Name "SKIP" $Note
+    }
+}
+
 function Invoke-Case {
     param(
         [string]$Name,
         [string]$Want,
-        [scriptblock]$Body
+        [scriptblock]$Body,
+        [string]$OutputPath = ""
     )
     $log = Join-Path $WorkDir "$Name.log"
     try {
         $previousErrorActionPreference = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         try {
+            $global:LASTEXITCODE = 0
             $output = & $Body 2>&1 | Out-String
+            $exitCode = if ($LASTEXITCODE -is [int]) { $LASTEXITCODE } else { 0 }
         } finally {
             $ErrorActionPreference = $previousErrorActionPreference
         }
-        $output | Set-Content -LiteralPath $log -Encoding UTF8
-        if ($output.Contains($Want)) {
+        Write-Utf8Text -Path $log -Text $output
+        if ($OutputPath) {
+            Write-Utf8Text -Path $OutputPath -Text $output
+        }
+        if ($exitCode -eq 0 -and $output.Contains($Want)) {
             Add-Result $Name "PASS" "found $Want" $log
         } else {
-            Add-Result $Name "FAIL" "want $Want" $log
+            Add-Result $Name "FAIL" "rc=$exitCode; want $Want" $log
         }
     } catch {
-        $_ | Out-String | Set-Content -LiteralPath $log -Encoding UTF8
+        Write-Utf8Text -Path $log -Text ($_ | Out-String)
         Add-Result $Name "FAIL" $_.Exception.Message $log
-    }
-}
-
-function Test-CompletionOutput {
-    param(
-        [string]$Name,
-        [string]$Want,
-        [object[]]$Output
-    )
-    $log = Join-Path $WorkDir "$Name.log"
-    ($Output | Out-String) | Set-Content -LiteralPath $log -Encoding UTF8
-    if (($Output -join "`n").Contains($Want)) {
-        Add-Result $Name "PASS" "found $Want" $log
-    } else {
-        Add-Result $Name "FAIL" "want $Want" $log
     }
 }
 
@@ -163,45 +184,62 @@ try {
 New-OwnedWorkDir $WorkDir
 $DmBin = (Resolve-Path -LiteralPath $DmBin -ErrorAction Stop).Path
 if (-not (Test-Path -LiteralPath $DmBin -PathType Leaf)) { throw "dm binary is not a file: $DmBin" }
+$powerShellCompletion = Join-Path $WorkDir "dm-completion.ps1"
+$dmCommand = Join-Path $WorkDir "dm.exe"
+Copy-Item -LiteralPath $DmBin -Destination $dmCommand
 
 try {
-    Invoke-Case "generate-powershell" "Register-ArgumentCompleter" { & $DmBin completion powershell }
+    Invoke-Case "generate-powershell" "Register-ArgumentCompleter" { & $DmBin completion powershell } -OutputPath $powerShellCompletion
     Invoke-Case "generate-bash" "__start_dm" { & $DmBin completion bash }
     Invoke-Case "generate-zsh" "_dm" { & $DmBin completion zsh }
     Invoke-Case "generate-fish" "complete -c dm" { & $DmBin completion fish }
 
     $oldPath = $env:PATH
-    $env:PATH = (Split-Path $DmBin) + [IO.Path]::PathSeparator + $oldPath
+    $env:PATH = $WorkDir + [IO.Path]::PathSeparator + $oldPath
     try {
         Invoke-Case "powershell-command-complete" "report" { & $DmBin __completeNoDesc re }
+        Invoke-Case "powershell-script-load" "report" {
+            . $powerShellCompletion
+            (TabExpansion2 -inputScript "dm re" -cursorColumn 5).CompletionMatches |
+                ForEach-Object { $_.CompletionText }
+        }
 
         $docker = Get-Command docker -ErrorAction SilentlyContinue
-        if ($NoDocker -or -not $docker) {
-            Add-Result "docker-resource-complete" "SKIP" "Docker unavailable or skipped"
+        if ($NoDocker) {
+            Add-Result "docker-resource-complete" "SKIP" "Docker checks explicitly skipped"
+        } elseif (-not $docker) {
+            Add-UnavailableResult "docker-resource-complete" "docker command not found" $RequireDocker
         } else {
             $dockerInfo = & docker info 2>$null
             if ($LASTEXITCODE -ne 0) {
-                Add-Result "docker-resource-complete" "SKIP" "Docker daemon unavailable"
+                Add-UnavailableResult "docker-resource-complete" "Docker daemon unavailable" $RequireDocker
             } else {
                 $suffix = "$(Get-Date -Format 'yyyyMMddHHmmss')_${PID}_$([guid]::NewGuid().ToString('N').Substring(0, 8))"
                 $containerName = "dm_completion_api_$suffix"
                 $volumeName = "dm_completion_vol_$suffix"
                 $imageRef = (& docker images --format "{{.Repository}}:{{.Tag}}" | Where-Object { $_ -and $_ -notmatch "<none>" } | Select-Object -First 1)
-                if (-not $imageRef) {
-                    Add-Result "docker-resource-complete" "SKIP" "No local tagged images; no external pull attempted"
+                & docker volume create --label "dm.completion=$suffix" $volumeName | Out-Null
+                if ($LASTEXITCODE -eq 0) {
+                    $volumeToRemove = $volumeName
+                    $Cleanup.Add(({ & docker volume rm $volumeToRemove | Out-Null }.GetNewClosure()))
+                    Invoke-Case "powershell-volume-filter-complete" $volumeName { & $DmBin __completeNoDesc volumes --filter "" }
                 } else {
-                    & docker volume create --label "dm.completion=$suffix" $volumeName | Out-Null
-                    $Cleanup.Add({ & docker volume rm $volumeName | Out-Null })
-                    & docker run -d --name $containerName --label "dm.completion=$suffix" $imageRef sh -c "sleep 3600" | Out-Null
-                    if ($LASTEXITCODE -eq 0) {
-                        $Cleanup.Add({ & docker rm -f $containerName | Out-Null })
-                        Invoke-Case "powershell-container-complete" $containerName { & $DmBin __completeNoDesc backup dm_completion }
-                    } else {
-                        Add-Result "powershell-container-complete" "SKIP" "Could not start test container from $imageRef"
-                    }
+                    Add-UnavailableResult "powershell-volume-filter-complete" "Could not create test volume" $RequireDocker
+                }
+
+                if (-not $imageRef) {
+                    Add-UnavailableResult "docker-image-resource-complete" "No local tagged images; no external pull attempted" $RequireDocker
+                } else {
                     $prefix = $imageRef.Substring(0, [Math]::Min(4, $imageRef.Length))
                     Invoke-Case "powershell-image-filter-complete" $imageRef { & $DmBin __completeNoDesc save --filter $prefix }
-                    Invoke-Case "powershell-volume-filter-complete" $volumeName { & $DmBin __completeNoDesc volumes --filter "" }
+                    $containerToRemove = $containerName
+                    $Cleanup.Add(({ & docker rm -f $containerToRemove | Out-Null }.GetNewClosure()))
+                    & docker run -d --name $containerName --label "dm.completion=$suffix" $imageRef sh -c "sleep 3600" | Out-Null
+                    if ($LASTEXITCODE -eq 0) {
+                        Invoke-Case "powershell-container-complete" $containerName { & $DmBin __completeNoDesc backup dm_completion }
+                    } else {
+                        Add-UnavailableResult "powershell-container-complete" "Could not start test container from $imageRef" $RequireDocker
+                    }
                 }
             }
         }
@@ -215,11 +253,11 @@ try {
 }
 
 $resultsPath = Join-Path $WorkDir "results.tsv"
-$Results | ForEach-Object { "$($_.Case)`t$($_.Status)`t$($_.Note)`t$($_.Log)" } |
-    Set-Content -LiteralPath $resultsPath -Encoding UTF8
+$resultLines = @($Results | ForEach-Object { "$($_.Case)`t$($_.Status)`t$($_.Note)`t$($_.Log)" })
+Write-Utf8Text -Path $resultsPath -Text ($resultLines -join "`n")
 
 $report = Join-Path $WorkDir "completion-test-report.md"
-@(
+$reportLines = @(
     "# dm completion test",
     "",
     "- Time: $(Get-Date -Format o)",
@@ -236,11 +274,12 @@ $report = Join-Path $WorkDir "completion-test-report.md"
     "",
     "| Case | Status | Note | Log |",
     "| --- | --- | --- | --- |"
-) + ($Results | ForEach-Object {
+) + @($Results | ForEach-Object {
     "| $($_.Case) | $($_.Status) | $($_.Note) | $([IO.Path]::GetFileName($_.Log)) |"
-}) | Set-Content -LiteralPath $report -Encoding UTF8
+})
+Write-Utf8Text -Path $report -Text ($reportLines -join "`n")
 
-Get-Content -LiteralPath $report
+Write-Host ([System.IO.File]::ReadAllText($report, $utf8NoBom))
 
 if ($Fail -gt 0) {
     exit 1

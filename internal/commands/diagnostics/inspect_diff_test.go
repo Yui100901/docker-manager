@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/moby/moby/api/types/container"
-	"github.com/moby/moby/api/types/strslice"
 )
 
 type fakeInspectDiffDockerService struct {
@@ -64,8 +63,8 @@ func TestBuildInspectDiffReportCanRedactSecrets(t *testing.T) {
 
 func TestBuildInspectDiffReportRedactsSensitiveStringsOutsideEnvAndLabels(t *testing.T) {
 	left := inspectDiffFixture("busybox:1", []string{"MODE=left"}, nil)
-	left.Config.Cmd = strslice.StrSlice{"sh", "-c", "echo password=cmd-alpha"}
-	left.Config.Entrypoint = strslice.StrSlice{"/bin/app", "--token=entry-alpha"}
+	left.Config.Cmd = []string{"sh", "-c", "echo password=cmd-alpha"}
+	left.Config.Entrypoint = []string{"/bin/app", "--token=entry-alpha"}
 	left.Config.Healthcheck = &container.HealthConfig{
 		Test: []string{"CMD-SHELL", "curl -H 'Authorization: Bearer health-alpha' http://localhost/health"},
 	}
@@ -84,8 +83,8 @@ func TestBuildInspectDiffReportRedactsSensitiveStringsOutsideEnvAndLabels(t *tes
 	}
 
 	right := inspectDiffFixture("busybox:1", []string{"MODE=right"}, nil)
-	right.Config.Cmd = strslice.StrSlice{"sh", "-c", "echo password=cmd-beta"}
-	right.Config.Entrypoint = strslice.StrSlice{"/bin/app", "--token=entry-beta"}
+	right.Config.Cmd = []string{"sh", "-c", "echo password=cmd-beta"}
+	right.Config.Entrypoint = []string{"/bin/app", "--token=entry-beta"}
 	right.Config.Healthcheck = &container.HealthConfig{
 		Test: []string{"CMD-SHELL", "curl -H 'Authorization: Bearer health-beta' http://localhost/health"},
 	}

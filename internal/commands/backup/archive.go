@@ -124,14 +124,6 @@ func createBackupArchiveWithOptions(ctx context.Context, sourceDir, archivePath 
 	return nil
 }
 
-func resolveRestoreBackupDir(path string) (string, func(), error) {
-	return resolveRestoreBackupDirWithContext(context.Background(), path)
-}
-
-func resolveRestoreBackupDirWithContext(ctx context.Context, path string) (string, func(), error) {
-	return resolveRestoreBackupDirWithOptions(ctx, path, RestoreOptions{})
-}
-
 func resolveRestoreBackupDirWithOptions(ctx context.Context, path string, opts RestoreOptions) (string, func(), error) {
 	ctx, cancelOperation := context.WithTimeout(backupContext(ctx), maxBackupArchiveOperationTime)
 	defer cancelOperation()
@@ -283,7 +275,7 @@ func extractBackupArchiveWithLimits(ctx context.Context, archivePath, destDir st
 			if err := os.MkdirAll(target, 0700); err != nil {
 				return err
 			}
-		case tar.TypeReg, tar.TypeRegA:
+		case tar.TypeReg:
 			if err := tarBudget.Add(header.Name, header.Size, true); err != nil {
 				return err
 			}

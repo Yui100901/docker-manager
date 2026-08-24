@@ -303,15 +303,6 @@ func fileHasZstdHeader(path string) (bool, error) {
 	return n == 4 && header == [4]byte{0x28, 0xb5, 0x2f, 0xfd}, nil
 }
 
-func decompressGzipFile(srcPath, dstPath string) error {
-	return decompressGzipFileWithLimit(context.Background(), srcPath, dstPath, maxLayerTarBytes)
-}
-
-func decompressGzipFileWithLimit(ctx context.Context, srcPath, dstPath string, expandedLimit int64) error {
-	_, err := decompressGzipFileWithBudget(ctx, srcPath, dstPath, expandedLimit, nil)
-	return err
-}
-
 func decompressGzipFileWithBudget(ctx context.Context, srcPath, dstPath string, expandedLimit int64, budget *pullResourceBudget) (int64, error) {
 	src, err := os.Open(srcPath)
 	if err != nil {
@@ -333,15 +324,6 @@ func decompressGzipFileWithBudget(ctx context.Context, srcPath, dstPath string, 
 	}()
 
 	return writeExpandedLayerWithBudget(ctx, dstPath, gzr, expandedLimit, budget)
-}
-
-func decompressZstdFile(srcPath, dstPath string) error {
-	return decompressZstdFileWithLimit(context.Background(), srcPath, dstPath, maxLayerTarBytes)
-}
-
-func decompressZstdFileWithLimit(ctx context.Context, srcPath, dstPath string, expandedLimit int64) error {
-	_, err := decompressZstdFileWithBudget(ctx, srcPath, dstPath, expandedLimit, nil)
-	return err
 }
 
 func decompressZstdFileWithBudget(ctx context.Context, srcPath, dstPath string, expandedLimit int64, budget *pullResourceBudget) (int64, error) {
@@ -378,11 +360,6 @@ func zstdDecoderMemoryLimit(expandedLimit int64) uint64 {
 		return maxZstdDecoderMemory
 	}
 	return limit
-}
-
-func writeExpandedLayerWithLimit(ctx context.Context, dstPath string, src io.Reader, expandedLimit int64) (resultErr error) {
-	_, err := writeExpandedLayerWithBudget(ctx, dstPath, src, expandedLimit, nil)
-	return err
 }
 
 func writeExpandedLayerWithBudget(ctx context.Context, dstPath string, src io.Reader, expandedLimit int64, budget *pullResourceBudget) (written int64, resultErr error) {
@@ -514,14 +491,6 @@ func (r *PullRunner) saveRegistryFileOnce(ctx context.Context, rawURL string, he
 	}
 	err = r.httpSaveToFileWithStatusLimit(ctx, rawURL, authHeaders(headers, nextAuth), query, outputPath, opts.ProgressOutput, maxBytes)
 	return nextAuth, err
-}
-
-func (r *PullRunner) httpSaveToFile(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, outputPath string) error {
-	return r.httpSaveToFileWithStatus(ctx, rawURL, headers, query, outputPath, io.Discard)
-}
-
-func (r *PullRunner) httpSaveToFileWithStatus(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, outputPath string, progressOutput io.Writer) error {
-	return r.httpSaveToFileWithStatusLimit(ctx, rawURL, headers, query, outputPath, progressOutput, 0)
 }
 
 func (r *PullRunner) httpSaveToFileWithStatusLimit(ctx context.Context, rawURL string, headers map[string]string, query map[string]string, outputPath string, progressOutput io.Writer, maxBytes int64) error {

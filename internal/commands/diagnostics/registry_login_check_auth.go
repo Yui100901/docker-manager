@@ -28,14 +28,6 @@ func resolveRegistryCredentialWithOptions(ctx context.Context, cfg dockerConfigF
 	})
 }
 
-func findCredentialHelper(cfg dockerConfigFile, keys []string) (string, string) {
-	return registryauth.FindCredentialHelper(cfg, keys)
-}
-
-func registryConfigKeys(registryName string) []string {
-	return registryauth.ConfigKeys(registryName)
-}
-
 func credentialFromAuthEntry(entry dockerAuthEntry) registryCredential {
 	return registryauth.CredentialFromAuthEntry(entry)
 }

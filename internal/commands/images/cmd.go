@@ -68,10 +68,6 @@ func NewLoadCommand() *cobra.Command {
 	return cmd
 }
 
-func newSaveCommand() *cobra.Command {
-	return NewSaveCommandWithDefaults(func() string { return "" })
-}
-
 func NewSaveCommandWithDefaults(defaultOutputDir func() string) *cobra.Command {
 	var merge bool
 	var all bool

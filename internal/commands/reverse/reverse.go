@@ -134,28 +134,6 @@ func completeReverseTypes(cmd *cobra.Command, args []string, toComplete string) 
 	return suggestions, cobra.ShellCompDirectiveNoFileComp
 }
 
-func listRunningContainerNames() ([]string, error) {
-	return listRunningContainerNamesContext(context.Background())
-}
-
-func listRunningContainerNamesContext(ctx context.Context) ([]string, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if err := ensureContainerManager(); err != nil {
-		return nil, err
-	}
-	containers, err := containerManager.ListAllContext(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return runningContainerNames(containers), nil
-}
-
-func resolveReverseContainerTargets(filters []string, runningOnly bool) ([]string, error) {
-	return resolveReverseContainerTargetsContext(context.Background(), filters, runningOnly)
-}
-
 func resolveReverseContainerTargetsContext(ctx context.Context, filters []string, runningOnly bool) ([]string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -196,55 +174,6 @@ func reverseContainerNames(containers []container.Summary) []string {
 	return targets.ContainerNames(containers)
 }
 
-func expandContainerNamePatterns(args []string) ([]string, error) {
-	return expandContainerNamePatternsContext(context.Background(), args)
-}
-
-func expandContainerNamePatternsContext(ctx context.Context, args []string) ([]string, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	hasWildcard := false
-	for _, arg := range args {
-		if strings.ContainsAny(arg, "*?") {
-			hasWildcard = true
-			break
-		}
-	}
-	if !hasWildcard {
-		return args, nil
-	}
-	if err := ensureContainerManager(); err != nil {
-		return nil, err
-	}
-	containers, err := containerManager.ListAllContext(ctx)
-	if err != nil {
-		return nil, err
-	}
-	seen := map[string]bool{}
-	var expanded []string
-	for _, arg := range args {
-		if !strings.ContainsAny(arg, "*?") {
-			if !seen[arg] {
-				seen[arg] = true
-				expanded = append(expanded, arg)
-			}
-			continue
-		}
-		matches := matchingContainerNames(containers, arg)
-		if len(matches) == 0 {
-			return nil, fmt.Errorf("容器通配符 %q 未匹配任何容器", arg)
-		}
-		for _, name := range matches {
-			if !seen[name] {
-				seen[name] = true
-				expanded = append(expanded, name)
-			}
-		}
-	}
-	return expanded, nil
-}
-
 func filterReverseContainers(containers []container.Summary, filters []string) []container.Summary {
 	return targets.FilterContainers(containers, filters)
 }
@@ -266,10 +195,6 @@ func matchingContainerNames(containers []container.Summary, pattern string) []st
 
 func reverseContainerMatchesPattern(c container.Summary, pattern string) bool {
 	return reverseContainerMatchesFilter(c, pattern)
-}
-
-func reverseContainerMatchesAnyFilter(c container.Summary, filters []string) bool {
-	return targets.ContainerMatchesFilters(c, filters)
 }
 
 func reverseContainerMatchesFilter(c container.Summary, filter string) bool {

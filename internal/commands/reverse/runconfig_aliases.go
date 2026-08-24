@@ -6,6 +6,8 @@ import (
 	"github.com/moby/moby/api/types/container"
 )
 
+// These aliases keep reverse focused on orchestration and output persistence;
+// parsing and formatting are owned and tested by internal/runconfig.
 type ReverseType = runconfig.ReverseType
 
 const (

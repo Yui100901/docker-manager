@@ -7,6 +7,11 @@ on:
 permissions:
   contents: read
 
+env:
+  STATICCHECK_VERSION: v0.7.0
+  GOVULNCHECK_VERSION: v1.7.0
+  GOSEC_VERSION: v2.28.0
+
 jobs:
   test:
     name: Test (${{ matrix.os }})
@@ -22,15 +27,40 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: go mod verify
-      - run: go test -count=1 ./...
+      - name: Unit tests with coverage
+        if: runner.os == 'Linux'
+        run: go test -count=1 -covermode=atomic -coverprofile=coverage.out ./...
+      - name: Coverage gate
+        if: runner.os == 'Linux'
+        run: |
+          go run ./scripts/coverage-check \
+            -profile coverage.out \
+            -total 70 \
+            -package internal/appconfig=85 \
+            -package internal/dockerconfig=90 \
+            -package internal/registryauth=85 \
+            -package internal/runconfig=90 \
+            -package internal/targets=95 \
+            -package internal/docker=65 \
+            -package internal/completion=85
+      - name: Upload coverage profile
+        if: always() && runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-profile
+          path: coverage.out
+          if-no-files-found: warn
+      - name: Unit tests
+        if: runner.os == 'Windows'
+        run: go test -count=1 ./...
       - run: go vet ./...
       - name: PowerShell checks
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./scripts/check.ps1 -NoShellCheck
+        run: ./scripts/check.ps1 -NoGoChecks -NoShellCheck
       - name: Shell syntax and ShellCheck
         if: runner.os == 'Linux'
-        run: bash scripts/check.sh
+        run: bash scripts/check.sh --no-go-checks
 
   security-static:
     name: Race and security/static analysis
@@ -45,26 +75,15 @@ jobs:
         run: CGO_ENABLED=1 go test -race -count=1 ./...
       - name: Install analysis tools
         run: |
-          go install honnef.co/go/tools/cmd/staticcheck@latest
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          go install github.com/securego/gosec/v2/cmd/gosec@latest
-      - name: staticcheck debt triage (non-blocking)
-        id: staticcheck
-        continue-on-error: true
+          go install honnef.co/go/tools/cmd/staticcheck@${STATICCHECK_VERSION}
+          go install golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}
+          go install github.com/securego/gosec/v2/cmd/gosec@${GOSEC_VERSION}
+      - name: Staticcheck gate
         run: |
           set -o pipefail
           staticcheck ./... 2>&1 | tee staticcheck-report.txt
-      - name: Record staticcheck debt
-        if: steps.staticcheck.outcome == 'failure'
-        run: |
-          echo "::warning title=staticcheck debt::staticcheck reported existing P2 debt; see the staticcheck-report artifact."
-          {
-            echo "### staticcheck triage"
-            echo
-            echo "staticcheck failed and remains a visible, non-blocking P2 debt item."
-            echo "The full output is attached as the staticcheck-report artifact."
-          } >> "$GITHUB_STEP_SUMMARY"
       - name: Vulnerability gate
+        if: always()
         run: govulncheck ./...
       - name: Upload staticcheck triage report
         if: always()
@@ -74,11 +93,70 @@ jobs:
           path: staticcheck-report.txt
           if-no-files-found: error
       - name: gosec triage report
+        if: always()
         run: gosec -no-fail -fmt text ./... | tee gosec-report.txt
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: gosec-report
           path: gosec-report.txt
+
+  completion:
+    name: Completion (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install Linux shell dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends bash-completion zsh fish
+      - name: Linux completion deep test
+        if: runner.os == 'Linux'
+        run: |
+          go build -o "$RUNNER_TEMP/dm" .
+          bash scripts/completion-test.sh \
+            --dm-bin "$RUNNER_TEMP/dm" \
+            --work-dir "$RUNNER_TEMP/dm-completion-linux" \
+            --no-docker \
+            --require-shells
+      - name: Build Windows completion binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: go build -o (Join-Path $env:RUNNER_TEMP "dm.exe") .
+      - name: PowerShell 7 completion deep test
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./scripts/completion-test.ps1 `
+            -DmBin (Join-Path $env:RUNNER_TEMP "dm.exe") `
+            -WorkDir (Join-Path $env:RUNNER_TEMP "dm-completion-pwsh") `
+            -NoDocker `
+            -KeepWorkDir
+      - name: Windows PowerShell 5.1 completion deep test
+        if: runner.os == 'Windows' && always()
+        shell: powershell
+        run: |
+          ./scripts/completion-test.ps1 `
+            -DmBin (Join-Path $env:RUNNER_TEMP "dm.exe") `
+            -WorkDir (Join-Path $env:RUNNER_TEMP "dm-completion-ps51") `
+            -NoDocker `
+            -KeepWorkDir
+      - name: Upload completion reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: completion-${{ matrix.os }}
+          path: ${{ runner.temp }}/dm-completion-*
+          if-no-files-found: error
 
   install-smoke:
     name: Install smoke (${{ matrix.os }})

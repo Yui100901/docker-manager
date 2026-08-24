@@ -1,9 +1,13 @@
 param(
     [switch]$Race,
-    [switch]$NoShellCheck
+    [switch]$NoShellCheck,
+    [switch]$NoGoChecks
 )
 
 $ErrorActionPreference = "Stop"
+if ($NoGoChecks -and $Race) {
+    throw "-Race and -NoGoChecks cannot be used together."
+}
 $oldOutputEncoding = $OutputEncoding
 $oldConsoleOutputEncoding = [Console]::OutputEncoding
 $hadOutFileEncoding = $PSDefaultParameterValues.ContainsKey("Out-File:Encoding")
@@ -40,25 +44,32 @@ try {
         exit 1
     }
 
-    Write-Host "==> go test ./..."
-    Invoke-Native { go test ./... }
+    Write-Host "==> repository text encoding"
+    Invoke-Native { go run ./scripts/text-check.go }
 
-    Write-Host "==> go vet ./..."
-    Invoke-Native { go vet ./... }
+    if (-not $NoGoChecks) {
+        Write-Host "==> go test ./..."
+        Invoke-Native { go test ./... }
 
-    if ($Race) {
-        Write-Host "==> go test -race ./..."
-        $oldCGO = $env:CGO_ENABLED
-        try {
-            $env:CGO_ENABLED = "1"
-            Invoke-Native { go test -race ./... }
-        } finally {
-            $env:CGO_ENABLED = $oldCGO
+        Write-Host "==> go vet ./..."
+        Invoke-Native { go vet ./... }
+
+        if ($Race) {
+            Write-Host "==> go test -race ./..."
+            $oldCGO = $env:CGO_ENABLED
+            try {
+                $env:CGO_ENABLED = "1"
+                Invoke-Native { go test -race ./... }
+            } finally {
+                $env:CGO_ENABLED = $oldCGO
+            }
         }
+    } else {
+        Write-Host "==> go test, go vet and race explicitly skipped (-NoGoChecks)"
     }
 
-    Write-Host "==> git diff --check"
-    Invoke-Native { git diff --check }
+    Write-Host "==> git diff HEAD --check"
+    Invoke-Native { git diff HEAD --check }
 
     Write-Host "==> PowerShell parse"
     Get-ChildItem -Path scripts -Filter *.ps1 | ForEach-Object {

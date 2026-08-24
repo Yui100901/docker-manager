@@ -135,7 +135,7 @@ func TestDockerVolumeServiceMeasuresThroughBindMountAndCleansProbe(t *testing.T)
 	}))
 	defer server.Close()
 
-	cli, err := mobyclient.NewClientWithOpts(mobyclient.WithHost(server.URL), mobyclient.WithAPIVersion("1.49"))
+	cli, err := mobyclient.New(mobyclient.WithHost(server.URL), mobyclient.WithAPIVersion("1.49"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestRemoveVolumeProbeContainerAcceptsResponseErrorWhenInspectConfirmsRemova
 	}))
 	defer server.Close()
 
-	cli, err := mobyclient.NewClientWithOpts(mobyclient.WithHost(server.URL), mobyclient.WithAPIVersion("1.49"))
+	cli, err := mobyclient.New(mobyclient.WithHost(server.URL), mobyclient.WithAPIVersion("1.49"))
 	if err != nil {
 		t.Fatal(err)
 	}
