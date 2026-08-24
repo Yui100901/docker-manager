@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/moby/moby/api/types/network"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 )
 
 func (rr *ReverseResult) DockerComposeFileString() string {

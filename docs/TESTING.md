@@ -303,6 +303,9 @@ OIDC/Keycloak 如受网络影响，可先做降级验收: 大镜像能进入 man
 
 ## 已完成验收记录
 
+- 2026-08-24 Go 1.27 迁移：Go 1.27.0 下全包 test/race/vet/build、staticcheck v0.8.1、ShellCheck v0.11.0、actionlint、文本门禁和覆盖率门禁通过；全仓覆盖率为 73.41%（9916/13508），关键包均高于 CI 阈值。
+- 依赖迁移后 govulncheck v1.7.0 扫描 Go 1.27 标准库和 32 个模块，输出 `No vulnerabilities found.`；gosec v2.28.0 仍为既有 52 条分诊项，规则分布未变化。
+- Go 1.27 发布打包生成并验证 linux/amd64、linux/arm64、windows/amd64、darwin/amd64、darwin/arm64 五个平台归档、checksum 和 manifest；`192.168.31.40` 的 Docker 28.1.1 / API 1.49 完成 smoke、doctor、health 和 prune 只读预览，容器、volume、镜像计数前后相同，测试目录已清理。
 - 本地静态检查: `go test ./...`、`go vet ./...`、`go test -race ./...`、`scripts/check.ps1 -Race`、`git diff --check` 已通过。
 - Windows 本地 smoke: 覆盖帮助、版本、completion、配置加载、安装卸载和 Docker 不可用错误路径。
 - 发布打包: Windows PowerShell 打包脚本可生成 linux/amd64、linux/arm64、windows/amd64、darwin/amd64、darwin/arm64 归档、checksum、manifest 和 summary。

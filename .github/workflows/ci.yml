@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 env:
-  STATICCHECK_VERSION: v0.7.0
+  STATICCHECK_VERSION: v0.8.1
   GOVULNCHECK_VERSION: v1.7.0
   GOSEC_VERSION: v2.28.0
 
@@ -21,11 +21,12 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: go.sum
       - run: go mod verify
       - name: Unit tests with coverage
         if: runner.os == 'Linux'
@@ -45,7 +46,7 @@ jobs:
             -package internal/completion=85
       - name: Upload coverage profile
         if: always() && runner.os == 'Linux'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-profile
           path: coverage.out
@@ -66,11 +67,12 @@ jobs:
     name: Race and security/static analysis
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: go.sum
       - name: Race detector
         run: CGO_ENABLED=1 go test -race -count=1 ./...
       - name: Install analysis tools
@@ -87,7 +89,7 @@ jobs:
         run: govulncheck ./...
       - name: Upload staticcheck triage report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: staticcheck-report
           path: staticcheck-report.txt
@@ -95,7 +97,7 @@ jobs:
       - name: gosec triage report
         if: always()
         run: gosec -no-fail -fmt text ./... | tee gosec-report.txt
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: gosec-report
@@ -109,11 +111,12 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: go.sum
       - name: Install Linux shell dependencies
         if: runner.os == 'Linux'
         run: |
@@ -152,7 +155,7 @@ jobs:
             -KeepWorkDir
       - name: Upload completion reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: completion-${{ matrix.os }}
           path: ${{ runner.temp }}/dm-completion-*
@@ -166,11 +169,12 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: go.sum
       - name: Linux install smoke
         if: runner.os == 'Linux'
         run: bash scripts/e2e.sh --mode install
@@ -224,11 +228,12 @@ jobs:
     env:
       DOCKER_HOST: tcp://127.0.0.1:2375
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: go.sum
       - name: Docker daemon identity
         run: docker version
       - name: Full destructive E2E

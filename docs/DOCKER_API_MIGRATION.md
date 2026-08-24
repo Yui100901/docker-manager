@@ -1,5 +1,12 @@
 # Docker API 依赖迁移清单
 
+## Status update 2026-08-24
+
+- The project build baseline is Go 1.27.0.
+- `github.com/moby/moby/client` is now v0.5.1; `github.com/moby/moby/api` remains at the latest v1.55.0.
+- Direct TLS configuration usage keeps `github.com/docker/go-connections` at v0.8.1; `github.com/docker/go-units` remains transitive.
+- The upgraded SDK and dependency graph pass the Go 1.27 migration gates run on 2026-08-24: unit, race, vet, build, static analysis, packaging, manifest/digest, and remote Docker 28.1.1 read-only smoke checks. The external Docker daemon and TLS matrix in `docs/TESTING.md` remains a release-time check.
+
 ## Status update 2026-07-07
 
 - Direct `github.com/docker/docker` usage has been removed from Go source, `go.mod`, and `go.sum`.
@@ -17,17 +24,17 @@
 
 本文档记录从旧 Docker Go SDK 迁移到新 Moby 拆分模块时的影响面和执行清单。目标是先明确会导致哪些代码调整，再按阶段实施迁移。
 
-## 背景
+## 背景（迁移前快照）
 
-当前项目使用:
+迁移启动时项目使用:
 
 ```go
 github.com/docker/docker v28.3.3+incompatible
 ```
 
-当前 SDK 内置 Docker Engine API 默认版本为 `1.51`，项目创建 Docker client 时启用了 API version negotiation，因此默认会与目标 Docker daemon 自动协商版本。
+该旧 SDK 内置 Docker Engine API 默认版本为 `1.51`，项目创建 Docker client 时启用了 API version negotiation，因此默认会与目标 Docker daemon 自动协商版本。
 
-后续建议迁移到:
+最初计划迁移到:
 
 ```go
 github.com/moby/moby/client v0.5.0
@@ -36,11 +43,11 @@ github.com/moby/moby/api v1.55.0
 
 `github.com/moby/moby/client` 是新拆分出的 Docker/Moby client 模块，配套 API types 来自 `github.com/moby/moby/api`。这不是简单的 patch 升级，而是一次 Docker SDK 依赖体系迁移。
 
-过渡阶段说明: 当前 `main` 仍需要旧 `github.com/docker/docker` SDK 参与编译，`github.com/moby/moby/client v0.5.0` 会拉高 `github.com/docker/go-connections` 到 `v0.7.0`，导致旧 SDK 编译失败。因此第一阶段先固定 `github.com/moby/moby/client v0.4.0` 与旧 SDK 共存；待业务命令完全迁移并移除旧 SDK 后，再升级到 `v0.5.0`。
+历史过渡阶段说明: 当时的 `main` 仍需要旧 `github.com/docker/docker` SDK 参与编译，`github.com/moby/moby/client v0.5.0` 会拉高 `github.com/docker/go-connections` 到 `v0.7.0`，导致旧 SDK 编译失败。因此第一阶段先固定 `github.com/moby/moby/client v0.4.0` 与旧 SDK 共存；业务命令完成迁移并移除旧 SDK 后，项目已继续升级到当前的 `v0.5.1`。
 
-## 当前扫描结果
+## 迁移前扫描结果
 
-当前工程中直接引用 `github.com/docker/docker` 的范围:
+迁移启动时工程中直接引用 `github.com/docker/docker` 的范围:
 
 | 范围 | 数量 |
 | --- | ---: |

@@ -11,6 +11,7 @@
 
 ## 2. 本地检查
 
+- [ ] `go version` 为 Go 1.27.0 或当前更高的受支持补丁版本。
 - [ ] `gofmt` 无待格式化文件。
 - [ ] 仓库文本通过 `scripts/text-check.go`：UTF-8 无 BOM、LF、末尾换行且无 `U+FFFD`。
 - [ ] `go test ./...` 通过。
@@ -40,6 +41,7 @@ Windows:
 - [ ] `dist/<version>-<commit>/checksums.txt`、`release-manifest.json`、`release-summary.md` 已生成并通过结构化 manifest/digest 校验。
 - [ ] 每个发布归档包含二进制、`README.md`、`CHANGELOG.md`、`docs/TESTING.md`、`docs/RELEASE_CHECKLIST.md`、`docs/DOCKER_API_MIGRATION.md`、`LICENSE`、`dm.yaml.example`、`INSTALL.md` 和目标平台对应的安装/卸载脚本。
 - [ ] Windows 包只包含 PowerShell 安装/卸载脚本；Linux/macOS 包只包含 shell 安装/卸载脚本。
+- [ ] Darwin 发布说明标明 Go 1.27 构建产物最低支持 macOS 13。
 
 ## 4. 安装和卸载
 

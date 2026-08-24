@@ -14,7 +14,7 @@ import (
 
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/api/types/volume"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 )
 
 const inspectBackupRoot = "docker-inspect-backups"

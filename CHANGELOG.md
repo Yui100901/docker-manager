@@ -2,6 +2,17 @@
 
 本文档记录 `docker-manager` 已发布版本的功能、修复、结构调整、已完成优化和已知非阻断项。临时优化清单已归档到本文档，后续不再维护 `OPTIMIZATION_AND_EXTENSIONS.md`。
 
+## Unreleased
+
+### 维护与依赖
+
+- 将项目构建基线升级到 Go 1.27.0。
+- 将 Moby client 更新到 v0.5.1、Docker connections 更新到 v0.8.1、compress 更新到 v1.19.2。
+- 将项目 YAML v3 import 从停止维护的 `gopkg.in/yaml.v3` 迁移到 `go.yaml.in/yaml/v3` v3.0.5。
+- 将 OpenTelemetry HTTP instrumentation 更新到 v0.70.0，OpenTelemetry 核心模块更新到 v1.45.0，并同步更新实际构建链中的传递依赖。
+- 将 staticcheck 更新到支持 Go 1.27 的 v0.8.1。
+- 将 GitHub Actions checkout、setup-go 和 upload-artifact 更新到 v7。
+
 ## v2.2 - 2026-07-09
 
 GitHub Release:
