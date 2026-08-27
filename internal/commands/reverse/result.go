@@ -10,6 +10,7 @@ import (
 
 	"docker-manager/internal/docker"
 	"docker-manager/internal/parallel"
+	"docker-manager/internal/runcontrol"
 	"docker-manager/internal/sensitive"
 
 	"github.com/moby/moby/api/types/network"
@@ -292,6 +293,9 @@ func writePrivateOutput(path string, data []byte) error {
 
 func reverseWithOptions(ctx context.Context, names []string, options ReverseOptions) (*ReverseResult, error) {
 	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := runcontrol.CheckItems(ctx, "container", len(names)); err != nil {
 		return nil, err
 	}
 	if err := ensureContainerManager(); err != nil {

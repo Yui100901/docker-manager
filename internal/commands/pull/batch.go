@@ -15,8 +15,10 @@ import (
 	"time"
 
 	"docker-manager/internal/appconfig"
+	"docker-manager/internal/audit"
 	"docker-manager/internal/commandflags"
 	"docker-manager/internal/parallel"
+	"docker-manager/internal/runcontrol"
 
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -106,6 +108,11 @@ func runPullBatchWithDeps(ctx context.Context, opts PullBatchOptions, pull pullB
 	if len(images) == 0 {
 		return PullBatchReport{}, fmt.Errorf("pull 需要至少一个镜像，可通过位置参数或 --file 指定")
 	}
+	// Reserve the complete de-duplicated batch before starting any network or
+	// Docker work. This makes --max-items fail closed and avoids partial pulls.
+	if err := runcontrol.CheckItems(ctx, "image", len(images)); err != nil {
+		return PullBatchReport{}, err
+	}
 	if opts.To != "" && len(images) > 1 && isTaggedImageRef(opts.To) {
 		return PullBatchReport{}, fmt.Errorf("--to 使用完整镜像名时只能同步单个镜像；批量同步请使用 registry 或 namespace 前缀")
 	}
@@ -129,6 +136,9 @@ func runPullBatchWithDeps(ctx context.Context, opts PullBatchOptions, pull pullB
 	}
 	if opts.StateFile == "" {
 		opts.StateFile = filepath.Join(opts.OutputDir, "pull-state.json")
+	}
+	if err := authorizePullBatchFiles(ctx, opts.StateFile, opts.ReportFile); err != nil {
+		return PullBatchReport{}, fmt.Errorf("审计授权失败，未写入批量状态或报告: %w", err)
 	}
 	progressOutput := opts.ProgressOutput
 	if progressOutput == nil {
@@ -179,6 +189,41 @@ func runPullBatchWithDeps(ctx context.Context, opts PullBatchOptions, pull pullB
 		return report, fmt.Errorf("pull 批量完成但存在失败项: total=%d success=%d skipped=%d failed=%d", report.Total, report.Succeeded, report.Skipped, report.Failed)
 	}
 	return report, nil
+}
+
+func authorizePullBatchFiles(ctx context.Context, stateFile, reportFile string) error {
+	session := audit.FromContext(ctx)
+	if session == nil {
+		return nil
+	}
+	candidates := make([]audit.CandidateInput, 0, 2)
+	if stateFile != "" {
+		path := filepath.Clean(stateFile)
+		candidates = append(candidates, audit.CandidateInput{
+			Kind:       "pull-state",
+			Action:     "write",
+			Identifier: path,
+			Display:    path,
+		})
+	}
+	if reportFile != "" {
+		path := filepath.Clean(reportFile)
+		candidates = append(candidates, audit.CandidateInput{
+			Kind:       "pull-report",
+			Action:     "write",
+			Identifier: path,
+			Display:    path,
+		})
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	_, err := session.AuthorizeMutation(ctx, audit.MutationRequest{
+		Scope:        audit.MutationFilesystem,
+		Confirmation: audit.Confirmation{Provided: true, Mechanism: "pull-batch-files"},
+		Candidates:   candidates,
+	})
+	return err
 }
 
 func updatePullBatchStateItem(state pullBatchState, result PullBatchResult) {

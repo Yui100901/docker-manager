@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"maps"
 
+	"docker-manager/internal/runcontrol"
+
 	"github.com/moby/moby/api/types/volume"
 )
 
@@ -28,6 +30,9 @@ func inspectPruneVolumeRefs(ctx context.Context, svc pruneDockerService) (map[st
 			return nil, nil, ctxErr
 		}
 		return nil, []string{fmt.Sprintf("无法列出容器复核 volume 引用，已仅使用 Docker DiskUsage: %v", err)}, nil
+	}
+	if err := runcontrol.CheckItems(ctx, "container", len(containers)); err != nil {
+		return nil, nil, err
 	}
 	return inspectVolumeContainerRefs(ctx, svc, containers)
 }

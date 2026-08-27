@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"docker-manager/internal/audit"
+	"docker-manager/internal/runcontrol"
 	"docker-manager/internal/version"
 )
 
@@ -38,6 +40,16 @@ func backupContainers(ctx context.Context, patterns []string, opts BackupOptions
 	if len(targets) == 0 {
 		return BackupContainersResult{}, fmt.Errorf("未匹配任何容器")
 	}
+	if err := runcontrol.CheckItems(ctx, "container", len(targets)); err != nil {
+		return BackupContainersResult{}, err
+	}
+	opts, err = resolveBackupOutputOptions(targets, opts, time.Now())
+	if err != nil {
+		return BackupContainersResult{}, err
+	}
+	if err := authorizeBackupMutation(ctx, targets, opts); err != nil {
+		return BackupContainersResult{}, fmt.Errorf("审计授权失败，未执行备份: %w", err)
+	}
 	if len(targets) == 1 && !opts.Merge {
 		singleOpts := opts
 		outputDir, err := backupContainer(ctx, targets[0], singleOpts)
@@ -46,13 +58,97 @@ func backupContainers(ctx context.Context, patterns []string, opts BackupOptions
 		}
 		return BackupContainersResult{Paths: []string{outputDir}}, nil
 	}
-	if opts.BundleOutput != "" && !opts.Merge {
-		return BackupContainersResult{}, fmt.Errorf("多个独立备份不能使用单个 --bundle-output；请使用 --output-dir 或添加 --merge")
-	}
 	if opts.Merge {
 		return backupContainersMerged(ctx, targets, opts)
 	}
 	return backupContainersSeparate(ctx, targets, opts)
+}
+
+// authorizeBackupMutation runs after target resolution but before any backup
+// directory or image archive is created. Backup is an explicit export command,
+// so it does not require a second interactive confirmation; the audit policy
+// still gets a chance to fail closed when its sink is unavailable.
+func authorizeBackupMutation(ctx context.Context, targets []string, opts BackupOptions) error {
+	session := audit.FromContext(ctx)
+	if session == nil || opts.DryRun || len(targets) == 0 {
+		return nil
+	}
+	candidates, err := backupMutationCandidates(targets, opts)
+	if err != nil {
+		return err
+	}
+	_, err = session.AuthorizeMutation(ctx, audit.MutationRequest{
+		Scope:        audit.MutationFilesystem,
+		Confirmation: audit.Confirmation{Provided: true, Mechanism: "backup"},
+		Candidates:   candidates,
+	})
+	return err
+}
+
+func resolveBackupOutputOptions(targets []string, opts BackupOptions, now time.Time) (BackupOptions, error) {
+	if len(targets) > 1 && opts.BundleOutput != "" && !opts.Merge {
+		return BackupOptions{}, fmt.Errorf("多个独立备份不能使用单个 --bundle-output；请使用 --output-dir 或添加 --merge")
+	}
+	if opts.OutputDir == "" {
+		if len(targets) == 1 && !opts.Merge {
+			opts.OutputDir = defaultBackupDir(now, safeBackupName(targets[0]))
+		} else {
+			opts.OutputDir = defaultBackupBatchDir(now)
+		}
+	}
+	return opts, nil
+}
+
+func backupMutationCandidates(targets []string, opts BackupOptions) ([]audit.CandidateInput, error) {
+	outputDirs := make([]string, 0, max(1, len(targets)))
+	switch {
+	case len(targets) == 1 && !opts.Merge:
+		outputDirs = append(outputDirs, opts.OutputDir)
+	case opts.Merge:
+		outputDirs = append(outputDirs, opts.OutputDir)
+	default:
+		for _, target := range targets {
+			outputDirs = append(outputDirs, filepath.Join(opts.OutputDir, safeBackupName(target)))
+		}
+	}
+
+	candidates := make([]audit.CandidateInput, 0, len(outputDirs)*3)
+	for _, outputDir := range outputDirs {
+		candidates = append(candidates, audit.CandidateInput{
+			Kind:       "backup-directory",
+			Action:     "write",
+			Identifier: outputDir,
+			Display:    outputDir,
+		})
+		if opts.IncludeImage {
+			imageDir := filepath.Join(outputDir, "images")
+			candidates = append(candidates, audit.CandidateInput{
+				Kind:       "image-archive",
+				Action:     "save",
+				Identifier: imageDir,
+				Display:    imageDir,
+			})
+		}
+		if !opts.Bundle {
+			continue
+		}
+		bundleOpts := opts
+		if len(outputDirs) > 1 {
+			bundleOpts.BundleOutput = ""
+		}
+		archiveOpts, archivePath, err := resolveBackupBundleOptions(outputDir, bundleOpts)
+		if err != nil {
+			return nil, err
+		}
+		publishedPath := backupPublishedArchivePath(archivePath, archiveOpts)
+		candidates = append(candidates, audit.CandidateInput{
+			Kind:       "backup-archive",
+			Action:     "write",
+			Identifier: publishedPath,
+			Display:    publishedPath,
+		})
+	}
+	return candidates, nil
 }
 
 func backupContainersSeparate(ctx context.Context, targets []string, opts BackupOptions) (BackupContainersResult, error) {

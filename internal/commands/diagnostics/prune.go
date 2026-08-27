@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"io"
 
+	"docker-manager/internal/audit"
 	"docker-manager/internal/commandflags"
 	"docker-manager/internal/docker"
 	rpt "docker-manager/internal/report"
+	"docker-manager/internal/runcontrol"
 
 	"github.com/spf13/cobra"
 )
@@ -19,8 +21,23 @@ func NewPruneReportCommand() *cobra.Command {
 		Short: "生成 Docker 可清理资源报告，可选执行清理",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			policy, err := prepareReportAutomation(opts.Format, opts.AutomationOptions, pruneMetricDefinitions)
+			if err != nil {
+				return err
+			}
+			var printedEvaluation *rpt.Evaluation
 			printReport := func(report PruneReport) error {
-				return rpt.Print(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
+				data := pruneAutomationData(report)
+				evaluation := automationEvaluation(policy, data, !report.Applied || report.ApplyResult == nil || (report.ApplyResult != nil && len(report.ApplyResult.Failures) == 0 && len(report.ApplyResult.UnknownOutcomes) == 0))
+				if exposeAutomationEvaluation(opts.Format, policy) {
+					report.Evaluation = evaluation
+				}
+				printedEvaluation = evaluation
+				renderEvaluation := evaluation
+				if !exposeAutomationEvaluation(opts.Format, policy) {
+					renderEvaluation = nil
+				}
+				return rpt.PrintEvaluated(cmd.OutOrStdout(), opts.Format, report, renderEvaluation, func(w io.Writer) {
 					printPruneReport(w, report)
 				})
 			}
@@ -37,7 +54,13 @@ func NewPruneReportCommand() *cobra.Command {
 				}
 				return fmt.Errorf("生成清理报告失败: %w", err)
 			}
-			return printReport(report)
+			if printErr := printReport(report); printErr != nil {
+				return printErr
+			}
+			if printedEvaluation != nil {
+				return printedEvaluation.GateError()
+			}
+			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&opts.Apply, "apply", false, "根据报告执行清理")
@@ -47,11 +70,14 @@ func NewPruneReportCommand() *cobra.Command {
 	cmd.Flags().StringArrayVarP(&opts.Filters, "filter", "f", nil, "清理筛选条件，支持 label=key、label=key=value、label!=key、until=<duration|timestamp>，可重复指定")
 	cmd.Flags().StringArrayVar(&opts.UntilValues, "until", nil, "仅清理该时间之前创建的资源，例如 24h、168h 或 RFC3339 时间；重复值必须一致")
 	cmd.Flags().StringArrayVar(&opts.ProtectLabels, "protect-label", nil, "保护带有指定 label 的资源，例如 keep 或 env=prod，可重复指定")
-	commandflags.AddReportFormatFlag(cmd, &opts.Format)
+	commandflags.AddAutomationReportFlags(cmd, &opts.Format, &opts.AutomationOptions, automationMetricNames(pruneMetricDefinitions))
 	return cmd
 }
 
 func runPruneReport(ctx context.Context, opts PruneReportOptions) (PruneReport, error) {
+	if _, err := prepareReportAutomation(opts.Format, opts.AutomationOptions, pruneMetricDefinitions); err != nil {
+		return PruneReport{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return PruneReport{}, err
 	}
@@ -79,6 +105,9 @@ func runPruneReport(ctx context.Context, opts PruneReportOptions) (PruneReport, 
 	if err != nil {
 		return PruneReport{}, err
 	}
+	if err := checkPruneUsageItems(ctx, scope, usage); err != nil {
+		return PruneReport{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return PruneReport{}, err
 	}
@@ -104,6 +133,16 @@ func runPruneReport(ctx context.Context, opts PruneReportOptions) (PruneReport, 
 		if hasNonAtomicPruneCandidates(report) && !opts.AllowNonAtomicDelete {
 			return report, fmt.Errorf("清理快照包含 image 或 volume 候选，但 Docker API 不支持 compare-and-delete；未执行任何删除，请复核 dry-run 后显式添加 --allow-non-atomic-delete")
 		}
+		if session := audit.FromContext(ctx); session != nil {
+			candidates := pruneAuditCandidates(report)
+			if _, err := session.AuthorizeMutation(ctx, audit.MutationRequest{
+				Scope:        audit.MutationDockerPersistent,
+				Confirmation: audit.Confirmation{Required: true, Provided: opts.Confirm, Mechanism: "--apply+--confirm"},
+				Candidates:   candidates,
+			}); err != nil {
+				return report, fmt.Errorf("审计授权失败，未执行任何删除: %w", err)
+			}
+		}
 		applyResult, err := applyPruneReport(ctx, svc, report)
 		report.Applied = true
 		report.ApplyResult = &applyResult
@@ -114,10 +153,47 @@ func runPruneReport(ctx context.Context, opts PruneReportOptions) (PruneReport, 
 	return report, nil
 }
 
+// checkPruneUsageItems accounts for the snapshot entries that the report
+// builder will inspect. A single reservation keeps the multi-kind check
+// atomic, so a failed budget check cannot partially consume the allowance.
+func checkPruneUsageItems(ctx context.Context, scope PruneScope, usage pruneDiskUsage) error {
+	count := 0
+	if scope.includes(pruneKindContainer) {
+		count += len(usage.Containers)
+	}
+	if scope.includes(pruneKindImage) {
+		count += len(usage.Images)
+	}
+	if scope.includes(pruneKindVolume) {
+		count += len(usage.Volumes)
+	}
+	if scope.includesBuildCache() {
+		count += len(usage.BuildCache)
+	}
+	return runcontrol.CheckItems(ctx, "prune", count)
+}
+
+func pruneAuditCandidates(report PruneReport) []audit.CandidateInput {
+	result := make([]audit.CandidateInput, 0, len(report.StoppedContainers)+len(report.DanglingImages)+len(report.UnusedVolumes)+len(report.BuildCaches))
+	for _, item := range report.StoppedContainers {
+		result = append(result, audit.CandidateInput{Kind: "container", Action: "delete", Identifier: item.ID, Display: item.Name})
+	}
+	for _, item := range report.DanglingImages {
+		result = append(result, audit.CandidateInput{Kind: "image", Action: "delete", Identifier: item.ID})
+	}
+	for _, item := range report.UnusedVolumes {
+		result = append(result, audit.CandidateInput{Kind: "volume", Action: "delete", Identifier: item.Name, Display: item.Name})
+	}
+	for _, item := range report.BuildCaches {
+		result = append(result, audit.CandidateInput{Kind: "build-cache", Action: "delete", Identifier: item.ID})
+	}
+	return result
+}
+
 func hasNonAtomicPruneCandidates(report PruneReport) bool {
 	return len(report.DanglingImages) > 0 || len(report.UnusedVolumes) > 0
 }
 
 func validatePruneReportFormat(format string) error {
-	return rpt.Print(io.Discard, format, struct{}{}, func(io.Writer) {})
+	return rpt.ValidateFormat(format, true)
 }

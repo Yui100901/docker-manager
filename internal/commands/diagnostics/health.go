@@ -1,8 +1,8 @@
 package diagnostics
 
 import (
-	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -15,8 +15,8 @@ import (
 	"docker-manager/internal/docker"
 	"docker-manager/internal/parallel"
 	rpt "docker-manager/internal/report"
+	"docker-manager/internal/runcontrol"
 
-	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/api/types/container"
 	mobyclient "github.com/moby/moby/client"
 	"github.com/spf13/cobra"
@@ -42,12 +42,21 @@ type dockerHealthService struct {
 
 func NewHealthCommand() *cobra.Command {
 	opts := defaultHealthOptions()
+	maxLogBytes := "16M"
+	maxTotalLogBytes := "256M"
 	cmd := &cobra.Command{
 		Use:   "health [container-pattern...]",
 		Short: "输出本机 Docker 体检报告",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			runOpts := opts
 			runOpts.ContainerFilters = append(append([]string(nil), opts.ContainerFilters...), args...)
+			if err := applyLogBudgetValues(&runOpts.MaxLogBytes, &runOpts.MaxTotalLogBytes, maxLogBytes, maxTotalLogBytes); err != nil {
+				return err
+			}
+			policy, err := prepareReportAutomation(runOpts.Format, runOpts.AutomationOptions, healthMetricDefinitions)
+			if err != nil {
+				return err
+			}
 			if _, err := normalizeRedactProfile(runOpts.RedactProfile, runOpts.RedactSecrets); err != nil {
 				return err
 			}
@@ -55,9 +64,20 @@ func NewHealthCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("生成体检报告失败: %w", err)
 			}
-			return rpt.Print(cmd.OutOrStdout(), runOpts.Format, report, func(w io.Writer) {
+			evaluation := automationEvaluation(policy, healthAutomationData(report), true)
+			if exposeAutomationEvaluation(runOpts.Format, policy) {
+				report.Evaluation = evaluation
+			}
+			renderEvaluation := evaluation
+			if !exposeAutomationEvaluation(runOpts.Format, policy) {
+				renderEvaluation = nil
+			}
+			if err := rpt.PrintEvaluated(cmd.OutOrStdout(), runOpts.Format, report, renderEvaluation, func(w io.Writer) {
 				printHealthReport(w, report)
-			})
+			}); err != nil {
+				return err
+			}
+			return evaluation.GateError()
 		},
 		ValidArgsFunction: completion.LocalContainers,
 	}
@@ -66,16 +86,26 @@ func NewHealthCommand() *cobra.Command {
 	cmd.Flags().IntVar(&opts.LogTail, "log-tail", opts.LogTail, "每个容器扫描最近日志行数")
 	cmd.Flags().IntVar(&opts.RestartThreshold, "restart-threshold", opts.RestartThreshold, "restart 次数达到该阈值时报告风险")
 	cmd.Flags().StringArrayVar(&opts.Keywords, "keyword", opts.Keywords, "日志扫描关键词，可重复指定")
+	cmd.Flags().StringVar(&maxLogBytes, "max-log-bytes", maxLogBytes, "每个容器最多读取的日志字节数，支持 K/M/G/T 后缀")
+	cmd.Flags().StringVar(&maxTotalLogBytes, "max-total-log-bytes", maxTotalLogBytes, "整条命令累计最多读取的日志字节数，支持 K/M/G/T 后缀")
 	commandflags.AddContainerFilterFlag(cmd, &opts.ContainerFilters, "")
 	commandflags.AddRedactFlags(cmd, &opts.RedactSecrets, &opts.RedactProfile, "脱敏日志命中行中的疑似敏感信息，便于分享输出")
-	commandflags.AddReportFormatFlag(cmd, &opts.Format)
+	commandflags.AddAutomationReportFlags(cmd, &opts.Format, &opts.AutomationOptions, automationMetricNames(healthMetricDefinitions))
 	return cmd
 }
 
 func runHealthReport(ctx context.Context, opts HealthOptions) (HealthReport, error) {
+	if _, err := prepareReportAutomation(opts.Format, opts.AutomationOptions, healthMetricDefinitions); err != nil {
+		return HealthReport{}, err
+	}
 	if _, err := normalizeRedactProfile(opts.RedactProfile, opts.RedactSecrets); err != nil {
 		return HealthReport{}, err
 	}
+	budget, err := prepareLogReadBudget(opts.MaxLogBytes, opts.MaxTotalLogBytes, opts.logBudget)
+	if err != nil {
+		return HealthReport{}, err
+	}
+	opts.logBudget = budget
 	svc, err := newHealthDockerService()
 	if err != nil {
 		return HealthReport{}, err
@@ -97,10 +127,19 @@ type healthContainerBuildResult struct {
 	item    HealthContainer
 	summary HealthSummary
 	issues  []HealthIssue
+	err     error
 }
 
 func buildHealthReport(ctx context.Context, svc healthDockerService, containers []container.Summary, opts HealthOptions) (HealthReport, error) {
 	report := HealthReport{GeneratedAt: time.Now().Format(time.RFC3339), DockerEndpoint: docker.Endpoint()}
+	budget, err := prepareLogReadBudget(opts.MaxLogBytes, opts.MaxTotalLogBytes, opts.logBudget)
+	if err != nil {
+		return report, err
+	}
+	opts.logBudget = budget
+	if err := runcontrol.CheckItems(ctx, "container", len(containers)); err != nil {
+		return report, err
+	}
 	keywords := normalizeKeywords(opts.Keywords)
 	results := make([]healthContainerBuildResult, len(containers))
 	parallel.ForEachIndex(ctx, len(containers), diagnosticsInspectConcurrency, func(ctx context.Context, i int) {
@@ -108,6 +147,11 @@ func buildHealthReport(ctx context.Context, svc healthDockerService, containers 
 	})
 	if err := ctx.Err(); err != nil {
 		return report, err
+	}
+	for _, result := range results {
+		if result.err != nil {
+			return report, result.err
+		}
 	}
 	for _, result := range results {
 		if result.item.Name == "" && result.item.ID == "" {
@@ -190,8 +234,12 @@ func buildHealthContainerResult(ctx context.Context, svc healthDockerService, su
 	}
 
 	if !opts.NoLogs && result.item.LogReadability != "disabled" && result.item.LogReadability != "unsupported" && opts.LogTail != 0 && len(keywords) > 0 {
-		matches, err := scanHealthLogs(ctx, svc, ref, inspect, opts.LogTail, keywords, opts.RedactProfile, opts.RedactSecrets)
+		matches, err := scanHealthLogs(ctx, svc, ref, inspect, opts.LogTail, keywords, opts.RedactProfile, opts.RedactSecrets, opts.logBudget)
 		if err != nil {
+			if errors.Is(err, errLogReadBudgetExceeded) {
+				result.err = err
+				return result
+			}
 			result.issues = append(result.issues, HealthIssue{
 				Severity:  "warn",
 				Container: result.item.Name,
@@ -409,7 +457,7 @@ func addLogDriverIssue(report *HealthReport, item HealthContainer) {
 	})
 }
 
-func scanHealthLogs(ctx context.Context, svc healthDockerService, id string, inspect container.InspectResponse, tail int, keywords []string, redactProfileValue string, redactSecrets bool) ([]LogMatch, error) {
+func scanHealthLogs(ctx context.Context, svc healthDockerService, id string, inspect container.InspectResponse, tail int, keywords []string, redactProfileValue string, redactSecrets bool, budget *logReadBudget) ([]LogMatch, error) {
 	if availability := containerLogDriverAvailability(inspect); !availability.Readable {
 		return nil, fmt.Errorf("%s", availability.Reason)
 	}
@@ -427,7 +475,7 @@ func scanHealthLogs(ctx context.Context, svc healthDockerService, id string, ins
 	}
 	defer reader.Close()
 
-	text, err := readDockerLogs(reader, inspect.Config != nil && inspect.Config.Tty)
+	text, err := readDockerLogsWithBudget(ctx, reader, inspect.Config != nil && inspect.Config.Tty, budget)
 	if err != nil {
 		return nil, err
 	}
@@ -442,50 +490,6 @@ func scanHealthLogs(ctx context.Context, svc healthDockerService, id string, ins
 		}
 	}
 	return matches, nil
-}
-
-func readDockerLogs(reader io.Reader, tty bool) (string, error) {
-	return readDockerLogsWithContext(context.Background(), reader, tty)
-}
-
-func readDockerLogsWithContext(ctx context.Context, reader io.Reader, tty bool) (string, error) {
-	data, err := readAllWithContext(ctx, reader)
-	if err != nil {
-		return "", err
-	}
-	if tty {
-		return string(data), nil
-	}
-	var stdout, stderr bytes.Buffer
-	if _, err := stdcopy.StdCopy(&stdout, &stderr, bytes.NewReader(data)); err != nil {
-		return string(data), nil
-	}
-	return stdout.String() + stderr.String(), nil
-}
-
-func readAllWithContext(ctx context.Context, reader io.Reader) ([]byte, error) {
-	var buf bytes.Buffer
-	chunk := make([]byte, 32*1024)
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		n, err := reader.Read(chunk)
-		if n > 0 {
-			if _, writeErr := buf.Write(chunk[:n]); writeErr != nil {
-				return nil, writeErr
-			}
-		}
-		if err != nil {
-			if err == io.EOF {
-				if ctxErr := ctx.Err(); ctxErr != nil {
-					return nil, ctxErr
-				}
-				return buf.Bytes(), nil
-			}
-			return nil, err
-		}
-	}
 }
 
 func findLogMatches(text string, keywords []string) []LogMatch {

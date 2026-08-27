@@ -11,6 +11,7 @@ import (
 
 	"docker-manager/internal/docker"
 	"docker-manager/internal/parallel"
+	"docker-manager/internal/runcontrol"
 
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/container"
@@ -65,6 +66,9 @@ func buildRestorePlanReportFromDir(ctx context.Context, svc backupDockerService,
 	}
 	if opts.Name != "" && len(manifest.Containers) != 1 {
 		return RestorePlanReport{}, fmt.Errorf("--name 只支持恢复单个备份")
+	}
+	if err := runcontrol.CheckItems(ctx, "restore-container", len(manifest.Containers)); err != nil {
+		return RestorePlanReport{}, err
 	}
 	if err := validateRestoreManifestArtifacts(backupDir, manifest, opts); err != nil {
 		return RestorePlanReport{}, err

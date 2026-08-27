@@ -10,12 +10,15 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
+	"docker-manager/internal/audit"
 	"docker-manager/internal/commandflags"
 	"docker-manager/internal/completion"
 	"docker-manager/internal/docker"
 	"docker-manager/internal/parallel"
 	rpt "docker-manager/internal/report"
+	"docker-manager/internal/runcontrol"
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
@@ -71,6 +74,10 @@ func newVolumeListUnusedCommand() *cobra.Command {
 		Short: "查找疑似未使用 volume，并输出关联容器信息",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			runOpts := opts
+			policy, err := prepareReportAutomation(runOpts.Format, runOpts.AutomationOptions, volumeMetricDefinitions)
+			if err != nil {
+				return err
+			}
 			if err := normalizeVolumeOptions(&runOpts); err != nil {
 				return err
 			}
@@ -79,9 +86,20 @@ func newVolumeListUnusedCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("生成 volume 报告失败: %w", err)
 			}
-			return rpt.Print(cmd.OutOrStdout(), runOpts.Format, report, func(w io.Writer) {
+			evaluation := automationEvaluation(policy, volumeAutomationData(report), true)
+			if exposeAutomationEvaluation(runOpts.Format, policy) {
+				report.Evaluation = evaluation
+			}
+			renderEvaluation := evaluation
+			if !exposeAutomationEvaluation(runOpts.Format, policy) {
+				renderEvaluation = nil
+			}
+			if err := rpt.PrintEvaluated(cmd.OutOrStdout(), runOpts.Format, report, renderEvaluation, func(w io.Writer) {
 				printVolumeReport(w, report, runOpts)
-			})
+			}); err != nil {
+				return err
+			}
+			return evaluation.GateError()
 		},
 		ValidArgsFunction: completion.LocalVolumes,
 	}
@@ -89,7 +107,7 @@ func newVolumeListUnusedCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&opts.NoTrunc, "no-trunc", false, "显示完整 volume 名称和挂载点")
 	commandflags.AddVolumeSizeFlags(cmd, &opts.SizeMode, volumeSizeModeAPI, &opts.SizeImage, volumeDefaultSizeImage)
 	commandflags.AddVolumeFilterFlag(cmd, &opts.Filters)
-	commandflags.AddReportFormatFlag(cmd, &opts.Format)
+	commandflags.AddAutomationReportFlags(cmd, &opts.Format, &opts.AutomationOptions, automationMetricNames(volumeMetricDefinitions))
 	return cmd
 }
 
@@ -110,6 +128,9 @@ func normalizeVolumeOptions(opts *VolumeOptions) error {
 }
 
 func runVolumeReport(ctx context.Context, opts VolumeOptions) (VolumeReport, error) {
+	if _, err := prepareReportAutomation(opts.Format, opts.AutomationOptions, volumeMetricDefinitions); err != nil {
+		return VolumeReport{}, err
+	}
 	if err := normalizeVolumeOptions(&opts); err != nil {
 		return VolumeReport{}, err
 	}
@@ -125,11 +146,20 @@ func runVolumeReport(ctx context.Context, opts VolumeOptions) (VolumeReport, err
 	if err != nil {
 		return VolumeReport{}, err
 	}
+	selectedVolumes := filterVolumesByPatterns(volumes.Volumes, opts.Filters)
+	if err := runcontrol.CheckItems(ctx, "volume-report", len(selectedVolumes)+len(containers)); err != nil {
+		return VolumeReport{}, err
+	}
 	refsByVolume, warnings, err := inspectVolumeContainerRefs(ctx, svc, containers)
 	if err != nil {
 		return VolumeReport{}, err
 	}
 	report := buildVolumeReportWithRefs(volumes, refsByVolume, warnings, opts)
+	if opts.SizeMode == volumeSizeModeDockerRun || opts.SizeMode == volumeSizeModeAuto {
+		if err := authorizeVolumeSizeProbe(ctx, report, opts); err != nil {
+			return VolumeReport{}, fmt.Errorf("审计授权失败，未执行 volume 大小探测: %w", err)
+		}
+	}
 	if opts.SizeMode != volumeSizeModeAPI {
 		if err := probeVolumeSizes(ctx, svc, &report, opts); err != nil {
 			return VolumeReport{}, err
@@ -138,12 +168,43 @@ func runVolumeReport(ctx context.Context, opts VolumeOptions) (VolumeReport, err
 	return report, nil
 }
 
+// authorizeVolumeSizeProbe runs before docker-run/auto probing because the
+// fallback path creates and removes a temporary helper container. Auto is
+// authorized conservatively even when local-go may eventually succeed.
+func authorizeVolumeSizeProbe(ctx context.Context, report VolumeReport, opts VolumeOptions) error {
+	session := audit.FromContext(ctx)
+	if session == nil {
+		return nil
+	}
+	candidates := make([]audit.CandidateInput, 0, len(report.Volumes))
+	for _, volume := range report.Volumes {
+		if volume.Size >= 0 || volume.Driver != "local" {
+			continue
+		}
+		candidates = append(candidates, audit.CandidateInput{
+			Kind:       "volume",
+			Action:     "size-probe",
+			Identifier: volume.Name,
+			Display:    volume.Name,
+		})
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	_, err := session.AuthorizeMutation(ctx, audit.MutationRequest{
+		Scope:        audit.MutationDockerTemporary,
+		Confirmation: audit.Confirmation{Provided: true, Mechanism: "--size-mode=" + opts.SizeMode},
+		Candidates:   candidates,
+	})
+	return err
+}
+
 func buildVolumeReport(volumes volume.ListResponse, containers []container.Summary, opts VolumeOptions) VolumeReport {
 	return buildVolumeReportWithRefs(volumes, volumeContainerRefs(containers), nil, opts)
 }
 
 func buildVolumeReportWithRefs(volumes volume.ListResponse, refsByVolume map[string][]VolumeContainerRef, warnings []string, opts VolumeOptions) VolumeReport {
-	report := VolumeReport{DockerEndpoint: docker.Endpoint(), Warnings: append([]string(nil), volumes.Warnings...)}
+	report := VolumeReport{DockerEndpoint: docker.Endpoint(), GeneratedAt: time.Now().Format(time.RFC3339), Warnings: append([]string(nil), volumes.Warnings...)}
 	report.Warnings = append(report.Warnings, warnings...)
 
 	for _, vol := range filterVolumesByPatterns(volumes.Volumes, opts.Filters) {

@@ -1,6 +1,9 @@
 package diagnostics
 
-import "docker-manager/internal/commandflags"
+import (
+	"docker-manager/internal/commandflags"
+	rpt "docker-manager/internal/report"
+)
 
 type HealthOptions struct {
 	RunningOnly      bool
@@ -11,7 +14,11 @@ type HealthOptions struct {
 	ContainerFilters []string
 	RedactSecrets    bool
 	RedactProfile    string
+	MaxLogBytes      int64
+	MaxTotalLogBytes int64
+	logBudget        *logReadBudget
 	commandflags.FormatOptions
+	commandflags.AutomationOptions
 }
 
 type HealthReport struct {
@@ -21,6 +28,7 @@ type HealthReport struct {
 	Summary        HealthSummary     `json:"summary"`
 	Containers     []HealthContainer `json:"containers"`
 	Issues         []HealthIssue     `json:"issues,omitempty"`
+	Evaluation     *rpt.Evaluation   `json:"evaluation,omitempty"`
 }
 
 type HealthSummary struct {

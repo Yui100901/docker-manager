@@ -1,17 +1,24 @@
 package diagnostics
 
-import "docker-manager/internal/commandflags"
+import (
+	"docker-manager/internal/commandflags"
+	rpt "docker-manager/internal/report"
+)
 
 type LogsScanOptions struct {
-	RunningOnly   bool
-	Tail          int
-	Context       int
-	Since         string
-	Keywords      []string
-	Filters       []string
-	RedactSecrets bool
-	RedactProfile string
+	RunningOnly      bool
+	Tail             int
+	Context          int
+	Since            string
+	Keywords         []string
+	Filters          []string
+	RedactSecrets    bool
+	RedactProfile    string
+	MaxLogBytes      int64
+	MaxTotalLogBytes int64
+	logBudget        *logReadBudget
 	commandflags.FormatOptions
+	commandflags.AutomationOptions
 }
 
 type LogsScanReport struct {
@@ -21,6 +28,7 @@ type LogsScanReport struct {
 	Keywords       []string            `json:"keywords"`
 	Containers     []LogsScanContainer `json:"containers"`
 	Summary        LogsScanSummary     `json:"summary"`
+	Evaluation     *rpt.Evaluation     `json:"evaluation,omitempty"`
 }
 
 type LogsScanSummary struct {
@@ -41,6 +49,7 @@ type LogsScanContainer struct {
 	LogReadabilityMessage string         `json:"log_readability_message,omitempty"`
 	Error                 string         `json:"error,omitempty"`
 	Matches               []LogScanMatch `json:"matches,omitempty"`
+	ErrorType             string         `json:"-"`
 }
 
 type LogScanMatch struct {

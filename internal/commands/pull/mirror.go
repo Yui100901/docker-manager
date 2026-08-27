@@ -6,8 +6,10 @@ import (
 	"io"
 	"log"
 	"net/url"
+	"path/filepath"
 	"strings"
 
+	"docker-manager/internal/audit"
 	"docker-manager/internal/docker"
 
 	"github.com/distribution/reference"
@@ -18,29 +20,24 @@ import (
 // producing the tar file; --load imports it; --to imports, tags, validates the
 // target registry, and pushes with Docker-compatible registry auth.
 func (r *PullRunner) completePulledImage(outputFile string, info *ImageInfo, opts PullOptions) error {
-	log.Printf("镜像拉取成功: %s", outputFile)
-	if !opts.Load && opts.To == "" {
-		return nil
-	}
-
-	var target string
-	if opts.To != "" {
-		var err error
-		target, err = resolvePushTarget(info, opts.To)
-		if err != nil {
-			return err
-		}
-		if err := r.checkPushTargetRegistry(opts.Context, target, opts); err != nil {
-			return err
-		}
-	}
-
 	ctx := opts.Context
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	target := opts.preparedTarget
+	if !opts.mutationAuthorized {
+		var err error
+		target, err = r.preparePulledImageMutation(outputFile, info, opts)
+		if err != nil {
+			return err
+		}
+	}
+	log.Printf("镜像拉取成功: %s", outputFile)
+	if !opts.Load && opts.To == "" {
+		return nil
 	}
 	progressOutput := opts.ProgressOutput
 	if progressOutput == nil {
@@ -79,6 +76,82 @@ func (r *PullRunner) completePulledImage(outputFile string, info *ImageInfo, opt
 	}
 	log.Printf("镜像推送成功: %s", target)
 	return nil
+}
+
+// preparePulledImageMutation completes read-only target validation and records
+// the archive/load/tag/push pipeline before its first persistent write.
+func (r *PullRunner) preparePulledImageMutation(outputFile string, info *ImageInfo, opts PullOptions) (string, error) {
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	var target string
+	if opts.To != "" {
+		var err error
+		target, err = resolvePushTarget(info, opts.To)
+		if err != nil {
+			return "", err
+		}
+		if err := r.checkPushTargetRegistry(ctx, target, opts); err != nil {
+			return "", err
+		}
+	}
+	if err := authorizePulledImageMutation(ctx, outputFile, target, opts); err != nil {
+		return "", fmt.Errorf("审计授权失败，未写入镜像归档或执行导入/推送: %w", err)
+	}
+	return target, nil
+}
+
+// authorizePulledImageMutation records every persistent stage in one candidate
+// set so audit failure cannot leave a partially authorized pipeline behind.
+func authorizePulledImageMutation(ctx context.Context, outputFile, target string, opts PullOptions) error {
+	session := audit.FromContext(ctx)
+	if session == nil {
+		return nil
+	}
+	candidates := []audit.CandidateInput{{
+		Kind:       "image-archive",
+		Action:     "write",
+		Identifier: outputFile,
+		Display:    filepath.Base(outputFile),
+	}}
+	scope := audit.MutationFilesystem
+	mechanism := "pull"
+	if opts.Load || strings.TrimSpace(target) != "" {
+		scope = audit.MutationDockerPersistent
+		mechanism = "--load"
+		candidates = append(candidates, audit.CandidateInput{
+			Kind:       "image-archive",
+			Action:     "load",
+			Identifier: outputFile,
+			Display:    filepath.Base(outputFile),
+		})
+	}
+	if strings.TrimSpace(target) != "" {
+		scope = audit.MutationExternalOperation
+		mechanism = "--to"
+		candidates = append(candidates, audit.CandidateInput{
+			Kind:       "image",
+			Action:     "tag",
+			Identifier: target,
+			Display:    target,
+		})
+		candidates = append(candidates, audit.CandidateInput{
+			Kind:       "image",
+			Action:     "push",
+			Identifier: target,
+			Display:    target,
+		})
+	}
+	_, err := session.AuthorizeMutation(ctx, audit.MutationRequest{
+		Scope:        scope,
+		Confirmation: audit.Confirmation{Provided: true, Mechanism: mechanism},
+		Candidates:   candidates,
+	})
+	return err
 }
 
 func (r *PullRunner) checkPushTargetRegistry(ctx context.Context, target string, opts PullOptions) error {

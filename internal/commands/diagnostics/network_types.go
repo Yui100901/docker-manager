@@ -5,6 +5,7 @@ import (
 
 	"docker-manager/internal/commandflags"
 	"docker-manager/internal/docker"
+	rpt "docker-manager/internal/report"
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
@@ -34,16 +35,19 @@ type NetworkOptions struct {
 	RunningOnly      bool
 	ContainerFilters []string
 	commandflags.FormatOptions
+	commandflags.AutomationOptions
 }
 
 type NetworkReport struct {
 	DockerEndpoint string                `json:"docker_endpoint"`
+	GeneratedAt    string                `json:"generated_at"`
 	Target         TargetSelection       `json:"target"`
 	Networks       []NetworkRef          `json:"networks"`
 	Containers     []NetworkContainerRef `json:"containers"`
 	Ports          []PortMappingRef      `json:"-"`
 	Risks          []NetworkRisk         `json:"-"`
 	Warnings       []string              `json:"warnings,omitempty"`
+	Evaluation     *rpt.Evaluation       `json:"evaluation,omitempty"`
 }
 
 type NetworkRef struct {

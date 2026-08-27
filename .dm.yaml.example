@@ -16,11 +16,32 @@
 #     docker_cert_path: /etc/docker-manager/dev-certs
 #     proxy: http://127.0.0.1:7890
 #     output_dir: images/development
+#     operation_concurrency: 4
+#     operation_timeout: 15m
+#     operation_rate_limit: 10
+#     operation_max_items: 5000
+#     max_log_bytes: 8M
+#     max_total_log_bytes: 64M
+#     fail_on: none
+#     thresholds: []
 #   production:
 #     docker_host: tcp://docker-prod.example.com:2376
 #     docker_tls_verify: true
 #     docker_cert_path: /etc/docker-manager/prod-certs
 #     output_dir: images/production
+#     operation_concurrency: 16
+#     operation_timeout: 30m
+#     operation_rate_limit: 50
+#     operation_max_items: 50000
+#     max_log_bytes: 16M
+#     max_total_log_bytes: 256M
+#     fail_on: warning
+#     thresholds:
+#       - health.unhealthy=0
+#       - network.public_bindings=0
+#     audit_file: /var/log/docker-manager/production.jsonl
+#     audit_actor: production-automation
+#     audit_on_error: fail
 #     registries:
 #       registry.prod.example.com:
 #         ca_file: /etc/docker-manager/ca/registry-prod.pem
@@ -59,6 +80,46 @@ output_dir: images
 
 # Candidate readiness timeout used by restore --replace and rerun.
 # ready_timeout: 30s
+
+# Shared scale controls for one command execution. A selected profile can
+# override these values and an explicitly supplied command flag wins again.
+# Numeric zero disables the extra concurrency/rate/item limit; omit the timeout
+# (or use an explicit empty string in a profile) to leave the outer timeout off.
+# Maximums are 64 workers, 24h, 1000 starts/second, and 100000 cumulative items.
+# operation_concurrency: 8
+# operation_timeout: 30m
+# operation_rate_limit: 20
+# operation_max_items: 10000
+
+# Streaming Docker-log budgets used by health, logs, and report all. K/M/G/T
+# suffixes are binary units. Defaults are 16 MiB per container and 256 MiB for
+# the whole command; hard maximums are 256 MiB and 4 GiB respectively.
+# max_log_bytes: 16M
+# max_total_log_bytes: 256M
+
+# Automation policy defaults for health, logs, network, volumes, prune, and
+# report all. CLI --fail-on/--threshold values replace these defaults. Threshold
+# config names always use strict scope.metric=max entries, for example
+# health.unhealthy or network.public_bindings. A single report automatically
+# selects its own scope and removes the prefix before evaluation.
+# fail_on: warning
+# thresholds:
+#   - health.unhealthy=0
+#   - health.error_issues=0
+#   - network.public_bindings=0
+
+# Optional JSONL audit trail. Leaving audit_file empty disables auditing.
+# safe stores HMAC identifiers and error classes; full additionally stores
+# bounded display/error text after strict secret redaction. Failure policies:
+# warn continues, deny-mutation allows reads but blocks unaudited mutations,
+# and fail rejects any command whose audit lifecycle cannot be persisted.
+# audit_file: /var/log/docker-manager/audit.jsonl
+# audit_actor: automation
+# audit_detail: safe
+# audit_on_error: deny-mutation
+# audit_max_bytes: 67108864 # 0 uses the default; non-zero minimum is 65536
+# audit_max_files: 5
+# audit_key_file: /var/lib/docker-manager/audit.key
 
 # Administrator output is visible by default. Set basic or strict when output
 # may be shared. redact_secrets is the legacy boolean alias for basic only when

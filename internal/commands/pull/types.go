@@ -57,6 +57,8 @@ type PullOptions struct {
 	resourceBudget           *pullResourceBudget
 	policyOverrides          registryPolicyOverrides
 	credentialOperation      string
+	preparedTarget           string
+	mutationAuthorized       bool
 }
 
 type CommandDefaults struct {

@@ -2,6 +2,7 @@ package diagnostics
 
 import (
 	"docker-manager/internal/commandflags"
+	rpt "docker-manager/internal/report"
 	"time"
 
 	"github.com/moby/moby/api/types/build"
@@ -20,6 +21,7 @@ type PruneReportOptions struct {
 	UntilValues          []string
 	ProtectLabels        []string
 	commandflags.FormatOptions
+	commandflags.AutomationOptions
 }
 
 type PruneReport struct {
@@ -35,6 +37,7 @@ type PruneReport struct {
 	Scope                       PruneScope           `json:"scope"`
 	ApplyResult                 *PruneApplyResult    `json:"apply_result,omitempty"`
 	NonAtomicDeleteAcknowledged bool                 `json:"non_atomic_delete_acknowledged,omitempty"`
+	Evaluation                  *rpt.Evaluation      `json:"evaluation,omitempty"`
 }
 
 type PruneScope struct {

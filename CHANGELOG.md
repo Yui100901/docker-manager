@@ -12,6 +12,19 @@
 - Registry policy 隔离应用于 pull 源、批量镜像、目标 registry 预检、`dm registry` 和 `dm doctor --registry`；Docker daemon 执行 push 时仍使用 daemon 自己的 CA/代理配置。
 - Pull 与 diagnostics 共用有界 registry CA 加载器：拒绝链接/reparse、特殊文件和混合 PEM，并限制单文件 16 MiB、目录 256 项及累计 32 MiB。
 
+### 规模化运行和自动化
+
+- 新增一次命令共享的运行 controller：`operation_concurrency`、`operation_timeout`、`operation_rate_limit`、`operation_max_items` 分别控制只读任务并发、整条命令外层 deadline、任务启动速率和跨资源类型累计 item 预算；diagnostics、backup、reverse/rerun 提供对应命令 flag，显式 flag 优先于 profile/base 配置。
+- 将累计 item 预算接入 health/logs/network/volumes/prune/doctor/tree/diff、backup、reverse/rerun 和 pull 批量入口；需要修改 Docker 或发布文件的路径在工作开始前预留完整目标预算，超限时失败关闭。
+- health、logs 和 report all 新增流式日志读取预算，默认每个容器 `16 MiB`、整条命令 `256 MiB`，支持 `max_log_bytes`/`max_total_log_bytes` 和命令 flag 覆盖，硬上限分别为 `256 MiB`/`4 GiB`。
+- Docker multiplex 日志按固定大小缓冲区解复用并在底层读取前预留剩余预算，避免全量 raw/stdout/stderr 多份驻留、并发超读及恶意超大 frame 触发等尺寸内存分配。
+- health、logs、network、volumes、prune 和 report all 新增统一 findings/metrics 模型、`--fail-on none|note|warning|error`、可重复 `--threshold metric=max` 及 SARIF 2.1.0 输出；未启用策略时保持既有输出，JSON/机器输出不混入文本尾部。
+- 统一自动化退出码：成功 `0`、运行/配置/输出/审计错误 `1`、仅报告策略门禁失败 `2`、SIGINT/context cancel `130`；组合错误保持运行错误优先。
+- 新增可选 JSONL 审计 lifecycle，记录系统/声明操作人、profile、HMAC endpoint、分页候选集、mutation 授权/拒绝、结果、耗时和错误分类。`safe` 默认只保留脱敏标识，`full` 额外保留经过 strict 脱敏和长度限制的详情。
+- 审计失败支持 `warn`、`deny-mutation`、`fail`（及 `--audit-required`）策略；文件 sink 使用 Unix 私有模式、跨进程锁、完整事件边界轮转、持久 HMAC key，并拒绝数据/key/lock/rotation 路径中的 symlink、junction/reparse 和非普通文件；Windows 访问边界由部署目录 ACL 配合约束。
+- 配置 threshold 改为严格 `scope.metric=max` 命名空间；补齐 doctor 超时/取消传播、pull batch state/report 发布前审计授权、同一 root 重复执行隔离，以及显式审计 flag 对参数/flag/配置加载失败的 lifecycle。
+- E2 最终验收已完成：Go 1.27.0 本地全量门禁通过，覆盖率为 75.94%；`192.168.31.40` 的 Docker 28.1.1 / API 1.49 只读验收为 39 PASS / 0 FAIL，四类 Docker 资源集合前后完全一致，临时二进制、报告、审计和缓存均已清理。完整证据见 `docs/TESTING.md`。
+
 ### 维护与依赖
 
 - 将项目构建基线升级到 Go 1.27.0。

@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"docker-manager/internal/appconfig"
+	"docker-manager/internal/audit"
+	"docker-manager/internal/commandflags"
 	"docker-manager/internal/commands/backup"
 	"docker-manager/internal/commands/diagnostics"
 	"docker-manager/internal/commands/images"
@@ -12,9 +14,13 @@ import (
 	dockerapi "docker-manager/internal/docker"
 	"docker-manager/internal/dockerconfig"
 	"docker-manager/internal/registryauth"
+	rpt "docker-manager/internal/report"
+	"docker-manager/internal/runcontrol"
 	"docker-manager/internal/sensitive"
 	"docker-manager/internal/version"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strconv"
@@ -22,6 +28,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 func Run() int {
@@ -30,7 +37,7 @@ func Run() int {
 	preseededProfile, profilePreseeded := preseedRedactionProfileForError(args)
 	cfg := appConfig{}
 	opts := outputOptions{}
-	rootCmd := newRootCommand(&cfg, &opts)
+	rootCmd, lifecycle := newRootCommandWithLifecycle(&cfg, &opts)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	rootCmd.SetContext(ctx)
@@ -41,14 +48,279 @@ func Run() int {
 		if profilePreseeded {
 			sensitive.SetDefaultProfile(preseededProfile)
 		}
-		writeCommandError(rootCmd.ErrOrStderr(), err, opts)
-		if isCommandCanceled(err) {
-			return 130
+	}
+	// lifecycle.finish resets bound flag variables so the root can be reused.
+	// Preserve this execution's output mode for any command or audit-close error.
+	errorOpts := opts
+	if lifecycle != nil {
+		if finishErr := lifecycle.finish(err); finishErr != nil {
+			err = errors.Join(err, finishErr)
 		}
-		return 1
+	}
+	if err != nil {
+		writeCommandError(rootCmd.ErrOrStderr(), err, errorOpts)
+		return commandExitCode(err)
 	}
 	return 0
 }
+
+// commandExitCode keeps process-level status mapping in one place. A policy
+// gate is distinct from an operational/rendering failure, but an error that
+// combines both must retain the operational failure status.
+func commandExitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	if isCommandCanceled(err) {
+		return 130
+	}
+	var gateErr *rpt.GateError
+	if errors.As(err, &gateErr) && !hasOperationalError(err, gateErr) {
+		return gateErr.ExitCode()
+	}
+	return 1
+}
+
+// rootLifecycle owns per-execution resources that must outlive Cobra's RunE,
+// notably the audit session and the shared runtime controller cancellation.
+type rootLifecycle struct {
+	session              *audit.Session
+	sink                 io.Closer
+	runtimeCancel        context.CancelFunc
+	failureCommand       *cobra.Command
+	startFailure         func(*cobra.Command) error
+	auditAttempted       bool
+	auditFallbackConfig  *appConfig
+	auditFallbackProfile string
+	flagState            *commandFlagState
+}
+
+func (l *rootLifecycle) finish(commandErr error) (finishErr error) {
+	if l == nil {
+		return nil
+	}
+	if l.flagState != nil {
+		defer func() {
+			finishErr = errors.Join(finishErr, l.flagState.reset())
+		}()
+	}
+	var fallbackErr error
+	if commandErr != nil && l.session == nil && !l.auditAttempted && l.failureCommand != nil && l.startFailure != nil {
+		fallbackErr = l.startFailure(l.failureCommand)
+	}
+	runtimeCancel := l.runtimeCancel
+	session := l.session
+	sink := l.sink
+	l.runtimeCancel = nil
+	l.session = nil
+	l.sink = nil
+	l.failureCommand = nil
+	l.auditAttempted = false
+	l.auditFallbackConfig = nil
+	l.auditFallbackProfile = ""
+
+	if runtimeCancel != nil {
+		runtimeCancel()
+	}
+	if session == nil {
+		if sink != nil {
+			return errors.Join(fallbackErr, sink.Close())
+		}
+		return fallbackErr
+	}
+	outcome := audit.OutcomeSuccess
+	if errors.Is(commandErr, context.Canceled) {
+		outcome = audit.OutcomeCanceled
+	} else if commandErr != nil {
+		outcome = audit.OutcomeFailed
+	}
+	auditFinishErr := session.Finish(context.Background(), audit.FinishResult{Outcome: outcome, Err: commandErr})
+	if sink != nil {
+		auditFinishErr = errors.Join(auditFinishErr, sink.Close())
+	}
+	return errors.Join(fallbackErr, auditFinishErr)
+}
+
+type commandFlagState struct {
+	root  *cobra.Command
+	flags []commandFlagSnapshot
+}
+
+type commandFlagSnapshot struct {
+	flag         *pflag.Flag
+	defaultValue string
+	slice        *repeatableSliceValue
+	defaultSlice []string
+}
+
+// repeatableSliceValue preserves pflag's fresh-FlagSet behavior after a root
+// command is executed more than once. pflag slice values keep an internal
+// changed bit that Flag.Changed does not reset, so the first value of the next
+// parse must explicitly replace the restored default.
+type repeatableSliceValue struct {
+	pflag.Value
+	slice   pflag.SliceValue
+	changed bool
+}
+
+func (v *repeatableSliceValue) Set(value string) error {
+	if !v.changed {
+		if err := v.slice.Replace(nil); err != nil {
+			return err
+		}
+	}
+	if err := v.Value.Set(value); err != nil {
+		return err
+	}
+	v.changed = true
+	return nil
+}
+
+func (v *repeatableSliceValue) Append(value string) error {
+	return v.slice.Append(value)
+}
+
+func (v *repeatableSliceValue) Replace(values []string) error {
+	return v.slice.Replace(values)
+}
+
+func (v *repeatableSliceValue) GetSlice() []string {
+	return v.slice.GetSlice()
+}
+
+func captureCommandFlagState(root *cobra.Command) *commandFlagState {
+	state := &commandFlagState{root: root}
+	if root == nil {
+		return state
+	}
+	root.InitDefaultHelpCmd()
+	// Find runs before Cobra lazily creates the selected command's help flag.
+	// Seed the root flag so --help is treated as a no-value flag while finding
+	// an unknown top-level command, regardless of argument order.
+	root.InitDefaultHelpFlag()
+	seen := make(map[*pflag.Flag]struct{})
+	captureFlagSet := func(flags *pflag.FlagSet) {
+		if flags == nil {
+			return
+		}
+		flags.VisitAll(func(flag *pflag.Flag) {
+			if _, ok := seen[flag]; ok {
+				return
+			}
+			seen[flag] = struct{}{}
+			snapshot := commandFlagSnapshot{flag: flag, defaultValue: flag.Value.String()}
+			if slice, ok := flag.Value.(pflag.SliceValue); ok {
+				values := append([]string(nil), slice.GetSlice()...)
+				wrapped := &repeatableSliceValue{Value: flag.Value, slice: slice}
+				flag.Value = wrapped
+				snapshot.slice = wrapped
+				snapshot.defaultSlice = values
+			}
+			state.flags = append(state.flags, snapshot)
+		})
+	}
+	var walk func(*cobra.Command)
+	walk = func(cmd *cobra.Command) {
+		captureFlagSet(cmd.Flags())
+		captureFlagSet(cmd.PersistentFlags())
+		for _, child := range cmd.Commands() {
+			walk(child)
+		}
+	}
+	walk(root)
+	return state
+}
+
+func (s *commandFlagState) reset() error {
+	if s == nil {
+		return nil
+	}
+	var resetErr error
+	for i := range s.flags {
+		snapshot := &s.flags[i]
+		if snapshot.flag == nil {
+			continue
+		}
+		if snapshot.slice != nil {
+			if err := snapshot.slice.Replace(append([]string(nil), snapshot.defaultSlice...)); err != nil {
+				resetErr = errors.Join(resetErr, fmt.Errorf("reset --%s: %w", snapshot.flag.Name, err))
+			}
+			snapshot.slice.changed = false
+		} else if err := snapshot.flag.Value.Set(snapshot.defaultValue); err != nil {
+			resetErr = errors.Join(resetErr, fmt.Errorf("reset --%s: %w", snapshot.flag.Name, err))
+		}
+		snapshot.flag.Changed = false
+	}
+	// Cobra still adds help/version flags lazily to selected leaf commands.
+	// Reset those flags in addition to the construction-time snapshot.
+	var resetGeneratedFlags func(*cobra.Command)
+	resetGeneratedFlags = func(cmd *cobra.Command) {
+		for _, name := range []string{"help", "version"} {
+			flag := cmd.LocalNonPersistentFlags().Lookup(name)
+			if flag == nil {
+				continue
+			}
+			if err := flag.Value.Set("false"); err != nil {
+				resetErr = errors.Join(resetErr, fmt.Errorf("reset --%s: %w", name, err))
+			}
+			flag.Changed = false
+		}
+		for _, child := range cmd.Commands() {
+			resetGeneratedFlags(child)
+		}
+	}
+	if s.root != nil {
+		resetGeneratedFlags(s.root)
+	}
+	return resetErr
+}
+
+func hasOperationalError(err error, gate *rpt.GateError) bool {
+	if err == nil {
+		return false
+	}
+	if gate == nil {
+		return true
+	}
+	if _, direct := err.(*rpt.GateError); direct {
+		return false
+	}
+	if grouped, ok := err.(interface{ Unwrap() []error }); ok {
+		items := grouped.Unwrap()
+		if len(items) == 0 {
+			return true
+		}
+		seenChild := false
+		for _, item := range items {
+			if item == nil {
+				continue
+			}
+			seenChild = true
+			if hasOperationalError(item, gate) {
+				return true
+			}
+		}
+		// A non-gate wrapper with no meaningful children is itself an
+		// operational error; only a transparent wrapper around a gate is
+		// eligible for the gate-only exit status.
+		return !seenChild
+	}
+	if unwrapped := errors.Unwrap(err); unwrapped != nil {
+		return hasOperationalError(unwrapped, gate)
+	}
+	return true
+}
+
+type unavailableAuditSink struct{ err error }
+
+func (s unavailableAuditSink) Append(context.Context, audit.Event) error {
+	if s.err != nil {
+		return s.err
+	}
+	return errors.New("audit sink unavailable")
+}
+
+func (s unavailableAuditSink) Close() error { return nil }
 
 func preseedRedactionProfileForError(args []string) (sensitive.Profile, bool) {
 	var (
@@ -123,12 +395,18 @@ func preseedJSONErrorMode(opts *outputOptions, args []string) {
 }
 
 func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
+	cmd, _ := newRootCommandWithLifecycle(cfg, opts)
+	return cmd
+}
+
+func newRootCommandWithLifecycle(cfg *appConfig, opts *outputOptions) (*cobra.Command, *rootLifecycle) {
 	configPath := defaultConfigPath
 	effectiveConfigPath := configPath
 	loadedConfig := appconfig.Loaded{Path: configPath, Fields: map[string]bool{}}
 	var configLoadError error
 	configResolved := false
 	var profileName string
+	var activeProfile string
 	var dockerHost string
 	var dockerTLSVerify bool
 	var dockerCertPath string
@@ -136,7 +414,17 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 	dockerTimeout := dockerapi.DefaultRequestTimeout
 	var redactSecrets bool
 	var redactProfile string
+	var auditFile string
+	var auditActor string
+	var auditDetail string
+	var auditOnError string
+	var auditRequired bool
+	var auditKeyFile string
+	var auditMaxBytes int64
+	var auditMaxFiles int
 	outputsWrapped := false
+	lifecycle := &rootLifecycle{}
+	runtimeLimits := make(map[*cobra.Command]*runcontrol.Limits)
 	wrapSensitiveOutputs := func(cmd *cobra.Command) {
 		if outputsWrapped {
 			return
@@ -145,12 +433,48 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 		cmd.SetErr(sensitive.NewDynamicWriter(cmd.ErrOrStderr()))
 		outputsWrapped = true
 	}
+	prepareExecution := func(cmd *cobra.Command) error {
+		if err := initializeAuditSession(cmd, cfg, activeProfile, &auditConfigOptions{
+			File:            auditFile,
+			Actor:           auditActor,
+			Detail:          auditDetail,
+			OnError:         auditOnError,
+			Required:        auditRequired,
+			KeyFile:         auditKeyFile,
+			MaxBytes:        auditMaxBytes,
+			MaxFiles:        auditMaxFiles,
+			FileChanged:     cmd.Root().PersistentFlags().Changed("audit-file"),
+			ActorChanged:    cmd.Root().PersistentFlags().Changed("audit-actor"),
+			DetailChanged:   cmd.Root().PersistentFlags().Changed("audit-detail"),
+			OnErrorChanged:  cmd.Root().PersistentFlags().Changed("audit-on-error"),
+			RequiredChanged: cmd.Root().PersistentFlags().Changed("audit-required"),
+			KeyFileChanged:  cmd.Root().PersistentFlags().Changed("audit-key-file"),
+			MaxBytesChanged: cmd.Root().PersistentFlags().Changed("audit-max-bytes"),
+			MaxFilesChanged: cmd.Root().PersistentFlags().Changed("audit-max-files"),
+		}, lifecycle); err != nil {
+			return err
+		}
+		if err := applyReportAutomationDefaults(cmd, cfg); err != nil {
+			return err
+		}
+		if err := applyLogBudgetDefaults(cmd, cfg); err != nil {
+			return err
+		}
+		if err := applyRuntimeController(cmd, cfg, loadedConfig.Fields, runtimeLimits, lifecycle); err != nil {
+			return err
+		}
+		return nil
+	}
 	rootCmd := &cobra.Command{
 		Use:           "dm <command>",
 		Short:         "Docker 运维辅助工具",
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			lifecycle.failureCommand = cmd
+			lifecycle.auditFallbackConfig = nil
+			lifecycle.auditFallbackProfile = ""
+			resetCommandExecutionContext(cmd)
 			flagProfile, err := resolveRootRedactProfile(cmd, &appConfig{}, redactProfile, redactSecrets)
 			if err != nil {
 				return err
@@ -164,6 +488,7 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 			effectiveConfigPath = resolveConfigPath(configPath, configFlagChanged)
 			configLoadError = nil
 			configResolved = false
+			activeProfile = ""
 			loaded, err := appconfig.LoadWithOptions(effectiveConfigPath, appconfig.LoadOptions{
 				Required:        appconfig.IsExplicitPath(configFlagChanged) || profileSelectionRequiresConfig(profileName, profileFlagChanged),
 				Profile:         profileName,
@@ -187,13 +512,18 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 						return err
 					}
 					configureLogging(*opts)
-					return nil
+					activeProfile, _ = appconfig.ResolveProfile(profileName, profileFlagChanged, "")
+					return prepareExecution(cmd)
 				}
 				return err
 			}
 			loadedConfig = loaded
 			configResolved = true
+			activeProfile = loaded.Profile
 			*cfg = loaded.Config
+			fallbackConfig := loaded.Config
+			lifecycle.auditFallbackConfig = &fallbackConfig
+			lifecycle.auditFallbackProfile = loaded.Profile
 			profile, err := resolveRootRedactProfile(cmd, cfg, redactProfile, redactSecrets)
 			if err != nil {
 				return err
@@ -207,7 +537,7 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 				return err
 			}
 			configureLogging(*opts)
-			return nil
+			return prepareExecution(cmd)
 		},
 		Run: func(cmd *cobra.Command, args []string) {
 			_ = cmd.Help()
@@ -230,6 +560,14 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 	rootCmd.PersistentFlags().StringVar(&dockerCertPath, "docker-cert-path", "", "Docker TLS/mTLS 证书目录，含 ca.pem/cert.pem/key.pem；默认读取 DOCKER_CERT_PATH")
 	rootCmd.PersistentFlags().StringVar(&dockerAPIVersion, "docker-api-version", "", "Docker API 版本，默认读取 DOCKER_API_VERSION 或自动协商")
 	rootCmd.PersistentFlags().DurationVar(&dockerTimeout, "docker-timeout", dockerapi.DefaultRequestTimeout, "Docker daemon 连接、TLS 握手和响应头超时时间")
+	rootCmd.PersistentFlags().StringVar(&auditFile, "audit-file", "", "结构化审计 JSONL 文件；为空表示关闭")
+	rootCmd.PersistentFlags().StringVar(&auditActor, "audit-actor", "", "审计事件中的声明操作人标识（不会替代系统操作人）")
+	rootCmd.PersistentFlags().StringVar(&auditDetail, "audit-detail", "", "审计详情级别: safe | full")
+	rootCmd.PersistentFlags().StringVar(&auditOnError, "audit-on-error", "", "审计写入失败策略: warn | deny-mutation | fail")
+	rootCmd.PersistentFlags().BoolVar(&auditRequired, "audit-required", false, "审计写入失败时拒绝命令（等价于 --audit-on-error=fail）")
+	rootCmd.PersistentFlags().StringVar(&auditKeyFile, "audit-key-file", "", "审计标识 HMAC key 文件路径")
+	rootCmd.PersistentFlags().Int64Var(&auditMaxBytes, "audit-max-bytes", 0, "单个审计文件最大字节数，0 使用默认值")
+	rootCmd.PersistentFlags().IntVar(&auditMaxFiles, "audit-max-files", 0, "审计轮转文件数量，0 使用默认值")
 
 	commandSet := newRootCommandSet(cfg)
 	rootCmd.AddCommand(backup.NewBackupCommand())
@@ -265,7 +603,40 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 		return reverse.RerunCommandDefaults{ReadyTimeout: readyTimeout}
 	}))
 	rootCmd.AddCommand(newConfigCommand(cfg, &loadedConfig))
-	return rootCmd
+	registerRuntimeFlags(rootCmd, runtimeLimits)
+	registerExecutionTracking(rootCmd, lifecycle)
+	lifecycle.startFailure = func(cmd *cobra.Command) error {
+		if cmd == nil {
+			return nil
+		}
+		fallbackConfig := &appConfig{}
+		fallbackProfile := strings.TrimSpace(profileName)
+		if lifecycle.auditFallbackConfig != nil {
+			fallbackConfig = lifecycle.auditFallbackConfig
+			fallbackProfile = lifecycle.auditFallbackProfile
+		}
+		resetCommandExecutionContext(cmd)
+		return initializeAuditSession(cmd, fallbackConfig, fallbackProfile, &auditConfigOptions{
+			File:            auditFile,
+			Actor:           auditActor,
+			Detail:          auditDetail,
+			OnError:         auditOnError,
+			Required:        auditRequired,
+			KeyFile:         auditKeyFile,
+			MaxBytes:        auditMaxBytes,
+			MaxFiles:        auditMaxFiles,
+			FileChanged:     rootCmd.PersistentFlags().Changed("audit-file"),
+			ActorChanged:    rootCmd.PersistentFlags().Changed("audit-actor"),
+			DetailChanged:   rootCmd.PersistentFlags().Changed("audit-detail"),
+			OnErrorChanged:  rootCmd.PersistentFlags().Changed("audit-on-error"),
+			RequiredChanged: rootCmd.PersistentFlags().Changed("audit-required"),
+			KeyFileChanged:  rootCmd.PersistentFlags().Changed("audit-key-file"),
+			MaxBytesChanged: rootCmd.PersistentFlags().Changed("audit-max-bytes"),
+			MaxFilesChanged: rootCmd.PersistentFlags().Changed("audit-max-files"),
+		}, lifecycle)
+	}
+	lifecycle.flagState = captureCommandFlagState(rootCmd)
+	return rootCmd, lifecycle
 }
 
 func profileSelectionRequiresConfig(profile string, explicit bool) bool {
@@ -273,6 +644,290 @@ func profileSelectionRequiresConfig(profile string, explicit bool) bool {
 		return strings.TrimSpace(profile) != ""
 	}
 	return strings.TrimSpace(os.Getenv(appconfig.ProfileEnvName)) != ""
+}
+
+type auditConfigOptions struct {
+	File            string
+	Actor           string
+	Detail          string
+	OnError         string
+	Required        bool
+	KeyFile         string
+	MaxBytes        int64
+	MaxFiles        int
+	FileChanged     bool
+	ActorChanged    bool
+	DetailChanged   bool
+	OnErrorChanged  bool
+	RequiredChanged bool
+	KeyFileChanged  bool
+	MaxBytesChanged bool
+	MaxFilesChanged bool
+}
+
+func initializeAuditSession(cmd *cobra.Command, cfg *appConfig, profile string, flags *auditConfigOptions, lifecycle *rootLifecycle) error {
+	if cmd == nil || lifecycle == nil {
+		return nil
+	}
+	if flags == nil {
+		flags = &auditConfigOptions{}
+	}
+	if lifecycle.session != nil {
+		return nil
+	}
+	if cfg == nil {
+		cfg = &appConfig{}
+	}
+	file := cfg.AuditFile
+	if flags.FileChanged {
+		file = flags.File
+	}
+	if strings.TrimSpace(file) == "" {
+		return nil
+	}
+	lifecycle.auditAttempted = true
+	detailValue := cfg.AuditDetail
+	if flags.DetailChanged {
+		detailValue = flags.Detail
+	}
+	detail := audit.Detail(strings.ToLower(strings.TrimSpace(detailValue)))
+	if detail == "" {
+		detail = audit.DetailSafe
+	}
+	if detail != audit.DetailSafe && detail != audit.DetailFull {
+		return fmt.Errorf("audit_detail must be safe or full")
+	}
+	policyValue := cfg.AuditOnError
+	if flags.OnErrorChanged {
+		policyValue = flags.OnError
+	}
+	if flags.RequiredChanged && flags.Required {
+		policyValue = "fail"
+	}
+	policy := audit.FailurePolicy(strings.ToLower(strings.TrimSpace(policyValue)))
+	switch policy {
+	case "":
+		policy = audit.FailureDenyMutation
+	case "fail", "required":
+		policy = audit.FailureRequired
+	case audit.FailureWarn, audit.FailureDenyMutation:
+	default:
+		return fmt.Errorf("audit_on_error must be warn, deny-mutation, or fail")
+	}
+	keyFile := cfg.AuditKeyFile
+	if flags.KeyFileChanged {
+		keyFile = flags.KeyFile
+	}
+	actor := cfg.AuditActor
+	if flags.ActorChanged {
+		actor = flags.Actor
+	}
+	maxBytes := cfg.AuditMaxBytes
+	if flags.MaxBytesChanged {
+		maxBytes = flags.MaxBytes
+	}
+	maxFiles := cfg.AuditMaxFiles
+	if flags.MaxFilesChanged {
+		maxFiles = flags.MaxFiles
+	}
+	fileSink, openErr := audit.OpenFileSink(audit.FileOptions{
+		Path: file, KeyPath: keyFile, MaxBytes: maxBytes, MaxFiles: maxFiles,
+	})
+	var sink audit.Sink
+	if openErr != nil {
+		sink = unavailableAuditSink{err: openErr}
+		if policy == audit.FailureRequired {
+			return fmt.Errorf("open audit sink: %w", openErr)
+		}
+	} else {
+		sink = fileSink
+		lifecycle.sink = fileSink
+	}
+	operation := auditOperationName(cmd)
+	session, err := audit.NewSession(audit.SessionOptions{
+		Sink: sink, Detail: detail, FailurePolicy: policy,
+		Operation: operation, Command: cmd.CommandPath(), Profile: profile,
+		Endpoint: dockerapi.Endpoint(), Operator: audit.CurrentOperator(actor),
+		Warning: func(warn error) {
+			if warn != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Audit warning: %s\n", sensitive.RedactText(warn.Error(), sensitive.DefaultProfile()))
+			}
+		},
+	})
+	if err != nil {
+		if lifecycle.sink != nil {
+			_ = lifecycle.sink.Close()
+			lifecycle.sink = nil
+		}
+		return err
+	}
+	lifecycle.session = session
+	if err := session.Start(cmd.Context()); err != nil {
+		if lifecycle.sink != nil {
+			_ = lifecycle.sink.Close()
+			lifecycle.sink = nil
+		}
+		lifecycle.session = nil
+		return err
+	}
+	cmd.SetContext(audit.WithSession(cmd.Context(), session))
+	return nil
+}
+
+func auditOperationName(cmd *cobra.Command) string {
+	if cmd == nil {
+		return "command"
+	}
+	parts := strings.Fields(cmd.CommandPath())
+	if len(parts) > 0 && parts[0] == "dm" {
+		parts = parts[1:]
+	}
+	if len(parts) == 0 {
+		return "command"
+	}
+	for i := range parts {
+		parts[i] = strings.ToLower(strings.TrimSpace(parts[i]))
+		parts[i] = strings.NewReplacer("-", "_", "/", "_").Replace(parts[i])
+	}
+	return strings.Join(parts, ".")
+}
+
+func registerRuntimeFlags(root *cobra.Command, runtimeLimitsForCommand map[*cobra.Command]*runcontrol.Limits) {
+	if root == nil {
+		return
+	}
+	var walk func(*cobra.Command)
+	walk = func(cmd *cobra.Command) {
+		switch runtimeControlForCommand(cmd) {
+		case runtimeControlFlags:
+			limits := &runcontrol.Limits{}
+			commandflags.AddRuntimeFlags(cmd, limits)
+			runtimeLimitsForCommand[cmd] = limits
+		case runtimeControlConfigOnly:
+			// Pull keeps its established --concurrency, --timeout, and
+			// --total-timeout meanings while sharing configured E2 limits.
+			runtimeLimitsForCommand[cmd] = nil
+		}
+		for _, child := range cmd.Commands() {
+			walk(child)
+		}
+	}
+	walk(root)
+}
+
+func applyRuntimeController(cmd *cobra.Command, cfg *appConfig, configuredFields map[string]bool, limitsByCommand map[*cobra.Command]*runcontrol.Limits, lifecycle *rootLifecycle) error {
+	if cmd == nil || lifecycle == nil {
+		return nil
+	}
+	configured, controlled := limitsByCommand[cmd]
+	if !controlled {
+		return nil
+	}
+	limits := runcontrol.Limits{Concurrency: defaultOperationConcurrency}
+	if cfg != nil {
+		if configuredFields["operation_concurrency"] {
+			limits.Concurrency = cfg.OperationConcurrency
+		}
+		limits.Rate = cfg.OperationRateLimit
+		limits.MaxItems = cfg.OperationMaxItems
+		if cfg.OperationTimeout != "" {
+			parsed, err := appconfig.PositiveDuration("operation_timeout", cfg.OperationTimeout, 0)
+			if err != nil {
+				return err
+			}
+			limits.Timeout = parsed
+		}
+	}
+	if configured != nil {
+		flags := cmd.Flags()
+		if flags.Changed("concurrency") {
+			limits.Concurrency = configured.Concurrency
+		}
+		if flags.Changed("operation-timeout") {
+			limits.Timeout = configured.Timeout
+		}
+		if flags.Changed("rate-limit") {
+			limits.Rate = configured.Rate
+		}
+		if flags.Changed("max-items") {
+			limits.MaxItems = configured.MaxItems
+		}
+	}
+	if limits == (runcontrol.Limits{}) {
+		return nil
+	}
+	controller, err := runcontrol.New(limits)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := controller.Context(cmd.Context())
+	cmd.SetContext(ctx)
+	lifecycle.runtimeCancel = cancel
+	return nil
+}
+
+const defaultOperationConcurrency = 8
+
+type runtimeControlMode uint8
+
+const (
+	runtimeControlNone runtimeControlMode = iota
+	runtimeControlFlags
+	runtimeControlConfigOnly
+)
+
+func runtimeControlForCommand(cmd *cobra.Command) runtimeControlMode {
+	if cmd == nil || cmd.RunE == nil {
+		return runtimeControlNone
+	}
+	switch cmd.Name() {
+	case "pull":
+		return runtimeControlConfigOnly
+	case "backup", "restore", "reverse", "rerun", "doctor", "tree",
+		"health", "network", "logs", "diff", "prune", "volumes", "registry", "all":
+		return runtimeControlFlags
+	default:
+		return runtimeControlNone
+	}
+}
+
+func resetCommandExecutionContext(cmd *cobra.Command) {
+	if cmd == nil {
+		return
+	}
+	root := cmd.Root()
+	if root == nil || root == cmd {
+		return
+	}
+	ctx := root.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cmd.SetContext(ctx)
+}
+
+func registerExecutionTracking(root *cobra.Command, lifecycle *rootLifecycle) {
+	if root == nil || lifecycle == nil {
+		return
+	}
+	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
+		lifecycle.failureCommand = cmd
+		return err
+	})
+	var walk func(*cobra.Command)
+	walk = func(cmd *cobra.Command) {
+		if cmd.Runnable() && cmd.Args != nil {
+			validateArgs := cmd.Args
+			cmd.Args = func(current *cobra.Command, args []string) error {
+				lifecycle.failureCommand = current
+				return validateArgs(current, args)
+			}
+		}
+		for _, child := range cmd.Commands() {
+			walk(child)
+		}
+	}
+	walk(root)
 }
 
 type commandFactory struct {
@@ -443,6 +1098,104 @@ func applyOutputDefaults(cmd *cobra.Command, cfg *appConfig, opts *outputOptions
 	if flags.Changed("quiet") && opts.Quiet {
 		opts.Verbose = false
 	}
+}
+
+// applyReportAutomationDefaults maps the global configuration policy onto a
+// report leaf's local flags. Configured thresholds are namespaced; individual
+// reports receive only their scope with the prefix removed, while report all
+// retains the full metric name.
+func applyReportAutomationDefaults(cmd *cobra.Command, cfg *appConfig) error {
+	if cmd == nil || cfg == nil {
+		return nil
+	}
+	flags := cmd.Flags()
+	if failOn := flags.Lookup("fail-on"); failOn != nil && !flags.Changed("fail-on") && strings.TrimSpace(cfg.FailOn) != "" {
+		if err := failOn.Value.Set(cfg.FailOn); err != nil {
+			return fmt.Errorf("apply fail_on: %w", err)
+		}
+	}
+	threshold := flags.Lookup("threshold")
+	if threshold == nil || flags.Changed("threshold") {
+		return nil
+	}
+	values, err := configuredThresholdsForCommand(cmd, cfg.Thresholds)
+	if err != nil {
+		return fmt.Errorf("apply thresholds: %w", err)
+	}
+	// pflag's StringArray value exposes Replace, which avoids retaining the
+	// previous config-derived value across repeated command execution.
+	if replacer, ok := threshold.Value.(interface{ Replace([]string) error }); ok {
+		if err := replacer.Replace(values); err != nil {
+			return fmt.Errorf("apply thresholds: %w", err)
+		}
+		return nil
+	}
+	for _, value := range values {
+		if err := threshold.Value.Set(value); err != nil {
+			return fmt.Errorf("apply threshold %q: %w", value, err)
+		}
+	}
+	return nil
+}
+
+func configuredThresholdsForCommand(cmd *cobra.Command, values []string) ([]string, error) {
+	scope, namespaced := reportThresholdScope(cmd)
+	if scope == "" && !namespaced {
+		return nil, nil
+	}
+	thresholds, err := rpt.ParseScopedThresholds(values)
+	if err != nil {
+		return nil, err
+	}
+	routed := make([]string, 0, len(thresholds))
+	for _, threshold := range thresholds {
+		if namespaced {
+			routed = append(routed, threshold.ScopedValue())
+			continue
+		}
+		if threshold.Scope == scope {
+			routed = append(routed, threshold.UnscopedValue())
+		}
+	}
+	return routed, nil
+}
+
+func reportThresholdScope(cmd *cobra.Command) (scope string, namespaced bool) {
+	if cmd == nil {
+		return "", false
+	}
+	switch cmd.Name() {
+	case rpt.MetricScopeHealth, rpt.MetricScopeNetwork, rpt.MetricScopeLogs, rpt.MetricScopeVolumes, rpt.MetricScopePrune:
+		return cmd.Name(), false
+	case "all":
+		return "", true
+	default:
+		return "", false
+	}
+}
+
+func applyLogBudgetDefaults(cmd *cobra.Command, cfg *appConfig) error {
+	if cmd == nil || cfg == nil {
+		return nil
+	}
+	flags := cmd.Flags()
+	for _, setting := range []struct {
+		flag  string
+		field string
+		value string
+	}{
+		{flag: "max-log-bytes", field: "max_log_bytes", value: cfg.MaxLogBytes},
+		{flag: "max-total-log-bytes", field: "max_total_log_bytes", value: cfg.MaxTotalLogBytes},
+	} {
+		flag := flags.Lookup(setting.flag)
+		if flag == nil || flags.Changed(setting.flag) || strings.TrimSpace(setting.value) == "" {
+			continue
+		}
+		if err := flag.Value.Set(setting.value); err != nil {
+			return fmt.Errorf("apply %s: %w", setting.field, err)
+		}
+	}
+	return nil
 }
 
 func applyDockerDefaults(cmd *cobra.Command, cfg *appConfig) error {

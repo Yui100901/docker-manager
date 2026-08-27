@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 
+	"docker-manager/internal/runcontrol"
+
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
@@ -327,6 +329,9 @@ func prepareRestoreBackup(ctx context.Context, source string, opts RestoreOption
 	}
 	if opts.Name != "" && len(prepared.manifest.Containers) != 1 {
 		return nil, fmt.Errorf("--name 只支持恢复单个备份")
+	}
+	if err := runcontrol.CheckItems(ctx, "restore-container", len(prepared.manifest.Containers)); err != nil {
+		return nil, err
 	}
 	if err := validateRestoreManifestArtifacts(resolvedDir, prepared.manifest, opts); err != nil {
 		return nil, err

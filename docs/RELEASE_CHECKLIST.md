@@ -18,6 +18,11 @@
 - [ ] 覆盖率门禁通过：全局至少 70%，配置、认证、runconfig、targets、Docker SDK 和 completion 关键包达到 [TESTING.md](TESTING.md) 的独立阈值。
 - [ ] `go vet ./...` 通过。
 - [ ] 可用时执行 `go test -race ./...` 或 `scripts/check.* -Race`。
+- [ ] E2 定向 test/race 通过：`internal/runcontrol`、`internal/parallel`、`internal/report`、`internal/audit`、`internal/appconfig`、`internal/cli` 及 diagnostics/backup/reverse/pull/images 命令包。
+- [ ] `operation_*` base/profile 合并、显式命令 flag 优先级、边界值、累计 `max-items` 和 timeout/cancel 回归通过；预算超限时没有先发生 Docker mutation 或文件发布。
+- [ ] health/logs/report all 的默认 `16 MiB` 单容器、`256 MiB` 累计日志预算及配置/flag 覆盖通过，流式读取超限后停止。
+- [ ] health/logs/network/volumes/prune/report all 的默认输出兼容、纯 JSON、SARIF 2.1.0、fail-on/threshold 以及 `0/1/2/130` 退出码测试通过。
+- [ ] JSONL 审计 lifecycle、safe/full、warn/deny-mutation/fail、HMAC key、Unix `0700`/`0600`、Windows 部署 ACL、文件锁、轮转和 link/reparse 拒绝测试通过。
 - [ ] `staticcheck ./...` 和 `govulncheck ./...` 阻断门禁通过。
 - [ ] ShellCheck 完整通过，未使用 `--no-shellcheck` / `-NoShellCheck` 绕过发布门禁。
 - [ ] `git diff HEAD --check` 无尾随空格、冲突标记或补丁格式问题。
@@ -64,6 +69,13 @@ Windows:
 - [ ] 至少使用两个隔离 registry 验证 policy 不串用 CA、代理、realm allowlist 或凭据；HTTPS 私有 CA 成功且错误 CA 失败，CA 目录链接/混合 PEM/数量和大小越界均失败关闭。
 - [ ] `plain_http` 只对精确匹配的 registry 生效，显式 `--plain-http=false` 可覆盖配置；未配置的 registry 不降级到 HTTP。
 - [ ] 已分别验证 `dm` 直连 registry policy 和 Docker daemon push 的 CA/代理配置，发布说明没有混淆两条链路。
+- [ ] E2 配置在 base 和选中 profile 中生效，`config show --effective --show-source` 正确显示 `operation_*`、日志预算、报告策略和审计来源。
+- [ ] runtime flag 只暴露给 diagnostics、backup/restore、reverse/rerun；pull 仅继承配置 controller，config/version/completion/image load/save 不受配置 controller 影响。
+- [ ] 六个自动化报告入口均验证 text/json/SARIF；门禁单独失败返回 `2`，运行错误返回 `1`，SIGINT 返回 `130`，机器输出未混入文本门禁尾部。
+- [ ] 远程只读规模测试覆盖并发、timeout、rate、max-items 和日志预算；测试前后 container/image/volume/network 数量一致。
+- [ ] 审计 JSONL 每行可解析、同一 run 的 sequence 递增，safe 事件不含原始 endpoint/资源标识/凭据；临时审计文件、key、lock 和轮转文件已清理。
+- [ ] 审计写失败时 `deny-mutation`/`fail` 在 authorized 事件落盘前保持零 mutation；`warn` 行为只在明确接受审计降级的用例中启用。
+- [ ] 显式 `--audit-file` 对参数缺失、未知 flag 和配置加载失败生成完整失败 lifecycle；同一 root 重复执行不复用已结束 session 或已取消 context。
 - [ ] 破坏性命令测试只作用于测试 label、测试容器、测试 volume 或临时 registry。
 - [ ] image/volume prune 未传 `--allow-non-atomic-delete` 时零删除，显式确认后只删除固定测试候选。
 - [ ] 分卷备份成功后 commit manifest/digest 完整且无 pending/staging 残留；中断恢复不删除 foreign replacement。

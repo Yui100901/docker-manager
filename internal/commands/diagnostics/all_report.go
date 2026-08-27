@@ -18,11 +18,11 @@ import (
 )
 
 const (
-	reportAllKindHealth  = "health"
-	reportAllKindNetwork = "network"
-	reportAllKindLogs    = "logs"
-	reportAllKindVolumes = "volumes"
-	reportAllKindPrune   = "prune"
+	reportAllKindHealth  = rpt.MetricScopeHealth
+	reportAllKindNetwork = rpt.MetricScopeNetwork
+	reportAllKindLogs    = rpt.MetricScopeLogs
+	reportAllKindVolumes = rpt.MetricScopeVolumes
+	reportAllKindPrune   = rpt.MetricScopePrune
 )
 
 var defaultReportAllKinds = []string{
@@ -43,10 +43,13 @@ type ReportAllOptions struct {
 
 	HealthLogs bool
 
-	LogTail     int
-	LogContext  int
-	LogSince    string
-	LogKeywords []string
+	LogTail          int
+	LogContext       int
+	LogSince         string
+	LogKeywords      []string
+	MaxLogBytes      int64
+	MaxTotalLogBytes int64
+	logBudget        *logReadBudget
 
 	VolumeAll       bool
 	VolumeNoTrunc   bool
@@ -59,6 +62,7 @@ type ReportAllOptions struct {
 	PruneProtectLabels []string
 
 	commandflags.FormatOptions
+	commandflags.AutomationOptions
 }
 
 type ReportAllReport struct {
@@ -71,6 +75,7 @@ type ReportAllReport struct {
 	Logs           *LogsScanReport    `json:"logs,omitempty"`
 	Volumes        *VolumeReport      `json:"volumes,omitempty"`
 	Prune          *PruneReport       `json:"prune,omitempty"`
+	Evaluation     *rpt.Evaluation    `json:"evaluation,omitempty"`
 }
 
 type ReportAllSection struct {
@@ -93,16 +98,33 @@ type reportAllSectionResult struct {
 
 func NewReportAllCommand() *cobra.Command {
 	opts := defaultReportAllOptions()
+	maxLogBytes := "16M"
+	maxTotalLogBytes := "256M"
 	cmd := &cobra.Command{
 		Use:   "all",
 		Short: "聚合输出 health、network、logs、volumes 和 prune dry-run 报告",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := applyLogBudgetValues(&opts.MaxLogBytes, &opts.MaxTotalLogBytes, maxLogBytes, maxTotalLogBytes); err != nil {
+				return err
+			}
+			policy, err := prepareReportAutomation(opts.Format, opts.AutomationOptions, reportAllMetricDefinitions())
+			if err != nil {
+				return err
+			}
 			report, err := runReportAll(cmd.Context(), opts)
 			if report.GeneratedAt == "" {
 				return err
 			}
-			if printErr := rpt.Print(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
+			evaluation := automationEvaluation(policy, reportAllAutomationData(report), err == nil)
+			if exposeAutomationEvaluation(opts.Format, policy) {
+				report.Evaluation = evaluation
+			}
+			renderEvaluation := evaluation
+			if !exposeAutomationEvaluation(opts.Format, policy) {
+				renderEvaluation = nil
+			}
+			if printErr := rpt.PrintEvaluated(cmd.OutOrStdout(), opts.Format, report, renderEvaluation, func(w io.Writer) {
 				printReportAll(w, report, opts)
 			}); printErr != nil {
 				return printErr
@@ -110,7 +132,7 @@ func NewReportAllCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("聚合报告存在失败项: %w", err)
 			}
-			return nil
+			return evaluation.GateError()
 		},
 	}
 	cmd.Flags().StringArrayVar(&opts.Include, "include", nil, "只运行指定报告，支持逗号分隔: health,network,logs,volumes,prune")
@@ -122,18 +144,28 @@ func NewReportAllCommand() *cobra.Command {
 	cmd.Flags().IntVar(&opts.LogContext, "log-context", 0, "logs 子报告命中日志前后输出多少行上下文")
 	cmd.Flags().StringVar(&opts.LogSince, "log-since", "", "logs 子报告只扫描该时间之后的日志，例如 30m、2h 或 RFC3339")
 	cmd.Flags().StringArrayVar(&opts.LogKeywords, "log-keyword", opts.LogKeywords, "logs/health 日志扫描关键词，可重复指定")
+	cmd.Flags().StringVar(&maxLogBytes, "max-log-bytes", maxLogBytes, "每个容器最多读取的日志字节数，支持 K/M/G/T 后缀")
+	cmd.Flags().StringVar(&maxTotalLogBytes, "max-total-log-bytes", maxTotalLogBytes, "整条聚合命令累计最多读取的日志字节数，支持 K/M/G/T 后缀")
 	cmd.Flags().BoolVar(&opts.VolumeAll, "volume-all", false, "volumes 子报告显示所有 volume")
 	cmd.Flags().BoolVar(&opts.VolumeNoTrunc, "volume-no-trunc", false, "volumes 子报告显示完整 volume 名称和挂载点")
 	commandflags.AddReportAllVolumeSizeFlags(cmd, &opts.VolumeSizeMode, opts.VolumeSizeMode, &opts.VolumeSizeImage, opts.VolumeSizeImage)
 	commandflags.AddReportAllPruneScopeFlags(cmd, &opts.PruneOnly, &opts.PruneFilters, &opts.PruneUntil, &opts.PruneProtectLabels)
-	commandflags.AddReportFormatFlag(cmd, &opts.Format)
+	commandflags.AddAutomationReportFlags(cmd, &opts.Format, &opts.AutomationOptions, automationMetricNames(reportAllMetricDefinitions()))
 	return cmd
 }
 
 func runReportAll(ctx context.Context, opts ReportAllOptions) (ReportAllReport, error) {
+	if _, err := prepareReportAutomation(opts.Format, opts.AutomationOptions, reportAllMetricDefinitions()); err != nil {
+		return ReportAllReport{}, err
+	}
 	if _, err := normalizeRedactProfile(opts.RedactProfile, opts.RedactSecrets); err != nil {
 		return ReportAllReport{}, err
 	}
+	budget, err := prepareLogReadBudget(opts.MaxLogBytes, opts.MaxTotalLogBytes, opts.logBudget)
+	if err != nil {
+		return ReportAllReport{}, err
+	}
+	opts.logBudget = budget
 	selected, err := selectReportAllKinds(opts.Include, opts.Skip)
 	if err != nil {
 		return ReportAllReport{}, err
@@ -196,6 +228,9 @@ func runReportAllSection(ctx context.Context, kind string, opts ReportAllOptions
 		childOpts.ContainerFilters = append([]string(nil), opts.Filters...)
 		childOpts.RedactSecrets = opts.RedactSecrets
 		childOpts.RedactProfile = opts.RedactProfile
+		childOpts.MaxLogBytes = opts.MaxLogBytes
+		childOpts.MaxTotalLogBytes = opts.MaxTotalLogBytes
+		childOpts.logBudget = opts.logBudget
 		child, runErr := runHealthReport(ctx, childOpts)
 		result.health = &child
 		result.err = runErr
@@ -216,6 +251,9 @@ func runReportAllSection(ctx context.Context, kind string, opts ReportAllOptions
 		childOpts.Filters = append([]string(nil), opts.Filters...)
 		childOpts.RedactSecrets = opts.RedactSecrets
 		childOpts.RedactProfile = opts.RedactProfile
+		childOpts.MaxLogBytes = opts.MaxLogBytes
+		childOpts.MaxTotalLogBytes = opts.MaxTotalLogBytes
+		childOpts.logBudget = opts.logBudget
 		if validateErr := validateLogsScanArgs(childOpts); validateErr != nil {
 			result.err = validateErr
 			break

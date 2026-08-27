@@ -21,6 +21,17 @@ func TestForEachIndexVisitsAllIndexes(t *testing.T) {
 	}
 }
 
+func TestForEachIndexAcceptsNilContext(t *testing.T) {
+	var calls atomic.Int32
+	//lint:ignore SA1012 This verifies the helper's documented nil-context fallback.
+	ForEachIndex(nil, 4, 2, func(context.Context, int) {
+		calls.Add(1)
+	})
+	if got := calls.Load(); got != 4 {
+		t.Fatalf("calls = %d, want 4", got)
+	}
+}
+
 func TestForEachIndexRespectsLimit(t *testing.T) {
 	var active int32
 	var maxActive int32
@@ -49,6 +60,38 @@ func TestForEachIndexSkipsWorkWhenCanceled(t *testing.T) {
 	})
 	if calls != 0 {
 		t.Fatalf("calls = %d, want 0", calls)
+	}
+}
+
+func TestForEachIndexCancellationDoesNotBlockProducer(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ForEachIndex(ctx, 100, 1, func(taskCtx context.Context, _ int) {
+			select {
+			case <-started:
+			default:
+				close(started)
+			}
+			<-taskCtx.Done()
+		})
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("callback did not start")
+	}
+	// Give the producer time to block trying to hand off the next index while
+	// the sole worker remains in the callback.
+	time.Sleep(10 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("ForEachIndex remained blocked after cancellation")
 	}
 }
 

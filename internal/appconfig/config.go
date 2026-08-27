@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/url"
 	"os"
@@ -13,6 +14,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"docker-manager/internal/audit"
+	"docker-manager/internal/report"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -40,6 +44,21 @@ type Config struct {
 	RegistryCAFile            string   `yaml:"registry_ca_file"`
 	RegistryCAPath            string   `yaml:"registry_ca_path"`
 	ReadyTimeout              string   `yaml:"ready_timeout"`
+	OperationConcurrency      int      `yaml:"operation_concurrency"`
+	OperationTimeout          string   `yaml:"operation_timeout"`
+	OperationRateLimit        float64  `yaml:"operation_rate_limit"`
+	OperationMaxItems         int      `yaml:"operation_max_items"`
+	MaxLogBytes               string   `yaml:"max_log_bytes"`
+	MaxTotalLogBytes          string   `yaml:"max_total_log_bytes"`
+	FailOn                    string   `yaml:"fail_on"`
+	Thresholds                []string `yaml:"thresholds"`
+	AuditFile                 string   `yaml:"audit_file"`
+	AuditActor                string   `yaml:"audit_actor"`
+	AuditDetail               string   `yaml:"audit_detail"`
+	AuditOnError              string   `yaml:"audit_on_error"`
+	AuditMaxBytes             int64    `yaml:"audit_max_bytes"`
+	AuditMaxFiles             int      `yaml:"audit_max_files"`
+	AuditKeyFile              string   `yaml:"audit_key_file"`
 	RedactProfile             string   `yaml:"redact_profile"`
 	RedactSecrets             bool     `yaml:"redact_secrets"`
 	CredentialHelpersDisabled bool     `yaml:"credential_helpers_disabled"`
@@ -421,7 +440,109 @@ func validateConfigValues(cfg Config) error {
 			return err
 		}
 	}
+	if cfg.OperationConcurrency < 0 || cfg.OperationConcurrency > 64 {
+		return fmt.Errorf("operation_concurrency must be between 0 and 64")
+	}
+	if cfg.OperationMaxItems < 0 || cfg.OperationMaxItems > 100000 {
+		return fmt.Errorf("operation_max_items must be between 0 and 100000")
+	}
+	if math.IsNaN(cfg.OperationRateLimit) || math.IsInf(cfg.OperationRateLimit, 0) || cfg.OperationRateLimit < 0 || cfg.OperationRateLimit > 1000 {
+		return fmt.Errorf("operation_rate_limit must be between 0 and 1000")
+	}
+	if timeout, err := PositiveDuration("operation_timeout", cfg.OperationTimeout, 0); err != nil {
+		return err
+	} else if timeout > 24*time.Hour {
+		return fmt.Errorf("operation_timeout must not exceed 24h")
+	}
+	for _, setting := range []struct {
+		name  string
+		value string
+		max   uint64
+	}{
+		{name: "max_log_bytes", value: cfg.MaxLogBytes, max: 256 << 20},
+		{name: "max_total_log_bytes", value: cfg.MaxTotalLogBytes, max: 4 << 30},
+	} {
+		if err := validateByteSize(setting.name, setting.value, setting.max); err != nil {
+			return err
+		}
+	}
+	if err := validateFailOn(cfg.FailOn); err != nil {
+		return err
+	}
+	if err := validateThresholds(cfg.Thresholds); err != nil {
+		return err
+	}
+	if err := validateAuditConfig(cfg); err != nil {
+		return err
+	}
 	return validateHTTPSOrigins("registry_auth_realms", cfg.RegistryAuthRealms)
+}
+
+func validateByteSize(name, value string, maximum uint64) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	multiplier := uint64(1)
+	switch suffix := strings.ToUpper(value[len(value)-1:]); suffix {
+	case "K":
+		multiplier = 1 << 10
+		value = value[:len(value)-1]
+	case "M":
+		multiplier = 1 << 20
+		value = value[:len(value)-1]
+	case "G":
+		multiplier = 1 << 30
+		value = value[:len(value)-1]
+	case "T":
+		multiplier = 1 << 40
+		value = value[:len(value)-1]
+	}
+	parsed, err := strconv.ParseUint(strings.TrimSpace(value), 10, 64)
+	if err != nil || parsed == 0 || parsed > maximum/multiplier {
+		return fmt.Errorf("%s must be a positive byte size not exceeding %d bytes (K/M/G/T suffixes are supported)", name, maximum)
+	}
+	return nil
+}
+
+func validateFailOn(value string) error {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "none", "note", "warning", "error":
+		return nil
+	default:
+		return fmt.Errorf("fail_on must be none, note, warning, or error, got %q", value)
+	}
+}
+
+func validateThresholds(values []string) error {
+	_, err := report.ParseScopedThresholds(values)
+	return err
+}
+
+func validateAuditConfig(cfg Config) error {
+	switch strings.ToLower(strings.TrimSpace(cfg.AuditDetail)) {
+	case "", "safe", "full":
+	default:
+		return fmt.Errorf("audit_detail must be safe or full, got %q", cfg.AuditDetail)
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.AuditOnError)) {
+	case "", "warn", "deny-mutation", "fail":
+	default:
+		return fmt.Errorf("audit_on_error must be warn, deny-mutation, or fail, got %q", cfg.AuditOnError)
+	}
+	if cfg.AuditMaxBytes < 0 || cfg.AuditMaxBytes > 1<<40 {
+		return fmt.Errorf("audit_max_bytes must be between 0 and %d", int64(1<<40))
+	}
+	if cfg.AuditMaxBytes > 0 && cfg.AuditMaxBytes < int64(audit.DefaultMaxEventBytes) {
+		return fmt.Errorf("audit_max_bytes must be 0 or at least %d", audit.DefaultMaxEventBytes)
+	}
+	if cfg.AuditMaxFiles < 0 || cfg.AuditMaxFiles > 100 {
+		return fmt.Errorf("audit_max_files must be between 0 and 100")
+	}
+	if len(cfg.AuditActor) > 256 || strings.ContainsAny(cfg.AuditActor, "\r\n\x00") {
+		return fmt.Errorf("audit_actor must not exceed 256 bytes or contain control line characters")
+	}
+	return nil
 }
 
 func validateProfileName(name string) error {
@@ -638,6 +759,51 @@ func mergeConfig(base, overlay Config, presence configPresence) Config {
 	}
 	if fields["ready_timeout"] {
 		result.ReadyTimeout = overlay.ReadyTimeout
+	}
+	if fields["operation_concurrency"] {
+		result.OperationConcurrency = overlay.OperationConcurrency
+	}
+	if fields["operation_timeout"] {
+		result.OperationTimeout = overlay.OperationTimeout
+	}
+	if fields["operation_rate_limit"] {
+		result.OperationRateLimit = overlay.OperationRateLimit
+	}
+	if fields["operation_max_items"] {
+		result.OperationMaxItems = overlay.OperationMaxItems
+	}
+	if fields["max_log_bytes"] {
+		result.MaxLogBytes = overlay.MaxLogBytes
+	}
+	if fields["max_total_log_bytes"] {
+		result.MaxTotalLogBytes = overlay.MaxTotalLogBytes
+	}
+	if fields["fail_on"] {
+		result.FailOn = overlay.FailOn
+	}
+	if fields["thresholds"] {
+		result.Thresholds = cloneStrings(overlay.Thresholds)
+	}
+	if fields["audit_file"] {
+		result.AuditFile = overlay.AuditFile
+	}
+	if fields["audit_actor"] {
+		result.AuditActor = overlay.AuditActor
+	}
+	if fields["audit_detail"] {
+		result.AuditDetail = overlay.AuditDetail
+	}
+	if fields["audit_on_error"] {
+		result.AuditOnError = overlay.AuditOnError
+	}
+	if fields["audit_max_bytes"] {
+		result.AuditMaxBytes = overlay.AuditMaxBytes
+	}
+	if fields["audit_max_files"] {
+		result.AuditMaxFiles = overlay.AuditMaxFiles
+	}
+	if fields["audit_key_file"] {
+		result.AuditKeyFile = overlay.AuditKeyFile
 	}
 	if fields["redact_profile"] {
 		result.RedactProfile = overlay.RedactProfile

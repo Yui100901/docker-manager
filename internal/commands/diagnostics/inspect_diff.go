@@ -15,6 +15,7 @@ import (
 	"docker-manager/internal/docker"
 	"docker-manager/internal/parallel"
 	rpt "docker-manager/internal/report"
+	"docker-manager/internal/runcontrol"
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
@@ -93,6 +94,9 @@ func runInspectDiff(ctx context.Context, leftName, rightName string, opts Inspec
 		return InspectDiffReport{}, err
 	}
 	names := []string{leftName, rightName}
+	if err := runcontrol.CheckItems(ctx, "container", len(names)); err != nil {
+		return InspectDiffReport{}, err
+	}
 	inspects := make([]container.InspectResponse, len(names))
 	if err := parallel.ForEachIndexErr(ctx, len(names), len(names), func(ctx context.Context, i int) error {
 		inspect, err := svc.InspectContainer(ctx, names[i])

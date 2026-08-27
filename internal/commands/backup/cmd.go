@@ -3,8 +3,10 @@ package backup
 import (
 	"fmt"
 	"io"
+	"path/filepath"
 	"time"
 
+	"docker-manager/internal/audit"
 	"docker-manager/internal/commandflags"
 	"docker-manager/internal/completion"
 	"docker-manager/internal/docker"
@@ -150,6 +152,19 @@ func NewRestoreCommandWithDefaults(defaults func() RestoreCommandDefaults) *cobr
 				if err := validatePreparedRestoreSet(cmd.Context(), preparedBackups, runOpts); err != nil {
 					return fmt.Errorf("恢复预检失败: %w", err)
 				}
+				if session := audit.FromContext(cmd.Context()); session != nil {
+					candidates, err := restoreMutationCandidates(preparedBackups)
+					if err != nil {
+						return fmt.Errorf("构建恢复审计候选失败: %w", err)
+					}
+					if _, err := session.AuthorizeMutation(cmd.Context(), audit.MutationRequest{
+						Scope:        audit.MutationDockerPersistent,
+						Confirmation: audit.Confirmation{Required: true, Provided: runOpts.Confirm, Mechanism: "--confirm"},
+						Candidates:   candidates,
+					}); err != nil {
+						return fmt.Errorf("审计授权失败，未执行恢复: %w", err)
+					}
+				}
 				printRestoreDockerTarget(cmd.OutOrStdout())
 				for _, prepared := range preparedBackups {
 					if err := executePreparedRestore(cmd.Context(), prepared, runOpts); err != nil {
@@ -186,6 +201,49 @@ func NewRestoreCommandWithDefaults(defaults func() RestoreCommandDefaults) *cobr
 	cmd.Flags().IntVar(&opts.MaxParts, "max-parts", 0, "分卷恢复允许的最大连续分卷数；默认 999，只允许下调")
 	commandflags.AddReportFormatFlag(cmd, &opts.Format)
 	return cmd
+}
+
+func restoreMutationCandidates(preparedBackups []*preparedRestoreBackup) ([]audit.CandidateInput, error) {
+	var candidates []audit.CandidateInput
+	for _, prepared := range preparedBackups {
+		if prepared == nil {
+			return nil, fmt.Errorf("prepared restore backup is nil")
+		}
+		if len(prepared.targets) != len(prepared.manifest.Containers) {
+			return nil, fmt.Errorf("prepared restore target count %d does not match container count %d", len(prepared.targets), len(prepared.manifest.Containers))
+		}
+		for index, entry := range prepared.manifest.Containers {
+			entryDir, err := restoreEntryDir(prepared.dir, entry)
+			if err != nil {
+				return nil, err
+			}
+			if entry.ImageArchive != "" {
+				imagePath, err := backupFilePath(entryDir, entry.ImageArchive)
+				if err != nil {
+					return nil, err
+				}
+				candidates = append(candidates, audit.CandidateInput{
+					Kind:       "image",
+					Action:     "load",
+					Identifier: imagePath,
+					Display:    filepath.Base(imagePath),
+				})
+			}
+			for _, ref := range entry.Networks {
+				candidates = append(candidates, audit.CandidateInput{Kind: "network", Action: "create", Identifier: ref.Name, Display: ref.Name})
+			}
+			for _, ref := range entry.Volumes {
+				candidates = append(candidates, audit.CandidateInput{Kind: "volume", Action: "create", Identifier: ref.Name, Display: ref.Name})
+			}
+			target := prepared.targets[index]
+			action := "create"
+			if prepared.existingTargets[target] != "" {
+				action = "replace"
+			}
+			candidates = append(candidates, audit.CandidateInput{Kind: "container", Action: action, Identifier: target, Display: target})
+		}
+	}
+	return candidates, nil
 }
 
 func printRestoreDockerTarget(w io.Writer) {

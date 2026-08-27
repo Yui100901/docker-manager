@@ -193,6 +193,72 @@ func TestConfigValidateAndShowSources(t *testing.T) {
 	})
 }
 
+func TestConfigShowEffectiveOperationConcurrencyPreservesExplicitZero(t *testing.T) {
+	tests := []struct {
+		name       string
+		config     string
+		profile    string
+		wantValue  float64
+		wantSource func(string) string
+	}{
+		{
+			name:      "omitted uses default",
+			wantValue: float64(defaultOperationConcurrency),
+			wantSource: func(string) string {
+				return "default"
+			},
+		},
+		{
+			name:      "base explicit zero",
+			config:    "operation_concurrency: 0\n",
+			wantValue: 0,
+			wantSource: func(path string) string {
+				return "config:" + path
+			},
+		},
+		{
+			name:    "profile explicit zero",
+			config:  "operation_concurrency: 5\nprofiles:\n  production:\n    operation_concurrency: 0\n",
+			profile: "production",
+			wantSource: func(path string) string {
+				return "profile:production@" + path
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "dm.yaml")
+			if err := os.WriteFile(path, []byte(test.config), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg := appConfig{}
+			cmd := newRootCommand(&cfg, &outputOptions{})
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&bytes.Buffer{})
+			args := []string{"--config", path}
+			if test.profile != "" {
+				args = append(args, "--profile", test.profile)
+			}
+			args = append(args, "config", "show", "--effective", "--show-source", "--format", "json")
+			cmd.SetArgs(args)
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			var report configShowReport
+			if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+				t.Fatalf("json.Unmarshal() error = %v, output=%q", err, out.String())
+			}
+			if value := report.Values["operation_concurrency"]; value != test.wantValue {
+				t.Fatalf("operation_concurrency = %#v, want %#v", value, test.wantValue)
+			}
+			if source := report.Sources["operation_concurrency"]; source != test.wantSource(path) {
+				t.Fatalf("operation_concurrency source = %q, want %q", source, test.wantSource(path))
+			}
+		})
+	}
+}
+
 func TestConfigShowReportsEffectivePullPlatformDefaultsAndSources(t *testing.T) {
 	tests := []struct {
 		name       string

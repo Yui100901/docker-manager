@@ -122,6 +122,13 @@ func (r *PullRunner) getImage(imageName string, opts PullOptions) error {
 	if err := validatePackageTemporaryBudget(ctx, tempDir, sourceOpts.Limits.TemporaryBytes); err != nil {
 		return err
 	}
+	baseOpts.Limits = sourceOpts.Limits
+	preparedTarget, err := r.preparePulledImageMutation(outputFile, imageInfo, baseOpts)
+	if err != nil {
+		return err
+	}
+	baseOpts.preparedTarget = preparedTarget
+	baseOpts.mutationAuthorized = true
 	err = packageImage(ctx, tempDir, outputFile)
 	if err != nil {
 		return fmt.Errorf("打包镜像失败: %w", err)
@@ -131,7 +138,6 @@ func (r *PullRunner) getImage(imageName string, opts PullOptions) error {
 		return err
 	}
 
-	baseOpts.Limits = sourceOpts.Limits
 	return r.completePulledImage(outputFile, imageInfo, baseOpts)
 }
 

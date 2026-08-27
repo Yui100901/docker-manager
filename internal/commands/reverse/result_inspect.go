@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"docker-manager/internal/parallel"
+	"docker-manager/internal/runcontrol"
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
@@ -33,6 +34,9 @@ func inspectReverseVolumeMetadata(ctx context.Context, names []string) (map[stri
 	meta := map[string]volume.Volume{}
 	if len(names) == 0 {
 		return meta, nil
+	}
+	if err := runcontrol.CheckItems(ctx, "volume", len(names)); err != nil {
+		return nil, err
 	}
 	results := make([]volume.Volume, len(names))
 	errs := make([]error, len(names))
@@ -65,6 +69,9 @@ func inspectReverseNetworkMetadata(ctx context.Context, names []string) (map[str
 	meta := map[string]network.Inspect{}
 	if len(names) == 0 {
 		return meta, nil
+	}
+	if err := runcontrol.CheckItems(ctx, "network", len(names)); err != nil {
+		return nil, err
 	}
 	results := make([]network.Inspect, len(names))
 	errs := make([]error, len(names))

@@ -1,6 +1,9 @@
 package diagnostics
 
-import "docker-manager/internal/commandflags"
+import (
+	"docker-manager/internal/commandflags"
+	rpt "docker-manager/internal/report"
+)
 
 type VolumeOptions struct {
 	All       bool
@@ -9,13 +12,16 @@ type VolumeOptions struct {
 	SizeImage string
 	Filters   []string
 	commandflags.FormatOptions
+	commandflags.AutomationOptions
 }
 
 type VolumeReport struct {
-	DockerEndpoint string        `json:"docker_endpoint"`
-	Volumes        []VolumeRef   `json:"volumes"`
-	Warnings       []string      `json:"warnings,omitempty"`
-	Summary        VolumeSummary `json:"summary"`
+	DockerEndpoint string          `json:"docker_endpoint"`
+	GeneratedAt    string          `json:"generated_at"`
+	Volumes        []VolumeRef     `json:"volumes"`
+	Warnings       []string        `json:"warnings,omitempty"`
+	Summary        VolumeSummary   `json:"summary"`
+	Evaluation     *rpt.Evaluation `json:"evaluation,omitempty"`
 }
 
 type VolumeSummary struct {

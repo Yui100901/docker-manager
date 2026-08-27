@@ -12,9 +12,11 @@ import (
 	"strings"
 	"time"
 
+	"docker-manager/internal/audit"
 	"docker-manager/internal/commandflags"
 	"docker-manager/internal/completion"
 	"docker-manager/internal/docker"
+	"docker-manager/internal/runcontrol"
 
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/container"
@@ -74,6 +76,12 @@ func NewRerunCommandWithDefaults(defaults func() RerunCommandDefaults) *cobra.Co
 			if err != nil {
 				return err
 			}
+			backupDir := inspectBackupDir(time.Now())
+			if !dryRun {
+				if err := authorizeRerunMutations(ctx, targets, backupDir, confirm); err != nil {
+					return fmt.Errorf("审计授权失败，未执行 rerun: %w", err)
+				}
+			}
 			if !dryRun {
 				printDestructiveDockerTarget(cmd.OutOrStdout())
 			}
@@ -81,6 +89,7 @@ func NewRerunCommandWithDefaults(defaults func() RerunCommandDefaults) *cobra.Co
 				DryRun:       dryRun,
 				ReadyTimeout: effectiveReadyTimeout,
 				Output:       cmd.OutOrStdout(),
+				BackupDir:    backupDir,
 			})
 		},
 		ValidArgsFunction: completion.LocalContainers,
@@ -90,6 +99,33 @@ func NewRerunCommandWithDefaults(defaults func() RerunCommandDefaults) *cobra.Co
 	cmd.Flags().DurationVar(&readyTimeout, "ready-timeout", defaultRerunReadyTimeout, "候选容器等待 running/healthy 的最长时间")
 	commandflags.AddContainerFilterFlags(cmd, &running, &filters, "仅筛选正在运行的容器")
 	return cmd
+}
+
+func authorizeRerunMutations(ctx context.Context, targets []string, backupDir string, confirm bool) error {
+	session := audit.FromContext(ctx)
+	if session == nil {
+		return nil
+	}
+	fileCandidates := make([]audit.CandidateInput, 0, len(targets))
+	dockerCandidates := make([]audit.CandidateInput, 0, len(targets))
+	for _, target := range targets {
+		backupPath := inspectBackupPath(backupDir, target)
+		fileCandidates = append(fileCandidates, audit.CandidateInput{Kind: "file", Action: "write", Identifier: backupPath, Display: backupPath})
+		dockerCandidates = append(dockerCandidates, audit.CandidateInput{Kind: "container", Action: "rerun", Identifier: target, Display: target})
+	}
+	if _, err := session.AuthorizeMutation(ctx, audit.MutationRequest{
+		Scope:        audit.MutationFilesystem,
+		Confirmation: audit.Confirmation{Provided: true, Mechanism: "rerun-inspect-backup"},
+		Candidates:   fileCandidates,
+	}); err != nil {
+		return err
+	}
+	_, err := session.AuthorizeMutation(ctx, audit.MutationRequest{
+		Scope:        audit.MutationDockerPersistent,
+		Confirmation: audit.Confirmation{Required: true, Provided: confirm, Mechanism: "--confirm"},
+		Candidates:   dockerCandidates,
+	})
+	return err
 }
 
 func destructiveDockerMessage(action string) string {
@@ -110,6 +146,7 @@ type rerunOptions struct {
 	ReadyTimeout time.Duration
 	Output       io.Writer
 	Service      rerunDockerService
+	BackupDir    string
 }
 
 type rerunDockerService interface {
@@ -130,6 +167,9 @@ func rerunContainers(ctx context.Context, names []string, opts rerunOptions) err
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if err := runcontrol.CheckItems(ctx, "container", len(names)); err != nil {
+		return err
+	}
 	service := opts.Service
 	if service == nil {
 		if err := ensureContainerManager(); err != nil {
@@ -138,7 +178,10 @@ func rerunContainers(ctx context.Context, names []string, opts rerunOptions) err
 		service = containerManager
 	}
 	var firstErr error
-	backupDir := inspectBackupDir(time.Now())
+	backupDir := opts.BackupDir
+	if backupDir == "" {
+		backupDir = inspectBackupDir(time.Now())
+	}
 	for _, name := range names {
 		if err := ctx.Err(); err != nil {
 			return err

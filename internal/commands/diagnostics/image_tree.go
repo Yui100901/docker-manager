@@ -13,6 +13,7 @@ import (
 	"docker-manager/internal/docker"
 	"docker-manager/internal/parallel"
 	rpt "docker-manager/internal/report"
+	"docker-manager/internal/runcontrol"
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/image"
@@ -51,6 +52,9 @@ func NewImageTreeCommand() *cobra.Command {
 }
 
 func runImageTree(ctx context.Context, imageRef string, opts ImageTreeOptions) (ImageTreeReport, error) {
+	if err := runcontrol.CheckItems(ctx, "image", 1); err != nil {
+		return ImageTreeReport{}, err
+	}
 	svc, err := newImageTreeDockerService()
 	if err != nil {
 		return ImageTreeReport{}, err
@@ -70,6 +74,9 @@ func runImageTree(ctx context.Context, imageRef string, opts ImageTreeOptions) (
 	containers, err := svc.ListContainers(ctx, true)
 	if err != nil {
 		return ImageTreeReport{}, fmt.Errorf("list containers: %w", err)
+	}
+	if err := runcontrol.CheckItems(ctx, "image-tree-related-resource", len(images)+len(containers)); err != nil {
+		return ImageTreeReport{}, err
 	}
 	containerInspects, err := inspectImageTreeContainers(ctx, svc, containers)
 	if err != nil {

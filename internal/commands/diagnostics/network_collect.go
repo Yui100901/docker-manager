@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"docker-manager/internal/parallel"
+	"docker-manager/internal/runcontrol"
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
@@ -112,6 +113,9 @@ func buildNetworkReportDetailed(containers []container.Summary, inspectByID map[
 }
 
 func inspectNetworkContainers(ctx context.Context, svc networkDockerService, containers []container.Summary) (map[string]container.InspectResponse, []string, error) {
+	if err := runcontrol.CheckItems(ctx, "container", len(containers)); err != nil {
+		return nil, nil, err
+	}
 	inspects := make(map[string]container.InspectResponse, len(containers))
 	warningsByIndex := make([]string, len(containers))
 	inspectsByIndex := make([]container.InspectResponse, len(containers))
@@ -148,6 +152,9 @@ func inspectNetworkContainers(ctx context.Context, svc networkDockerService, con
 }
 
 func inspectNetworks(ctx context.Context, svc networkDockerService, networks []network.Summary) ([]network.Inspect, []string, error) {
+	if err := runcontrol.CheckItems(ctx, "network", len(networks)); err != nil {
+		return nil, nil, err
+	}
 	inspects := make([]network.Inspect, len(networks))
 	warningsByIndex := make([]string, len(networks))
 	parallel.ForEachIndex(ctx, len(networks), diagnosticsInspectConcurrency, func(ctx context.Context, i int) {

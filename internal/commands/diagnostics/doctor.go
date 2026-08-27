@@ -11,6 +11,7 @@ import (
 	"docker-manager/internal/parallel"
 	"docker-manager/internal/registryauth"
 	rpt "docker-manager/internal/report"
+	"docker-manager/internal/runcontrol"
 
 	"github.com/spf13/cobra"
 )
@@ -59,7 +60,10 @@ func NewDoctorCommandWithDefaults(defaults func() DoctorDefaults) *cobra.Command
 			opts.registryCAFileExplicit = cmd.Flags().Changed("registry-ca-file")
 			opts.registryCAPathExplicit = cmd.Flags().Changed("registry-ca-path")
 			opts.timeoutExplicit = cmd.Flags().Changed("timeout")
-			report := runDoctor(cmd.Context(), opts)
+			report, err := runDoctor(cmd.Context(), opts)
+			if err != nil {
+				return err
+			}
 			return rpt.Print(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
 				printDoctorReport(w, report)
 			})
@@ -81,7 +85,7 @@ func NewDoctorCommandWithDefaults(defaults func() DoctorDefaults) *cobra.Command
 	return cmd
 }
 
-func runDoctor(ctx context.Context, opts DoctorOptions) DoctorReport {
+func runDoctor(ctx context.Context, opts DoctorOptions) (DoctorReport, error) {
 	if opts.Timeout <= 0 {
 		opts.Timeout = 5 * time.Second
 	}
@@ -138,12 +142,18 @@ func runDoctor(ctx context.Context, opts DoctorOptions) DoctorReport {
 		})
 		nextIndex++
 	}
+	if err := runcontrol.CheckItems(ctx, "doctor-check", len(groups)); err != nil {
+		return report, err
+	}
 	for _, checks := range runDoctorCheckGroups(ctx, nextIndex, groups) {
 		report.Checks = append(report.Checks, checks...)
 	}
+	if err := ctx.Err(); err != nil {
+		return report, err
+	}
 	report.OverallStatus = doctorOverallStatus(report.Checks)
 	report.Recommendations = doctorRecommendations(report.Checks)
-	return report
+	return report, nil
 }
 
 type doctorCheckGroup struct {

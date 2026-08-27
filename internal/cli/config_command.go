@@ -5,10 +5,12 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"docker-manager/internal/appconfig"
+	"docker-manager/internal/audit"
 	"docker-manager/internal/commandflags"
 	"docker-manager/internal/docker"
 	rpt "docker-manager/internal/report"
@@ -162,6 +164,20 @@ func buildConfigShowReport(cmd *cobra.Command, cfg *appConfig, loaded *appconfig
 	set("registry_ca_file", cfg.RegistryCAFile, configSource("registry_ca_file"))
 	set("registry_ca_path", cfg.RegistryCAPath, configSource("registry_ca_path"))
 	set("ready_timeout", durationDisplay(cfg.ReadyTimeout, 30*time.Second), configSource("ready_timeout"))
+	operationConcurrency := cfg.OperationConcurrency
+	operationConcurrencySource := configSource("operation_concurrency")
+	if operationConcurrencySource == "default" {
+		operationConcurrency = defaultOperationConcurrency
+	}
+	set("operation_concurrency", operationConcurrency, operationConcurrencySource)
+	set("operation_timeout", durationDisplayOptional(cfg.OperationTimeout), configSource("operation_timeout"))
+	set("operation_rate_limit", cfg.OperationRateLimit, configSource("operation_rate_limit"))
+	set("operation_max_items", cfg.OperationMaxItems, configSource("operation_max_items"))
+	set("max_log_bytes", byteSizeDisplay(cfg.MaxLogBytes, 16<<20), configSource("max_log_bytes"))
+	set("max_total_log_bytes", byteSizeDisplay(cfg.MaxTotalLogBytes, 256<<20), configSource("max_total_log_bytes"))
+	set("fail_on", configStringDefault(cfg.FailOn, "none"), configSource("fail_on"))
+	set("thresholds", append([]string(nil), cfg.Thresholds...), configSource("thresholds"))
+	setEffectiveAuditValues(set, cmd, cfg, configSource)
 	effectiveRedactProfile, redactProfileSource := configShowRedactProfile(cmd, cfg, loaded)
 	set("redact_profile", effectiveRedactProfile, redactProfileSource)
 	redactSecretsChanged := rootFlags.Changed("redact-secrets")
@@ -206,6 +222,21 @@ func setRawConfigValues(set func(string, any, string), cfg appConfig, source fun
 	set("registry_ca_file", cfg.RegistryCAFile, source("registry_ca_file"))
 	set("registry_ca_path", cfg.RegistryCAPath, source("registry_ca_path"))
 	set("ready_timeout", cfg.ReadyTimeout, source("ready_timeout"))
+	set("operation_concurrency", cfg.OperationConcurrency, source("operation_concurrency"))
+	set("operation_timeout", cfg.OperationTimeout, source("operation_timeout"))
+	set("operation_rate_limit", cfg.OperationRateLimit, source("operation_rate_limit"))
+	set("operation_max_items", cfg.OperationMaxItems, source("operation_max_items"))
+	set("max_log_bytes", cfg.MaxLogBytes, source("max_log_bytes"))
+	set("max_total_log_bytes", cfg.MaxTotalLogBytes, source("max_total_log_bytes"))
+	set("fail_on", cfg.FailOn, source("fail_on"))
+	set("thresholds", append([]string(nil), cfg.Thresholds...), source("thresholds"))
+	set("audit_file", cfg.AuditFile, source("audit_file"))
+	set("audit_actor", cfg.AuditActor, source("audit_actor"))
+	set("audit_detail", cfg.AuditDetail, source("audit_detail"))
+	set("audit_on_error", cfg.AuditOnError, source("audit_on_error"))
+	set("audit_max_bytes", cfg.AuditMaxBytes, source("audit_max_bytes"))
+	set("audit_max_files", cfg.AuditMaxFiles, source("audit_max_files"))
+	set("audit_key_file", cfg.AuditKeyFile, source("audit_key_file"))
 	redactProfileSource := source("redact_profile")
 	if redactProfileSource == "default" {
 		redactProfileSource = source("redact_secrets")
@@ -327,6 +358,148 @@ func durationDisplay(value string, fallback time.Duration) string {
 		return value
 	}
 	return parsed.String()
+}
+
+func durationDisplayOptional(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "disabled"
+	}
+	return durationDisplay(value, 0)
+}
+
+func byteSizeDisplay(value string, fallback uint64) uint64 {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	parsed, err := parseConfigByteSize(value)
+	if err != nil {
+		return 0
+	}
+	return parsed
+}
+
+func parseConfigByteSize(value string) (uint64, error) {
+	value = strings.TrimSpace(value)
+	multiplier := uint64(1)
+	switch strings.ToUpper(value[len(value)-1:]) {
+	case "K":
+		multiplier, value = 1<<10, value[:len(value)-1]
+	case "M":
+		multiplier, value = 1<<20, value[:len(value)-1]
+	case "G":
+		multiplier, value = 1<<30, value[:len(value)-1]
+	case "T":
+		multiplier, value = 1<<40, value[:len(value)-1]
+	}
+	parsed, err := strconv.ParseUint(strings.TrimSpace(value), 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	return parsed * multiplier, nil
+}
+
+func setEffectiveAuditValues(set func(string, any, string), cmd *cobra.Command, cfg *appConfig, configSource func(string) string) {
+	rootFlags := cmd.Root().PersistentFlags()
+	stringValue := func(configured, configuredSource string, flagNames ...string) (string, string) {
+		for _, name := range flagNames {
+			flag := rootFlags.Lookup(name)
+			if flag == nil || !flag.Changed {
+				continue
+			}
+			value, err := rootFlags.GetString(name)
+			if err == nil {
+				return value, "flag:--" + name
+			}
+		}
+		return configured, configuredSource
+	}
+
+	auditFile, auditFileSource := stringValue(cfg.AuditFile, configSource("audit_file"), "audit-file")
+	set("audit_file", auditFile, auditFileSource)
+	auditActor, auditActorSource := stringValue(cfg.AuditActor, configSource("audit_actor"), "audit-actor")
+	set("audit_actor", auditActor, auditActorSource)
+	auditKeyFile, auditKeyFileSource := stringValue(cfg.AuditKeyFile, configSource("audit_key_file"), "audit-key-file")
+	set("audit_key_file", auditKeyFile, auditKeyFileSource)
+
+	detail, detailSource := stringValue(cfg.AuditDetail, configSource("audit_detail"), "audit-detail", "audit-level")
+	detail = strings.ToLower(strings.TrimSpace(detail))
+	if detail == "" {
+		detail = string(audit.DetailSafe)
+	}
+	set("audit_detail", detail, detailSource)
+
+	policy, policySource := stringValue(cfg.AuditOnError, configSource("audit_on_error"), "audit-on-error", "audit-failure-policy")
+	policy = strings.ToLower(strings.TrimSpace(policy))
+	switch policy {
+	case "":
+		policy = string(audit.FailureDenyMutation)
+	case "required":
+		policy = "fail"
+	}
+	requiredChanged := rootFlags.Lookup("audit-required") != nil && rootFlags.Changed("audit-required")
+	requiredFlag := false
+	if rootFlags.Lookup("audit-required") != nil {
+		requiredFlag, _ = rootFlags.GetBool("audit-required")
+	}
+	if requiredChanged && requiredFlag {
+		policy = "fail"
+		policySource = "flag:--audit-required"
+	}
+	set("audit_on_error", policy, policySource)
+	requiredSource := policySource
+	if requiredChanged && !requiredFlag && policy != "fail" {
+		requiredSource = "flag:--audit-required"
+	}
+	set("audit_required", policy == "fail", requiredSource)
+
+	maxBytes := cfg.AuditMaxBytes
+	maxBytesSource := configSource("audit_max_bytes")
+	if rootFlags.Lookup("audit-max-bytes") != nil && rootFlags.Changed("audit-max-bytes") {
+		if value, err := rootFlags.GetInt64("audit-max-bytes"); err == nil {
+			maxBytes = value
+			maxBytesSource = "flag:--audit-max-bytes"
+		}
+	}
+	set("audit_max_bytes", configInt64OrDefault(maxBytes, audit.DefaultAuditMaxBytes), maxBytesSource)
+
+	maxFiles := cfg.AuditMaxFiles
+	maxFilesSource := configSource("audit_max_files")
+	if rootFlags.Lookup("audit-max-files") != nil && rootFlags.Changed("audit-max-files") {
+		if value, err := rootFlags.GetInt("audit-max-files"); err == nil {
+			maxFiles = value
+			maxFilesSource = "flag:--audit-max-files"
+		}
+	}
+	set("audit_max_files", configIntOrDefault(maxFiles, audit.DefaultAuditMaxFiles), maxFilesSource)
+
+	if systemActor := rootFlags.Lookup("audit-system-actor"); systemActor != nil {
+		source := "default"
+		if systemActor.Changed {
+			source = "flag:--audit-system-actor"
+		}
+		set("audit_system_actor", systemActor.Value.String(), source)
+	}
+}
+
+func configStringDefault(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
+}
+
+func configIntOrDefault(value, fallback int) int {
+	if value == 0 {
+		return fallback
+	}
+	return value
+}
+
+func configInt64OrDefault(value, fallback int64) int64 {
+	if value == 0 {
+		return fallback
+	}
+	return value
 }
 
 func configStringOrDefault(value, fallback, source string) (string, string) {

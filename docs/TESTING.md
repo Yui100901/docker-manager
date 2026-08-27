@@ -130,6 +130,44 @@ go test -race -count=1 ./internal/appconfig ./internal/cli ./internal/registryau
 - volume docker-run probe 使用 digest-pinned 默认 helper、无网络、只读 rootfs/volume、drop capabilities、`no-new-privileges`，并验证失败和取消后 helper 容器清理。
 - image/volume prune 缺少 `--allow-non-atomic-delete` 时在首个删除请求前失败；container-only 候选不要求该选项。
 
+## E2 定向回归
+
+E2 规模化运行和自动化代码变更后至少运行：
+
+```bash
+go test -count=1 ./internal/runcontrol ./internal/parallel ./internal/report ./internal/audit ./internal/appconfig ./internal/cli
+go test -count=1 ./internal/commands/diagnostics ./internal/commands/backup ./internal/commands/reverse ./internal/commands/pull ./internal/commands/images
+go test -race -count=1 ./internal/runcontrol ./internal/parallel ./internal/report ./internal/audit ./internal/appconfig ./internal/cli
+go test -race -count=1 ./internal/commands/diagnostics ./internal/commands/backup ./internal/commands/reverse ./internal/commands/pull ./internal/commands/images
+```
+
+定向用例应确认：
+
+- `operation_concurrency`、`operation_timeout`、`operation_rate_limit` 和 `operation_max_items` 可由 base/profile 配置，命令级 `--concurrency`、`--operation-timeout`、`--rate-limit`、`--max-items` 显式值优先；省略 concurrency 使用共享默认 `8`，显式 `0` 可关闭；超限、NaN/Inf、负数和超过 `64`/`24h`/`1000`/`100000` 的值失败。
+- 四个统一 runtime flag 只出现在 diagnostics、backup/restore 和 reverse/rerun 叶子；pull 仅继承配置 controller 并保留原 `--concurrency`/`--timeout`/`--total-timeout` 语义，config/version/completion/image load/save 不创建 controller。
+- 同一命令的并发 semaphore、启动 pacer、外层 deadline 和累计 item counter 在嵌套/兄弟任务间共享；取消、nil context、回调 panic 和 Acquire 失败均不会泄漏 lease 或卡住后续任务。
+- health/logs 按过滤后的 container 数量计费，network 累计 container+network，volumes 累计 volume+container，prune 在 apply 前对固定候选集计费；backup/reverse/rerun/pull 在 Docker mutation 或目标文件写入前预留完整目标预算。
+- health、logs、report all 以流式方式执行 `16 MiB` 单容器和 `256 MiB` 全命令日志预算；底层读取不超过剩余额度，恰好达到单容器或累计上限也返回预算错误，multiplex frame 使用固定缓冲区且伪造超大 frame 不触发等尺寸分配；配置和 flag 覆盖生效，单容器/累计超限、并发竞争、取消、读取错误均停止继续读取。配置硬上限分别为 `256 MiB` 和 `4 GiB`。
+- health/logs/network/volumes/prune/report all 的 `--fail-on`、可重复 `--threshold metric=max`、配置默认值及命令行优先级正确；配置 threshold 必须使用严格 `scope.metric=max`，单报告自动路由并剥离前缀，report all 保留前缀；未知/重复指标失败，实际值严格大于 maximum 才失败。
+- 未启用策略时既有 text/JSON/Markdown/HTML 输出不增加门禁尾部；JSON 是单个可解析文档。SARIF 输出符合 2.1.0，findings/rules/results、invocation 状态和 threshold properties 完整且顺序稳定。
+- 退出码严格区分：成功 `0`，运行/配置/渲染/审计错误 `1`，仅报告门禁失败 `2`，SIGINT/context cancel `130`；门禁错误与运行错误组合时保持 `1`，取消保持 `130`。
+- JSONL 审计覆盖 start、分页 candidates、rejected/authorized、finish 和取消结果；同一 root 重复执行生成独立 run；显式 `--audit-file` 对参数缺失、未知 flag 和配置加载失败也生成失败 lifecycle；`safe` 不泄露 endpoint、资源名、凭据或原始错误，`full` 仍执行 strict 脱敏和长度限制，同一 key 下 HMAC 标识稳定。
+- `warn` 只警告一次并继续；`deny-mutation` 允许只读但在 authorized 事件无法落盘时保持零 mutation；`fail`/`--audit-required` 对打开、start、authorized、finish 和 close 失败返回运行错误。
+- Unix 新建审计目录、JSONL、key 和 lock 分别使用 `0700`/`0600`，Windows 部署 ACL 要求有记录；`audit_max_bytes` 为 `0` 或至少 `65536`；跨进程锁和完整 JSONL 事件轮转有效，数据/key/lock/rotation 的 symlink、junction/reparse、非普通文件、替换竞态及恶意同名轮转目标均失败关闭。
+- doctor 的累计 item 预算、外层 timeout 和 cancel 必须作为运行错误传播；pull batch 的默认/显式 state 与 report 文件必须在任何 pull/exists 或写入前完成一次 filesystem 审计授权，授权失败时文件和 `.tmp` 均不存在。
+
+本地 CLI 可补充以下最小检查；第二条要求 Docker 中至少有一个容器，预期只因门禁返回 `2`，不会修改 Docker：
+
+```bash
+dm health --format sarif --fail-on error > health.sarif
+dm health --format json --threshold total=0 > health.json; test "$?" -eq 2
+dm health --threshold unsupported_metric=0 >/dev/null 2>&1; test "$?" -eq 1
+```
+
+远程 E2 只读验收应在执行前后分别记录 container/image/volume/network 数量，并覆盖：配置/profile 来源、四类运行控制、三个日志读取入口、六个自动化报告入口、纯 JSON、SARIF、退出码 `0/1/2/130` 以及审计 JSONL 写入。审计文件和 key 写在独立临时目录，检查 JSONL 每行可解析、序列递增和私有权限后删除。`deny-mutation`/`fail` 的失败注入优先由本地 fake sink 单测覆盖；如需远程验证，必须使用隔离测试资源并在首个 Docker mutation 前证明调用数为零。
+
+当前状态：E2 代码、本地全量门禁和 `192.168.31.40` 远程只读验收均已完成，结果见“已完成验收记录”；Docker 24/27/29 真实 daemon matrix、TLS 2376 与企业 registry 联调仍属于发布前外部证据。
+
 ## 远程 Docker 验收
 
 建议在干净 Docker 主机上使用临时目录执行:
@@ -318,6 +356,8 @@ OIDC/Keycloak 如受网络影响，可先做降级验收: 大镜像能进入 man
 
 ## 已完成验收记录
 
+- 2026-08-27 E2 规模化运行和自动化：Go 1.27.0 下全包 test/race/vet/build、`go mod tidy -diff`、隔离 `go mod verify`、staticcheck v0.8.1、govulncheck v1.7.0、gosec v2.28.0、ShellCheck、Bash/PowerShell 语法、文本、completion 和覆盖率门禁全部通过；覆盖率为 75.94%（12977/17088），7 个关键包均通过门槛。gosec 仍为既有 52 项（G304 41、G301 3、G302 3、G122 2、G204 2、G306 1），没有新增告警；全新隔离 `GOMODCACHE` 下的 verify/test/build 复验也通过。Windows smoke 普通模式为 27 PASS / 6 XFAIL / 1 SKIP，`-NoEnvironment` 为 26 PASS / 6 XFAIL / 2 SKIP，PowerShell completion 为 6 PASS / 0 FAIL / 1 SKIP，测试前后用户级和进程级 `DM_*` 状态一致。
+- `192.168.31.40`（Docker 28.1.1 / API 1.49）使用 SHA-256 `2768f696fb89b98c44f99ec8196a83a68fe94c858ace4e6bc959e610c08432b5` 的 Go 1.27.0 linux/amd64 二进制完成 E2 只读验收 39 PASS / 0 SKIP / 0 FAIL；覆盖 profile/source、并发/timeout/rate/max-items、health/logs/network/volumes/prune/report all、JSON/SARIF、日志预算、退出码 0/1/2/130 和 JSONL 审计。前后 container/image/volume/network 集合及计数 `221/6082/129/19` 完全一致，审计目录/JSONL/key/lock 权限为 0700/0600/0600/0600；远端旧轮与本轮目录以及本地 E2 二进制、报告、审计、缓存和临时脚本均已清理。
 - 2026-08-27 E1 配置和多环境扩展：Go 1.27.0 下最终全包 test/race/vet/build、`go mod tidy -diff`、隔离 module verify、staticcheck v0.8.1、govulncheck v1.7.0、gosec v2.28.0、ShellCheck v0.11.0、文本和 completion 门禁通过；覆盖率为 74.17%（10756/14502），7 个关键包均通过门槛。gosec 仍为既有 52 项且规则分布不变。
 - `192.168.31.40`（Docker 28.1.1 / API 1.49）完成 E1 profile/config/completion/doctor/health/prune 只读验收 46 PASS / 0 FAIL；profile 选择优先级、显式空 profile、旧扁平 YAML、严格坏配置拒绝和来源显示均通过。最终 endpoint 分离修复另以最新 linux/amd64 二进制完成 10 PASS / 0 FAIL，确认 `registry-1.docker.io` 不会被 policy alias 改写。每轮容器、镜像、volume、network 计数前后分别保持一致，远端和本地临时目录均已清理。
 - 2026-08-24 Go 1.27 迁移：Go 1.27.0 下全包 test/race/vet/build、staticcheck v0.8.1、ShellCheck v0.11.0、actionlint、文本门禁和覆盖率门禁通过；全仓覆盖率为 73.41%（9916/13508），关键包均高于 CI 阈值。

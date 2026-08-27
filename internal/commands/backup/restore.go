@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 
+	"docker-manager/internal/runcontrol"
+
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
 )
@@ -67,6 +69,9 @@ func restoreBackupDir(ctx context.Context, backupDir string, opts RestoreOptions
 	}
 	if opts.Name != "" && len(manifest.Containers) != 1 {
 		return fmt.Errorf("--name 只支持恢复单个备份")
+	}
+	if err := runcontrol.CheckItems(ctx, "restore-container", len(manifest.Containers)); err != nil {
+		return err
 	}
 	if err := validateRestoreManifestArtifacts(backupDir, manifest, opts); err != nil {
 		return err

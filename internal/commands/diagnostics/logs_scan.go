@@ -15,6 +15,7 @@ import (
 	"docker-manager/internal/docker"
 	"docker-manager/internal/parallel"
 	rpt "docker-manager/internal/report"
+	"docker-manager/internal/runcontrol"
 
 	"github.com/moby/moby/api/types/container"
 	mobyclient "github.com/moby/moby/client"
@@ -41,12 +42,21 @@ type dockerLogsScanService struct {
 
 func NewLogsScanCommand() *cobra.Command {
 	opts := defaultLogsScanOptions()
+	maxLogBytes := "16M"
+	maxTotalLogBytes := "256M"
 	cmd := &cobra.Command{
 		Use:   "logs [container-pattern...]",
 		Short: "扫描容器最近日志中的错误关键词",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			runOpts := opts
 			runOpts.Filters = append(append([]string(nil), opts.Filters...), args...)
+			if err := applyLogBudgetValues(&runOpts.MaxLogBytes, &runOpts.MaxTotalLogBytes, maxLogBytes, maxTotalLogBytes); err != nil {
+				return err
+			}
+			policy, err := prepareReportAutomation(runOpts.Format, runOpts.AutomationOptions, logsMetricDefinitions)
+			if err != nil {
+				return err
+			}
 			if err := validateLogsScanArgs(runOpts); err != nil {
 				return err
 			}
@@ -57,9 +67,20 @@ func NewLogsScanCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("扫描日志失败: %w", err)
 			}
-			return rpt.Print(cmd.OutOrStdout(), runOpts.Format, report, func(w io.Writer) {
+			evaluation := automationEvaluation(policy, logsAutomationData(report), true)
+			if exposeAutomationEvaluation(runOpts.Format, policy) {
+				report.Evaluation = evaluation
+			}
+			renderEvaluation := evaluation
+			if !exposeAutomationEvaluation(runOpts.Format, policy) {
+				renderEvaluation = nil
+			}
+			if err := rpt.PrintEvaluated(cmd.OutOrStdout(), runOpts.Format, report, renderEvaluation, func(w io.Writer) {
 				printLogsScanReport(w, report)
-			})
+			}); err != nil {
+				return err
+			}
+			return evaluation.GateError()
 		},
 		ValidArgsFunction: completion.LocalContainers,
 	}
@@ -68,9 +89,11 @@ func NewLogsScanCommand() *cobra.Command {
 	cmd.Flags().IntVar(&opts.Context, "context", opts.Context, "命中日志前后各输出多少行上下文")
 	cmd.Flags().StringVar(&opts.Since, "since", "", "只扫描该时间之后的日志，例如 30m、2h 或 RFC3339 时间")
 	cmd.Flags().StringArrayVar(&opts.Keywords, "keyword", opts.Keywords, "日志扫描关键词，可重复指定")
+	cmd.Flags().StringVar(&maxLogBytes, "max-log-bytes", maxLogBytes, "每个容器最多读取的日志字节数，支持 K/M/G/T 后缀")
+	cmd.Flags().StringVar(&maxTotalLogBytes, "max-total-log-bytes", maxTotalLogBytes, "整条命令累计最多读取的日志字节数，支持 K/M/G/T 后缀")
 	commandflags.AddContainerFilterFlag(cmd, &opts.Filters, "")
 	commandflags.AddRedactFlags(cmd, &opts.RedactSecrets, &opts.RedactProfile, "脱敏日志命中行和上下文中的疑似敏感信息，便于分享输出")
-	commandflags.AddReportFormatFlag(cmd, &opts.Format)
+	commandflags.AddAutomationReportFlags(cmd, &opts.Format, &opts.AutomationOptions, automationMetricNames(logsMetricDefinitions))
 	return cmd
 }
 
@@ -85,9 +108,17 @@ func validateLogsScanArgs(opts LogsScanOptions) error {
 }
 
 func runLogsScan(ctx context.Context, opts LogsScanOptions) (LogsScanReport, error) {
+	if _, err := prepareReportAutomation(opts.Format, opts.AutomationOptions, logsMetricDefinitions); err != nil {
+		return LogsScanReport{}, err
+	}
 	if _, err := normalizeRedactProfile(opts.RedactProfile, opts.RedactSecrets); err != nil {
 		return LogsScanReport{}, err
 	}
+	budget, err := prepareLogReadBudget(opts.MaxLogBytes, opts.MaxTotalLogBytes, opts.logBudget)
+	if err != nil {
+		return LogsScanReport{}, err
+	}
+	opts.logBudget = budget
 	svc, err := newLogsScanDockerService()
 	if err != nil {
 		return LogsScanReport{}, err
@@ -151,13 +182,29 @@ func buildLogsScanReport(ctx context.Context, svc logsScanDockerService, targets
 		DockerEndpoint: docker.Endpoint(),
 		Keywords:       keywords,
 	}
+	budget, err := prepareLogReadBudget(opts.MaxLogBytes, opts.MaxTotalLogBytes, opts.logBudget)
+	if err != nil {
+		return report, err
+	}
+	opts.logBudget = budget
+	if err := runcontrol.CheckItems(ctx, "container", len(targets)); err != nil {
+		return report, err
+	}
 	results := make([]logsScanBuildResult, len(targets))
 	if err := parallel.ForEachIndexErr(ctx, len(targets), diagnosticsInspectConcurrency, func(ctx context.Context, i int) error {
 		result := buildLogsScanContainerResult(ctx, svc, targets[i], opts, keywords)
 		results[i] = result
+		if errors.Is(result.err, errLogReadBudgetExceeded) {
+			return nil
+		}
 		return result.err
 	}); err != nil {
 		return report, err
+	}
+	for _, result := range results {
+		if errors.Is(result.err, errLogReadBudgetExceeded) {
+			return report, result.err
+		}
 	}
 	for _, result := range results {
 		if result.item.Name == "" && result.item.ID == "" {
@@ -201,6 +248,7 @@ func buildLogsScanContainerResult(ctx context.Context, svc logsScanDockerService
 			result.err = err
 			return result
 		}
+		result.item.ErrorType = "inspect-failed"
 		result.item.Error = fmt.Sprintf("inspect ??: %v", err)
 		result.summary.Errors++
 		return result
@@ -213,6 +261,7 @@ func buildLogsScanContainerResult(ctx context.Context, svc logsScanDockerService
 	availability := containerLogDriverAvailability(inspect)
 	applyLogsScanAvailability(&result.item, availability)
 	if !availability.Readable {
+		result.item.ErrorType = "logs-unavailable"
 		result.item.Error = availability.Reason
 		result.summary.Errors++
 		result.summary.LogsUnavailable++
@@ -229,6 +278,11 @@ func buildLogsScanContainerResult(ctx context.Context, svc logsScanDockerService
 			result.err = err
 			return result
 		}
+		if errors.Is(err, errLogReadBudgetExceeded) {
+			result.err = err
+			return result
+		}
+		result.item.ErrorType = "read-failed"
 		result.item.Error = fmt.Sprintf("读取容器日志失败: %v", err)
 		result.summary.Errors++
 		return result
@@ -295,7 +349,7 @@ func readContainerLogText(ctx context.Context, svc logsScanDockerService, id str
 		return "", err
 	}
 	defer reader.Close()
-	return readDockerLogsWithContext(ctx, reader, inspect.Config != nil && inspect.Config.Tty)
+	return readDockerLogsWithBudget(ctx, reader, inspect.Config != nil && inspect.Config.Tty, opts.logBudget)
 }
 
 func normalizeLogsSince(value string) string {

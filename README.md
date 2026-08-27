@@ -10,6 +10,8 @@
 - 容器逆向和重建: `dm reverse` 只读输出 `docker run` 或 compose，`dm rerun` 显式确认后重建容器。
 - 容器离线迁移: `dm backup` 和 `dm restore` 支持批量包、合并包、checksum、恢复前计划预览、加密包、分卷包、README 和 restore 脚本。
 - 诊断报告: `dm health`、`dm network`、`dm logs`、`dm diff`、`dm prune`、`dm volumes`、`dm registry`、`dm doctor`。
+- 规模化运行和自动化: 为批量检查提供命令级并发、整条命令超时、启动速率和累计资源项预算；health/logs/network/volumes/prune/report all 支持策略门禁和 SARIF 2.1.0。
+- 结构化审计: 可选 JSONL 审计记录操作人、脱敏 endpoint、候选集合、授权结果、耗时和错误，并为审计写入失败配置继续、拒绝 mutation 或整条命令失败策略。
 - 远程 Docker 管理: 支持 Docker 标准环境变量、`.dm.yaml` 和全局参数指定 Docker endpoint，并可用命名 profile 切换多套环境。
 - Registry 网络策略: 可按精确 registry 配置独立 CA、proxy/no-proxy、timeout、凭据操作范围、认证 realm 和 plain HTTP。
 - Shell completion: 支持 bash、zsh、fish 和 PowerShell，容器/镜像/volume 候选会按当前 Docker endpoint 查询。
@@ -121,6 +123,14 @@ Windows 安装脚本会把真实二进制安装为 `<InstallDir>\bin\dm.exe`，�
 --docker-cert-path string     Docker TLS/mTLS 证书目录，含 ca.pem/cert.pem/key.pem；默认读取 DOCKER_CERT_PATH
 --docker-api-version string   Docker API 版本，默认读取 DOCKER_API_VERSION 或自动协商
 --docker-timeout duration     Docker 连接、TLS 握手和响应头超时，默认 30s
+--audit-file string           结构化审计 JSONL 文件；为空表示关闭
+--audit-actor string          审计事件中的声明操作人标识，不替代系统操作人
+--audit-detail string         审计详情级别: safe | full，默认 safe
+--audit-on-error string       审计写入失败策略: warn | deny-mutation | fail
+--audit-required              审计写入失败时拒绝命令，等价于 --audit-on-error=fail
+--audit-key-file string       审计标识 HMAC key 文件；默认 <audit-file>.key
+--audit-max-bytes int         单个审计文件轮转阈值，默认 64 MiB
+--audit-max-files int         保留的编号轮转文件数，默认 5
 --redact-secrets              启用 basic 脱敏
 --redact-profile string       全局脱敏策略: none | basic | strict，默认 none
 --verbose                     输出详细日志
@@ -147,6 +157,21 @@ os: linux
 arch: amd64
 output_dir: images
 ready_timeout: 30s
+operation_concurrency: 8
+operation_timeout: 30m
+operation_rate_limit: 20
+operation_max_items: 10000
+max_log_bytes: 16M
+max_total_log_bytes: 256M
+fail_on: warning
+thresholds: []
+audit_file: /var/log/docker-manager/audit.jsonl
+audit_actor: automation
+audit_detail: safe
+audit_on_error: deny-mutation
+audit_max_bytes: 67108864
+audit_max_files: 5
+audit_key_file: /var/lib/docker-manager/audit.key
 redact_profile: none
 credential_helpers_disabled: false
 credential_helper_timeout: 5s
@@ -157,11 +182,32 @@ profiles:
     docker_host: tcp://docker-dev.example.com:2376
     docker_cert_path: /etc/docker-manager/docker-certs/dev
     output_dir: images/development
+    operation_concurrency: 4
+    operation_timeout: 15m
+    operation_rate_limit: 10
+    operation_max_items: 5000
+    max_log_bytes: 8M
+    max_total_log_bytes: 64M
+    fail_on: none
+    thresholds: []
   production:
     docker_host: tcp://docker-prod.example.com:2376
     docker_tls_verify: true
     docker_cert_path: /etc/docker-manager/docker-certs/prod
     output_dir: images/production
+    operation_concurrency: 16
+    operation_timeout: 30m
+    operation_rate_limit: 50
+    operation_max_items: 50000
+    max_log_bytes: 16M
+    max_total_log_bytes: 256M
+    fail_on: warning
+    thresholds:
+      - health.unhealthy=0
+      - network.public_bindings=0
+    audit_file: /var/log/docker-manager/production.jsonl
+    audit_actor: production-automation
+    audit_on_error: fail
     registries:
       registry.prod.example.com:
         ca_file: /etc/docker-manager/ca/registry-prod.pem
@@ -207,6 +253,20 @@ dm --profile production config show --effective --show-source
 | `ca_file` / `ca_path` | 空 | 仅供 `dm doctor` 检查的通用 CA 路径，不注入运行时信任 |
 | `registry_ca_file` / `registry_ca_path` | 空 | 仅供 `dm doctor` 检查的 registry CA 路径 |
 | `ready_timeout` | `30s` | restore replace 和 rerun 候选容器等待 running/healthy 的时间 |
+| `operation_concurrency` | `8` | 一次命令共享的只读任务并发上限；`0` 不增加共享限制，命令行对应 `--concurrency` |
+| `operation_timeout` | 无 | 整条命令的外层超时，最大 `24h`；命令行对应 `--operation-timeout` |
+| `operation_rate_limit` | `0` | 每秒启动的只读资源任务数，`0` 不限速，最大 `1000`；命令行对应 `--rate-limit` |
+| `operation_max_items` | `0` | 一次命令累计处理的资源项上限，`0` 不限制，最大 `100000`；命令行对应 `--max-items` |
+| `max_log_bytes` | `16M` | health/logs/report all 每个容器最多读取 `16 MiB` 日志，可下调或上调至 `256 MiB` |
+| `max_total_log_bytes` | `256M` | 同一命令所有容器累计最多读取 `256 MiB` 日志，可下调或上调至 `4 GiB` |
+| `fail_on` | `none` | 报告门禁级别：`none`、`note`、`warning` 或 `error`；命令行对应 `--fail-on` |
+| `thresholds` | 空 | 严格 `scope.metric=maximum` 列表；单报告自动选择自身 scope 并移除前缀，`report all` 保留完整名称；命令行 `--threshold` 仍使用当前命令的无前缀指标 |
+| `audit_file` | 空（关闭） | JSONL 审计文件；配置后记录命令生命周期和 mutation 候选/授权事件 |
+| `audit_actor` | 空 | 声明操作人；与系统用户名、UID/SID 和主机名同时记录，不替代系统身份 |
+| `audit_detail` | `safe` | `safe` 只写 HMAC 标识和错误分类；`full` 额外写经过 strict 脱敏和长度限制的显示值/错误消息 |
+| `audit_on_error` | `deny-mutation` | 审计失败策略：`warn`、`deny-mutation` 或 `fail` |
+| `audit_max_bytes` / `audit_max_files` | `64 MiB` / `5` | 单文件轮转阈值和保留的编号轮转文件数；字节数必须使用 YAML 整数，非零值不得小于 `65536` |
+| `audit_key_file` | `<audit_file>.key` | HMAC 标识 key 文件；应与 JSONL 一起保护和备份，轮换 key 会改变标识关联值 |
 | `redact_profile` | `none` | `none`、`basic` 或 `strict`；管理员默认保留原始日志和输出 |
 | `redact_secrets` | `false` | 兼容配置；`true` 等价于 `redact_profile: basic` |
 | `credential_helpers_disabled` | `false` | 禁止执行 Docker credential helper，回退到 `auths` |
@@ -215,6 +275,51 @@ dm --profile production config show --effective --show-source
 | `registries` | 空 | 精确 `host[:port]` 对应的 registry 网络与凭据策略；profile 可按 registry 覆盖 |
 | `verbose` / `quiet` | `false` / `false` | 详细日志或静默模式，两者不能同时为 `true` |
 | `log_json` | `false` | 日志和错误使用 JSON；不改变业务报告的 `--format` |
+
+### 规模化运行控制
+
+`operation_*` 配置对一次命令共享同一个 controller，选中 profile 可以覆盖 base，显式命令 flag 再覆盖配置。diagnostics、backup 和 reverse/rerun 的叶子命令提供 `--concurrency`、`--operation-timeout`、`--rate-limit` 和 `--max-items`；`0` 表示不额外限制对应维度。`dm pull` 保留原有批量 `--concurrency` 和单镜像 `--total-timeout` 语义，同时遵守配置 controller 的并发、外层超时、启动速率和累计资源预算。
+
+`--max-items` 是一次命令内跨资源类型累计的预算，而不是每个循环各自的限制。例如 network 报告会累计 container 和 network，volumes 会累计 volume 和 container。预算超限会在对应 Docker mutation 或文件写入开始前失败。并发、速率和超时共用命令 context，取消或超时时会停止尚未启动的任务。
+
+health、logs 和 `dm report all` 还会流式计数 Docker 日志：`--max-log-bytes` 限制单个容器，`--max-total-log-bytes` 限制本次命令所有容器累计读取量。默认分别为 `16 MiB` 和 `256 MiB`，命令 flag 优先于 profile/base 配置；达到限制会停止继续读取并返回运行错误。
+
+### 报告自动化
+
+`dm health`、`dm logs`、`dm network`、`dm volumes`、`dm prune` 和 `dm report all` 支持以下自动化参数：
+
+```bash
+--format text|json|markdown|html|sarif
+--fail-on none|note|warning|error
+--threshold metric=maximum
+```
+
+`--threshold` 可重复指定，指标必须来自对应命令的 completion/帮助候选；`dm report all` 使用 `health.issues`、`logs.errors`、`network.risks` 等带子报告前缀的指标。配置文件中的 `thresholds` 始终使用完整 `scope.metric`，例如 `health.unhealthy=0`、`network.public_bindings=0`；单项报告会自动路由并剥离自身前缀。命令行显式策略优先于配置中的 `fail_on` 和 `thresholds`。默认未启用策略时，既有 text/JSON/Markdown/HTML 结构不增加门禁内容；JSON 仍是单个纯 JSON 文档。`--format sarif` 始终输出 SARIF 2.1.0，其中 findings 转为 results，策略与指标写入 invocation properties。
+
+示例：
+
+```bash
+dm health --format sarif --fail-on warning > health.sarif
+dm logs --format json --threshold errors=0 --threshold logs_unavailable=0
+dm network --fail-on error --threshold public_bindings=0
+dm report all --format sarif --threshold health.unhealthy=0 --threshold prune.candidates=20
+```
+
+### JSONL 审计
+
+配置 `audit_file` 或传入 `--audit-file` 后，每次命令会写入带 `run_id` 和单调 `sequence` 的 JSONL 生命周期事件。显式 `--audit-file` 还覆盖参数缺失、未知 flag 和配置加载失败等 pre-run 之前/期间的失败；若配置文件本身无法解析，则其中尚未加载的 `audit_file` 无法生效，需要由命令行显式提供。事件包括命令开始/结束、分页后的 mutation 候选集合、拒绝或授权结果、操作人、profile、endpoint HMAC 标识、耗时和错误分类。`safe` 是默认详情级别，只保留不可逆 HMAC 标识；`full` 会额外保留经过 strict 脱敏和长度限制的候选显示值与错误消息，不会关闭凭据脱敏。
+
+审计写入失败策略：
+
+| 策略 | 行为 |
+| --- | --- |
+| `warn` | 输出一次警告后继续，包括 mutation；适合审计仅作辅助诊断的环境 |
+| `deny-mutation` | 只读命令警告后继续；需要修改 Docker、文件系统或外部系统时，在授权事件无法落盘的情况下拒绝 mutation |
+| `fail` | 审计文件打开、开始、结束或任一事件写入失败都使命令失败；`--audit-required` 是该策略的快捷方式 |
+
+在 Unix 上，新建审计目录使用 `0700`，JSONL、HMAC key 和 lock 文件使用 `0600`；Windows 部署仍应通过目录 ACL 限制访问。写入持有跨进程文件锁，达到 `audit_max_bytes` 后按 `.1`、`.2` 等完整事件边界轮转。数据、key、lock 和轮转路径会拒绝 symlink、Windows junction/reparse 及非普通文件。审计 key 默认位于 `<audit_file>.key`；不要与公开报告一起分发。
+
+进程退出码固定为：`0` 成功；`1` 配置、连接、执行、输出或审计等运行错误；`2` 只有报告已成功生成但 `--fail-on`/`--threshold` 门禁未通过；`130` 收到 SIGINT 或 context cancel。运行错误与门禁失败同时出现时返回 `1`，取消优先返回 `130`。
 
 Docker API endpoint 优先级为: 全局命令行参数 > 选中 profile > 顶层 `.dm.yaml` > Docker 环境变量 > 本地 Docker 默认 endpoint。省略 Docker 配置项会继承对应环境变量；显式空字符串会清除环境变量回退。支持 `tcp://`、`unix://` 和 `npipe://`；其他 scheme 会在 client 初始化时拒绝。生产环境不建议裸露未启用 TLS 的 `tcp://host:2375`；`dm doctor` 会对明文 TCP endpoint 给出 warning。
 
@@ -264,6 +369,7 @@ dm completion powershell
 | `dm rerun` | 基于 inspect 执行容器重建，实际执行必须传 `--confirm` |
 | `dm backup` | 备份容器 inspect、镜像、compose、volume/network 元数据和迁移包 |
 | `dm restore` | 从备份目录或 tar.gz 离线包生成恢复计划；实际恢复需显式 `--confirm` |
+| `dm report all` | 聚合 health、network、logs、volumes 和 prune dry-run，并支持统一门禁与 SARIF |
 | `dm health` | 输出容器健康、重启、日志、端口和挂载风险报告 |
 | `dm network` | 输出网络、端口映射、endpoint、IPAM 和暴露端口风险报告 |
 | `dm logs` | 扫描容器日志关键字，支持上下文和 `none/basic/strict` 脱敏策略 |
@@ -371,6 +477,7 @@ Docker API 没有 image/volume 的 compare-and-delete。`dm prune` 会在删除�
 main.go                         # 程序入口，只负责调用 internal/cli
 internal/cli/                   # 根命令、全局配置、日志和统一错误输出
 internal/appconfig/             # .dm.yaml、DM_CONFIG 和 Docker endpoint 默认配置解析
+internal/audit/                 # JSONL 审计事件、HMAC 标识、失败策略、文件锁和轮转
 internal/commandflags/          # 命令层共享 flag 与补全注册
 internal/commands/images/       # load/save 镜像导入导出命令
 internal/commands/pull/         # pull 镜像拉取、导入和重新推送命令
@@ -379,7 +486,8 @@ internal/commands/backup/       # backup/restore 容器备份、迁移包和恢�
 internal/commands/diagnostics/  # report、registry、volume、image tree 等诊断命令
 internal/completion/            # shell 补全命令和 Docker 资源补全
 internal/docker/                # Docker API client 和镜像/容器管理封装
-internal/report/                # text/json/markdown/html 报告输出格式
+internal/report/                # text/json/markdown/html/SARIF、findings、阈值和报告门禁
+internal/runcontrol/            # 命令级并发、外层超时、启动速率和累计资源项控制
 internal/resourcefilter/        # 容器、镜像、volume 本地资源筛选器
 internal/registryauth/          # Docker config、auths 和 credential helper 解析
 internal/runconfig/             # 容器 inspect 到 docker run/compose 的共享解析模型

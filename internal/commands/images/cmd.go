@@ -2,8 +2,6 @@ package images
 
 import (
 	"context"
-	"docker-manager/internal/docker"
-	"docker-manager/internal/resourcefilter"
 	"errors"
 	"fmt"
 	"io"
@@ -12,7 +10,10 @@ import (
 	"path/filepath"
 	"strings"
 
+	"docker-manager/internal/audit"
 	"docker-manager/internal/completion"
+	"docker-manager/internal/docker"
+	"docker-manager/internal/resourcefilter"
 
 	"github.com/Yui100901/MyGo/file_utils"
 	"github.com/moby/moby/api/types/image"
@@ -81,11 +82,6 @@ func NewSaveCommandWithDefaults(defaultOutputDir func() string) *cobra.Command {
 			if len(args) > 0 {
 				path = args[0]
 			}
-			if !dryRun {
-				if _, err := file_utils.CreateDirectory(path); err != nil {
-					return fmt.Errorf("创建输出目录失败: %w", err)
-				}
-			}
 			opts := SaveOptions{
 				Merge:   merge,
 				All:     all,
@@ -133,6 +129,21 @@ func loadImages(ctx context.Context, path string, output io.Writer) error {
 		return err
 	}
 	total := len(discovery.Archives)
+	if total > 0 {
+		if session := audit.FromContext(ctx); session != nil {
+			candidates := make([]audit.CandidateInput, 0, total)
+			for _, archive := range discovery.Archives {
+				candidates = append(candidates, audit.CandidateInput{Kind: "image-archive", Action: "load", Identifier: archive, Display: filepath.Base(archive)})
+			}
+			if _, err := session.AuthorizeMutation(ctx, audit.MutationRequest{
+				Scope:        audit.MutationDockerPersistent,
+				Confirmation: audit.Confirmation{Required: false, Provided: true, Mechanism: "image-load"},
+				Candidates:   candidates,
+			}); err != nil {
+				return fmt.Errorf("审计授权失败，未执行镜像导入: %w", err)
+			}
+		}
+	}
 	log.Printf("Load images: found=%d skipped=%d path=%s", total, discovery.Skipped, path)
 
 	var loadErrs []error
@@ -237,6 +248,16 @@ func saveImagesWithOptions(ctx context.Context, path string, opts SaveOptions) e
 		log.Printf("Save summary: total=%d success=0 failed=0 skipped=%d dryRun=true", total, skipped)
 		return nil
 	}
+	if len(targets) == 0 {
+		log.Printf("Save summary: total=0 success=0 failed=0 skipped=%d", skipped)
+		return nil
+	}
+	if err := authorizeImageSave(ctx, path, targets, opts.Merge); err != nil {
+		return fmt.Errorf("审计授权失败，未执行镜像导出: %w", err)
+	}
+	if _, err := file_utils.CreateDirectory(path); err != nil {
+		return fmt.Errorf("创建输出目录失败: %w", err)
+	}
 
 	if opts.Merge {
 		imageIDList := make([]string, 0, len(targets))
@@ -271,6 +292,36 @@ func saveImagesWithOptions(ctx context.Context, path string, opts SaveOptions) e
 		log.Printf("Save summary: total=%d success=%d failed=%d skipped=%d", total, success, len(saveErrs), skipped)
 		return errors.Join(saveErrs...)
 	}
+}
+
+func authorizeImageSave(ctx context.Context, path string, targets []imageExportTarget, merge bool) error {
+	session := audit.FromContext(ctx)
+	if session == nil || len(targets) == 0 {
+		return nil
+	}
+	outputFiles := make([]string, 0, len(targets))
+	if merge {
+		outputFiles = append(outputFiles, filepath.Join(path, "images.tar"))
+	} else {
+		for _, target := range targets {
+			outputFiles = append(outputFiles, filepath.Join(path, target.Name+".tar"))
+		}
+	}
+	candidates := make([]audit.CandidateInput, 0, len(outputFiles))
+	for _, outputFile := range outputFiles {
+		candidates = append(candidates, audit.CandidateInput{
+			Kind:       "image-archive",
+			Action:     "write",
+			Identifier: outputFile,
+			Display:    outputFile,
+		})
+	}
+	_, err := session.AuthorizeMutation(ctx, audit.MutationRequest{
+		Scope:        audit.MutationFilesystem,
+		Confirmation: audit.Confirmation{Provided: true, Mechanism: "image-save"},
+		Candidates:   candidates,
+	})
+	return err
 }
 
 func buildImageExportTargets(images []image.Summary, opts SaveOptions) ([]imageExportTarget, int) {

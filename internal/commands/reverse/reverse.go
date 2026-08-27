@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"docker-manager/internal/audit"
 	"docker-manager/internal/commandflags"
 	"docker-manager/internal/completion"
 	"docker-manager/internal/sensitive"
@@ -90,8 +91,8 @@ func NewReverseCommand() *cobra.Command {
 
 			// 保存输出
 			if save {
-				if err := reverseResult.saveOutput(); err != nil {
-					return fmt.Errorf("保存输出失败: %w", err)
+				if err := saveReverseResultWithAudit(ctx, reverseResult, rt); err != nil {
+					return err
 				}
 			}
 
@@ -111,6 +112,53 @@ func NewReverseCommand() *cobra.Command {
 	_ = cmd.RegisterFlagCompletionFunc("reverse-type", completeReverseTypes)
 
 	return cmd
+}
+
+func saveReverseResultWithAudit(ctx context.Context, result *ReverseResult, reverseType ReverseType) error {
+	if result == nil {
+		return fmt.Errorf("reverse result is nil")
+	}
+	if err := authorizeReverseSave(ctx, reverseType); err != nil {
+		return fmt.Errorf("审计授权失败，未保存 reverse 输出: %w", err)
+	}
+	if err := result.saveOutput(); err != nil {
+		return fmt.Errorf("保存输出失败: %w", err)
+	}
+	return nil
+}
+
+func authorizeReverseSave(ctx context.Context, reverseType ReverseType) error {
+	session := audit.FromContext(ctx)
+	if session == nil {
+		return nil
+	}
+
+	paths := make([]string, 0, 2)
+	switch reverseType {
+	case ReverseCmd:
+		paths = append(paths, "docker_run_command.sh")
+	case ReverseCompose:
+		paths = append(paths, "docker-compose.reverse.yml")
+	case ReverseAll:
+		paths = append(paths, "docker_run_command.sh", "docker-compose.reverse.yml")
+	default:
+		return fmt.Errorf("unsupported reverse output type %q", reverseType)
+	}
+	candidates := make([]audit.CandidateInput, 0, len(paths))
+	for _, path := range paths {
+		candidates = append(candidates, audit.CandidateInput{
+			Kind:       "file",
+			Action:     "write",
+			Identifier: path,
+			Display:    path,
+		})
+	}
+	_, err := session.AuthorizeMutation(ctx, audit.MutationRequest{
+		Scope:        audit.MutationFilesystem,
+		Confirmation: audit.Confirmation{Provided: true, Mechanism: "reverse-save"},
+		Candidates:   candidates,
+	})
+	return err
 }
 
 func reverseTargetSelectionComment(count int, running bool, filters []string) string {

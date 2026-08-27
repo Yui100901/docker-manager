@@ -99,6 +99,39 @@ func TestPrintReportMarkdownAlias(t *testing.T) {
 	}
 }
 
+func TestPrintEvaluatedWithoutEvaluationPreservesLegacyOutput(t *testing.T) {
+	report := sampleReport{
+		GeneratedAt: "2026-08-27T00:00:00Z",
+		Status:      "ok",
+		Items:       []sampleItem{{Name: "api", Status: "ok", Count: 1}},
+	}
+	printText := func(w io.Writer) {
+		_, _ = io.WriteString(w, "legacy text\n")
+	}
+	for _, format := range []string{FormatText, FormatJSON, FormatMarkdown, FormatHTML} {
+		t.Run(format, func(t *testing.T) {
+			var legacy bytes.Buffer
+			if err := PrintWithProfile(&legacy, format, report, printText, sensitive.ProfileNone); err != nil {
+				t.Fatal(err)
+			}
+			var evaluated bytes.Buffer
+			if err := PrintEvaluatedWithProfile(&evaluated, format, report, nil, printText, sensitive.ProfileNone); err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(evaluated.Bytes(), legacy.Bytes()) {
+				t.Fatalf("evaluated output changed legacy %s output\nlegacy=%q\nevaluated=%q", format, legacy.String(), evaluated.String())
+			}
+		})
+	}
+}
+
+func TestLegacyPrintRejectsSARIF(t *testing.T) {
+	err := Print(io.Discard, FormatSARIF, sampleReport{}, func(io.Writer) {})
+	if err == nil || !strings.Contains(err.Error(), "不支持的输出格式") {
+		t.Fatalf("Print(sarif) error = %v, want unsupported format", err)
+	}
+}
+
 func TestPrintWithProfileRedactsEveryFormat(t *testing.T) {
 	type secretReport struct {
 		Authorization string `json:"authorization"`

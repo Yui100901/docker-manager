@@ -10,19 +10,26 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"docker-manager/internal/appconfig"
 	"docker-manager/internal/docker"
+	"docker-manager/internal/runcontrol"
 
 	mobyclient "github.com/moby/moby/client"
 )
 
 type fakeDoctorDockerService struct {
-	pingErr    error
-	versionErr error
+	pingErr       error
+	versionErr    error
+	waitForCancel bool
 }
 
 func (f fakeDoctorDockerService) Ping(ctx context.Context) (mobyclient.PingResult, error) {
+	if f.waitForCancel {
+		<-ctx.Done()
+		return mobyclient.PingResult{}, ctx.Err()
+	}
 	if f.pingErr != nil {
 		return mobyclient.PingResult{}, f.pingErr
 	}
@@ -293,13 +300,16 @@ func TestRunDoctorReportsDockerFailureAndSkippedRegistry(t *testing.T) {
 	}
 	defer func() { newDoctorDockerService = old }()
 
-	report := runDoctor(context.Background(), DoctorOptions{
+	report, err := runDoctor(context.Background(), DoctorOptions{
 		ConfigPath:    t.TempDir() + "/missing.yaml",
 		OutputDir:     t.TempDir(),
 		Timeout:       1,
 		CheckE2E:      false,
 		MinDiskFreeMB: 1,
 	})
+	if err != nil {
+		t.Fatalf("runDoctor() error = %v", err)
+	}
 	if report.OverallStatus != "failed" {
 		t.Fatalf("OverallStatus = %q, want failed", report.OverallStatus)
 	}
@@ -308,6 +318,70 @@ func TestRunDoctorReportsDockerFailureAndSkippedRegistry(t *testing.T) {
 	}
 	if !hasDoctorCheck(report.Checks, "registry", "skipped") {
 		t.Fatalf("checks = %#v, want registry skipped", report.Checks)
+	}
+}
+
+func TestRunDoctorRejectsItemBudget(t *testing.T) {
+	controller, err := runcontrol.New(runcontrol.Limits{MaxItems: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := controller.Context(context.Background())
+	defer cancel()
+
+	_, err = runDoctor(ctx, DoctorOptions{
+		ConfigPath:    filepath.Join(t.TempDir(), "missing.yaml"),
+		OutputDir:     t.TempDir(),
+		CheckE2E:      false,
+		MinDiskFreeMB: 1,
+	})
+	if err == nil || !strings.Contains(err.Error(), "item budget exceeded") {
+		t.Fatalf("runDoctor() error = %v, want max-items rejection", err)
+	}
+}
+
+func TestRunDoctorPropagatesCanceledContext(t *testing.T) {
+	controller, err := runcontrol.New(runcontrol.Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent, cancelParent := context.WithCancel(context.Background())
+	cancelParent()
+	ctx, cancel := controller.Context(parent)
+	defer cancel()
+
+	_, err = runDoctor(ctx, DoctorOptions{CheckE2E: false})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("runDoctor() error = %v, want context.Canceled", err)
+	}
+}
+
+func TestRunDoctorPropagatesOperationTimeout(t *testing.T) {
+	old := newDoctorDockerService
+	newDoctorDockerService = func() (doctorDockerService, docker.ConnectionInfo, error) {
+		return fakeDoctorDockerService{waitForCancel: true}, docker.ConnectionInfo{
+			Host:      "unix:///var/run/docker.sock",
+			Transport: "unix",
+		}, nil
+	}
+	defer func() { newDoctorDockerService = old }()
+
+	controller, err := runcontrol.New(runcontrol.Limits{Timeout: 20 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := controller.Context(context.Background())
+	defer cancel()
+
+	_, err = runDoctor(ctx, DoctorOptions{
+		ConfigPath:    filepath.Join(t.TempDir(), "missing.yaml"),
+		OutputDir:     t.TempDir(),
+		Timeout:       time.Second,
+		CheckE2E:      false,
+		MinDiskFreeMB: 1,
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("runDoctor() error = %v, want context.DeadlineExceeded", err)
 	}
 }
 
