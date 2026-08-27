@@ -286,6 +286,21 @@ unset HTTP_PROXY HTTPS_PROXY NO_PROXY
 
 ## 企业 registry 验收
 
+### Profile 和 per-registry policy
+
+配置扩展至少覆盖以下定向用例：
+
+- 旧扁平 YAML 行为不变；`--profile > DM_PROFILE > default_profile > base`，未知或非法 profile 失败。
+- profile 省略字段继承 base，显式空字符串、`false` 和 `[]` 可以清除继承值；Docker flag 仍覆盖 profile，并保持显式空值清除 `DOCKER_*` 回退。
+- `dm config validate` 校验所有 profile/policy；`config show --effective --show-source` 正确报告 active profile 及 base/profile/flag/env/default 来源。
+- Docker completion 使用 selected profile endpoint；base、`DM_PROFILE`、`default_profile` 和显式 `--profile` 均有覆盖。
+- 同一批次访问两个 registry 时分别使用自己的 CA、proxy/no-proxy、timeout、credential scope 和 realm allowlist，源 registry 与 `--to` 目标策略互不串用。
+- 自签 HTTPS registry 使用正确 policy CA 成功，缺失/错误 CA 失败；未匹配 registry 不继承其他 registry 的 CA。CA loader 必须拒绝 symlink/reparse、非普通文件、空或混合 PEM，并覆盖单文件 16 MiB、目录 256 项和累计 32 MiB 上限。
+- `plain_http` 仅由精确 registry policy 或显式 flag 开启，`--plain-http=false` 能覆盖 policy，HTTPS 不会静默降级。
+- `credential_scope` 分别限制 pull、push 和 login；空列表不向 registry 或 Docker daemon 传递凭据，realm allowlist 不能跨 policy 合并。
+
+Registry policy 控制 `dm` 直接发出的 `/v2/`、manifest、blob、token 和 push 前预检请求。最终 `docker push` 由 Docker daemon 执行，仍需在 daemon 侧配置 registry CA、insecure registry 和代理；两条链路必须分别验收。
+
 建议覆盖以下维度:
 
 - HTTP/insecure registry 和 HTTPS registry。
@@ -303,6 +318,8 @@ OIDC/Keycloak 如受网络影响，可先做降级验收: 大镜像能进入 man
 
 ## 已完成验收记录
 
+- 2026-08-27 E1 配置和多环境扩展：Go 1.27.0 下最终全包 test/race/vet/build、`go mod tidy -diff`、隔离 module verify、staticcheck v0.8.1、govulncheck v1.7.0、gosec v2.28.0、ShellCheck v0.11.0、文本和 completion 门禁通过；覆盖率为 74.17%（10756/14502），7 个关键包均通过门槛。gosec 仍为既有 52 项且规则分布不变。
+- `192.168.31.40`（Docker 28.1.1 / API 1.49）完成 E1 profile/config/completion/doctor/health/prune 只读验收 46 PASS / 0 FAIL；profile 选择优先级、显式空 profile、旧扁平 YAML、严格坏配置拒绝和来源显示均通过。最终 endpoint 分离修复另以最新 linux/amd64 二进制完成 10 PASS / 0 FAIL，确认 `registry-1.docker.io` 不会被 policy alias 改写。每轮容器、镜像、volume、network 计数前后分别保持一致，远端和本地临时目录均已清理。
 - 2026-08-24 Go 1.27 迁移：Go 1.27.0 下全包 test/race/vet/build、staticcheck v0.8.1、ShellCheck v0.11.0、actionlint、文本门禁和覆盖率门禁通过；全仓覆盖率为 73.41%（9916/13508），关键包均高于 CI 阈值。
 - 依赖迁移后 govulncheck v1.7.0 扫描 Go 1.27 标准库和 32 个模块，输出 `No vulnerabilities found.`；gosec v2.28.0 仍为既有 52 条分诊项，规则分布未变化。
 - Go 1.27 发布打包生成并验证 linux/amd64、linux/arm64、windows/amd64、darwin/amd64、darwin/arm64 五个平台归档、checksum 和 manifest；`192.168.31.40` 的 Docker 28.1.1 / API 1.49 完成 smoke、doctor、health 和 prune 只读预览，容器、volume、镜像计数前后相同，测试目录已清理。

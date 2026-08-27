@@ -2,6 +2,7 @@ package pull
 
 import (
 	"context"
+	"docker-manager/internal/appconfig"
 	"docker-manager/internal/commandflags"
 	"docker-manager/internal/registryauth"
 	rpt "docker-manager/internal/report"
@@ -35,6 +36,7 @@ func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command 
 	var disableCredentialHelpers bool
 	var credentialHelperTimeout = registryauth.DefaultCredentialHelperTimeout
 	var authRealmAllowlist []string
+	var registryPolicies map[string]appconfig.RegistryPolicy
 	limits := defaultPullResourceLimits()
 	timeout := defaultPullTimeout
 	batchOpts := PullBatchOptions{
@@ -54,7 +56,8 @@ func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command 
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
 			defer stop()
 
-			applyCommandDefaults(cmd, defaults, &proxy, &targetOS, &arch, &outputDir, &disableCredentialHelpers, &credentialHelperTimeout, &authRealmAllowlist)
+			applyCommandDefaults(cmd, defaults, &proxy, &targetOS, &arch, &outputDir, &disableCredentialHelpers, &credentialHelperTimeout, &authRealmAllowlist, &registryPolicies)
+			policyOverrides := commandRegistryPolicyOverrides(cmd)
 			if credentialHelperTimeout <= 0 {
 				return fmt.Errorf("--credential-helper-timeout 必须大于 0")
 			}
@@ -89,6 +92,8 @@ func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command 
 				batchOpts.DisableCredentialHelpers = disableCredentialHelpers
 				batchOpts.CredentialHelperTimeout = credentialHelperTimeout
 				batchOpts.AuthRealmAllowlist = append([]string(nil), authRealmAllowlist...)
+				batchOpts.RegistryPolicies = cloneRegistryPolicies(registryPolicies)
+				batchOpts.policyOverrides = policyOverrides
 				batchOpts.Limits = limits
 				batchOpts.ProgressOutput = cmd.OutOrStdout()
 				report, err := runPullBatch(ctx, runner, batchOpts)
@@ -131,8 +136,10 @@ func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command 
 				DisableCredentialHelpers: disableCredentialHelpers,
 				CredentialHelperTimeout:  credentialHelperTimeout,
 				AuthRealmAllowlist:       append([]string(nil), authRealmAllowlist...),
+				RegistryPolicies:         cloneRegistryPolicies(registryPolicies),
 				Limits:                   limits,
 				ProgressOutput:           cmd.OutOrStdout(),
+				policyOverrides:          policyOverrides,
 			}
 			var pullErrs []error
 			success := 0
@@ -190,6 +197,19 @@ func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command 
 	return cmd
 }
 
+func commandRegistryPolicyOverrides(cmd *cobra.Command) registryPolicyOverrides {
+	if cmd == nil {
+		return registryPolicyOverrides{}
+	}
+	flags := cmd.Flags()
+	return registryPolicyOverrides{
+		Proxy:      flags.Changed("proxy"),
+		Timeout:    flags.Changed("timeout"),
+		PlainHTTP:  flags.Changed("plain-http"),
+		AuthRealms: flags.Changed("auth-realm"),
+	}
+}
+
 func shouldRunPullBatch(cmd *cobra.Command, images []string, opts PullBatchOptions) bool {
 	flags := cmd.Flags()
 	return len(images) > 1 ||
@@ -215,7 +235,7 @@ func completePullValues(values ...string) cobra.CompletionFunc {
 	}
 }
 
-func applyCommandDefaults(cmd *cobra.Command, defaults func() CommandDefaults, proxy, targetOS, arch, outputDir *string, disableCredentialHelpers *bool, credentialHelperTimeout *time.Duration, authRealmAllowlist *[]string) {
+func applyCommandDefaults(cmd *cobra.Command, defaults func() CommandDefaults, proxy, targetOS, arch, outputDir *string, disableCredentialHelpers *bool, credentialHelperTimeout *time.Duration, authRealmAllowlist *[]string, registryPolicies *map[string]appconfig.RegistryPolicy) {
 	if defaults == nil {
 		return
 	}
@@ -241,5 +261,8 @@ func applyCommandDefaults(cmd *cobra.Command, defaults func() CommandDefaults, p
 	}
 	if len(cfg.AuthRealmAllowlist) > 0 && !flags.Changed("auth-realm") {
 		*authRealmAllowlist = append([]string(nil), cfg.AuthRealmAllowlist...)
+	}
+	if registryPolicies != nil {
+		*registryPolicies = cloneRegistryPolicies(cfg.RegistryPolicies)
 	}
 }

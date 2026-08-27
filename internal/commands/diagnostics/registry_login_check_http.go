@@ -2,12 +2,17 @@ package diagnostics
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
+
+	"docker-manager/internal/registryca"
 )
 
 var registryCheckHTTPClient httpDoer = &http.Client{CheckRedirect: registryCredentialRedirectPolicy}
@@ -52,6 +57,10 @@ func registryURLHost(value *url.URL) string {
 }
 
 func pingRegistryV2(ctx context.Context, registryName string, plainHTTP bool, cred registryCredential) CheckResult {
+	return pingRegistryV2WithClient(ctx, registryCheckHTTPClient, registryName, plainHTTP, cred)
+}
+
+func pingRegistryV2WithClient(ctx context.Context, client httpDoer, registryName string, plainHTTP bool, cred registryCredential) CheckResult {
 	scheme := "https"
 	if plainHTTP {
 		scheme = "http"
@@ -63,7 +72,10 @@ func pingRegistryV2(ctx context.Context, registryName string, plainHTTP bool, cr
 	if cred.Username != "" && cred.Password != "" {
 		req.SetBasicAuth(cred.Username, cred.Password)
 	}
-	resp, err := registryCheckHTTPClient.Do(req)
+	if client == nil {
+		client = registryCheckHTTPClient
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return CheckResult{Status: "failed", Message: err.Error()}
 	}
@@ -86,4 +98,70 @@ func pingRegistryV2(ctx context.Context, registryName string, plainHTTP bool, cr
 		}
 		return CheckResult{Status: "failed", HTTPStatus: resp.StatusCode, Message: resp.Status}
 	}
+}
+
+func newRegistryCheckHTTPClient(opts RegistryLoginCheckOptions) (httpDoer, func(), error) {
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return nil, func() {}, fmt.Errorf("default HTTP transport has unexpected type %T", http.DefaultTransport)
+	}
+	transport := base.Clone()
+	timeout := opts.Timeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	dialer := &net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}
+	transport.DialContext = dialer.DialContext
+	transport.TLSHandshakeTimeout = timeout
+	transport.ResponseHeaderTimeout = timeout
+
+	switch {
+	case opts.NoProxy:
+		transport.Proxy = nil
+	case strings.TrimSpace(opts.Proxy) != "":
+		proxyURL, err := parseRegistryProxyURL(opts.Proxy)
+		if err != nil {
+			return nil, func() {}, err
+		}
+		transport.Proxy = http.ProxyURL(proxyURL)
+	default:
+		transport.Proxy = http.ProxyFromEnvironment
+	}
+
+	if strings.TrimSpace(opts.RegistryCAFile) != "" || strings.TrimSpace(opts.RegistryCAPath) != "" {
+		roots, err := registryRootCAs(opts.RegistryCAFile, opts.RegistryCAPath)
+		if err != nil {
+			return nil, func() {}, err
+		}
+		tlsConfig := &tls.Config{RootCAs: roots}
+		if transport.TLSClientConfig != nil {
+			tlsConfig = transport.TLSClientConfig.Clone()
+			tlsConfig.RootCAs = roots
+		}
+		transport.TLSClientConfig = tlsConfig
+	}
+
+	client := &http.Client{
+		Transport:     transport,
+		CheckRedirect: registryCredentialRedirectPolicy,
+	}
+	return client, transport.CloseIdleConnections, nil
+}
+
+func parseRegistryProxyURL(raw string) (*url.URL, error) {
+	value := strings.TrimSpace(raw)
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return nil, fmt.Errorf("无效 registry proxy %q: 必须包含 scheme 和 host", raw)
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https", "socks5":
+		return parsed, nil
+	default:
+		return nil, fmt.Errorf("无效 registry proxy %q: 不支持 scheme %q", raw, parsed.Scheme)
+	}
+}
+
+func registryRootCAs(caFile, caPath string) (*x509.CertPool, error) {
+	return registryca.Load(caFile, caPath)
 }

@@ -106,14 +106,23 @@ func checkDoctorCredentialHelpers(ctx context.Context, cfg dockerConfigFile, opt
 }
 
 func checkDoctorRegistry(ctx context.Context, registry string, opts DoctorOptions) []DoctorCheck {
-	checkCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
-	defer cancel()
-	report, err := runRegistryLoginCheck(checkCtx, registry, RegistryLoginCheckOptions{
+	report, err := runRegistryLoginCheck(ctx, registry, RegistryLoginCheckOptions{
 		DockerConfig:             opts.DockerConfig,
 		PlainHTTP:                opts.PlainHTTP,
+		Proxy:                    opts.Proxy,
+		NoProxy:                  opts.NoProxy,
+		RegistryCAFile:           opts.RegistryCAFile,
+		RegistryCAPath:           opts.RegistryCAPath,
 		Timeout:                  opts.Timeout,
 		DisableCredentialHelpers: opts.DisableCredentialHelpers,
 		CredentialHelperTimeout:  opts.CredentialHelperTimeout,
+		ResolveRegistryPolicy:    opts.ResolveRegistryPolicy,
+		plainHTTPExplicit:        opts.plainHTTPExplicit,
+		proxyExplicit:            opts.proxyExplicit,
+		noProxyExplicit:          opts.noProxyExplicit,
+		registryCAFileExplicit:   opts.registryCAFileExplicit,
+		registryCAPathExplicit:   opts.registryCAPathExplicit,
+		timeoutExplicit:          opts.timeoutExplicit,
 		FormatOptions:            commandflags.FormatOptions{Format: rpt.FormatJSON},
 	})
 	if err != nil {

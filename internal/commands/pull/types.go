@@ -2,6 +2,7 @@ package pull
 
 import (
 	"context"
+	"docker-manager/internal/appconfig"
 	"io"
 	"sync"
 	"time"
@@ -50,9 +51,12 @@ type PullOptions struct {
 	DisableCredentialHelpers bool
 	CredentialHelperTimeout  time.Duration
 	AuthRealmAllowlist       []string
+	RegistryPolicies         map[string]appconfig.RegistryPolicy
 	Limits                   PullResourceLimits
 	ProgressOutput           io.Writer
 	resourceBudget           *pullResourceBudget
+	policyOverrides          registryPolicyOverrides
+	credentialOperation      string
 }
 
 type CommandDefaults struct {
@@ -63,6 +67,14 @@ type CommandDefaults struct {
 	DisableCredentialHelpers bool
 	CredentialHelperTimeout  time.Duration
 	AuthRealmAllowlist       []string
+	RegistryPolicies         map[string]appconfig.RegistryPolicy
+}
+
+type registryPolicyOverrides struct {
+	Proxy      bool
+	Timeout    bool
+	PlainHTTP  bool
+	AuthRealms bool
 }
 
 // PullRunner owns all side-effectful dependencies for pull. Tests replace
@@ -70,6 +82,9 @@ type CommandDefaults struct {
 type PullRunner struct {
 	platform            targetPlatform
 	httpClient          *http_utils.HTTPClient
+	baseProxy           string
+	baseTimeout         time.Duration
+	policyClients       *registryPolicyClientCache
 	loadPulledImage     func(ctx context.Context, path string, output io.Writer) error
 	tagPulledImage      func(ctx context.Context, source, target string) error
 	pushPulledImage     func(ctx context.Context, target, registryAuth string, output io.Writer) error

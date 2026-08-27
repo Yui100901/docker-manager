@@ -60,6 +60,10 @@ Windows:
 - [ ] Linux completion 无 Docker 门禁通过，bash-completion、zsh、fish 加载用例均非 SKIP。
 - [ ] PowerShell 7 和 Windows PowerShell 5.1 均通过 completion dot-source 和 `TabExpansion2` 用例。
 - [ ] Docker completion 使用 `--require-docker` / `-RequireDocker` 通过，容器、镜像、volume 候选均非 SKIP，且无临时资源残留。
+- [ ] base、`default_profile`、`DM_PROFILE` 和显式 `--profile` 的选择优先级通过；completion 查询选中 profile 的 Docker endpoint。
+- [ ] 至少使用两个隔离 registry 验证 policy 不串用 CA、代理、realm allowlist 或凭据；HTTPS 私有 CA 成功且错误 CA 失败，CA 目录链接/混合 PEM/数量和大小越界均失败关闭。
+- [ ] `plain_http` 只对精确匹配的 registry 生效，显式 `--plain-http=false` 可覆盖配置；未配置的 registry 不降级到 HTTP。
+- [ ] 已分别验证 `dm` 直连 registry policy 和 Docker daemon push 的 CA/代理配置，发布说明没有混淆两条链路。
 - [ ] 破坏性命令测试只作用于测试 label、测试容器、测试 volume 或临时 registry。
 - [ ] image/volume prune 未传 `--allow-non-atomic-delete` 时零删除，显式确认后只删除固定测试候选。
 - [ ] 分卷备份成功后 commit manifest/digest 完整且无 pending/staging 残留；中断恢复不删除 foreign replacement。

@@ -4,6 +4,33 @@
 # The file must be at most 1 MiB and its YAML document root must be a mapping.
 # Unknown fields, invalid types, multiple documents, and invalid values fail.
 
+# Optional named environments. Selection precedence is:
+# --profile > DM_PROFILE > default_profile > base values below.
+# A selected profile overlays only fields it explicitly contains, so empty
+# strings, false, and [] can intentionally clear inherited base values.
+# default_profile: development
+# profiles:
+#   development:
+#     docker_host: tcp://docker-dev.example.com:2376
+#     docker_tls_verify: true
+#     docker_cert_path: /etc/docker-manager/dev-certs
+#     proxy: http://127.0.0.1:7890
+#     output_dir: images/development
+#   production:
+#     docker_host: tcp://docker-prod.example.com:2376
+#     docker_tls_verify: true
+#     docker_cert_path: /etc/docker-manager/prod-certs
+#     output_dir: images/production
+#     registries:
+#       registry.prod.example.com:
+#         ca_file: /etc/docker-manager/ca/registry-prod.pem
+#         no_proxy: true
+#         timeout: 20s
+#         credential_scope: [pull, push, login]
+#         auth_realms:
+#           - https://auth.prod.example.com
+#         plain_http: false
+
 # proxy: http://127.0.0.1:7890
 
 # Docker API endpoint. Supported schemes: tcp://, unix://, and npipe://.
@@ -49,6 +76,32 @@ output_dir: images
 # Same-origin realms and Docker Hub's built-in realm do not need to be listed.
 # registry_auth_realms:
 #   - https://auth.example.com
+
+# Exact per-registry policies. Keys are canonical host[:port] values; schemes,
+# paths, credentials, and wildcards are rejected. A profile may overlay these
+# entries. Omitted credential_scope allows pull/push/login, while [] disables
+# credential use for that registry. plain_http must be explicitly enabled for
+# an insecure registry and cannot be combined with a configured CA.
+# Per-registry CA files must contain only valid CERTIFICATE PEM blocks. ca_file
+# is limited to a 16 MiB non-link regular file; ca_path is a non-link/reparse
+# directory limited to 256 regular files and 32 MiB total. Empty directories,
+# README/private-key/garbage content, symlinks, and special files fail closed.
+# registries:
+#   registry.example.com:
+#     ca_file: /etc/docker-manager/ca/registry-example.pem
+#     # ca_path: /etc/docker-manager/ca/registry-example
+#     proxy: http://proxy.example.com:3128
+#     no_proxy: false
+#     timeout: 30s
+#     credential_scope: [pull, push, login]
+#     auth_realms:
+#       - https://auth.example.com
+#     plain_http: false
+#   registry.local:5000:
+#     no_proxy: true
+#     timeout: 10s
+#     credential_scope: [pull, push]
+#     plain_http: true
 
 verbose: false
 quiet: false

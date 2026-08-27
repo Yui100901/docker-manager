@@ -126,6 +126,9 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 	configPath := defaultConfigPath
 	effectiveConfigPath := configPath
 	loadedConfig := appconfig.Loaded{Path: configPath, Fields: map[string]bool{}}
+	var configLoadError error
+	configResolved := false
+	var profileName string
 	var dockerHost string
 	var dockerTLSVerify bool
 	var dockerCertPath string
@@ -157,12 +160,18 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 				wrapSensitiveOutputs(cmd)
 			}
 			configFlagChanged := cmd.Root().PersistentFlags().Changed("config")
+			profileFlagChanged := cmd.Root().PersistentFlags().Changed("profile")
 			effectiveConfigPath = resolveConfigPath(configPath, configFlagChanged)
+			configLoadError = nil
+			configResolved = false
 			loaded, err := appconfig.LoadWithOptions(effectiveConfigPath, appconfig.LoadOptions{
-				Required: appconfig.IsExplicitPath(configFlagChanged),
+				Required:        appconfig.IsExplicitPath(configFlagChanged) || profileSelectionRequiresConfig(profileName, profileFlagChanged),
+				Profile:         profileName,
+				ProfileExplicit: profileFlagChanged,
 			})
 			if err != nil {
 				if isDoctorCommand(cmd) && !errors.Is(err, os.ErrNotExist) {
+					configLoadError = err
 					*cfg = appConfig{}
 					loadedConfig = appconfig.Loaded{Path: effectiveConfigPath, Fields: map[string]bool{}}
 					profile, profileErr := resolveRootRedactProfile(cmd, cfg, redactProfile, redactSecrets)
@@ -183,6 +192,7 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 				return err
 			}
 			loadedConfig = loaded
+			configResolved = true
 			*cfg = loaded.Config
 			profile, err := resolveRootRedactProfile(cmd, cfg, redactProfile, redactSecrets)
 			if err != nil {
@@ -208,6 +218,8 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 	opts.Quiet = cfg.Quiet
 	opts.JSON = cfg.JSON
 	rootCmd.PersistentFlags().StringVar(&configPath, "config", defaultConfigPath, "配置文件路径")
+	rootCmd.PersistentFlags().StringVar(&profileName, "profile", "", "选择命名环境，优先于 DM_PROFILE 和 default_profile")
+	_ = rootCmd.RegisterFlagCompletionFunc("profile", completion.ConfigProfiles)
 	rootCmd.PersistentFlags().BoolVar(&opts.Verbose, "verbose", opts.Verbose, "输出详细日志")
 	rootCmd.PersistentFlags().BoolVar(&opts.Quiet, "quiet", opts.Quiet, "隐藏信息日志")
 	rootCmd.PersistentFlags().BoolVar(&opts.JSON, "log-json", opts.JSON, "以 JSON 输出日志和错误，不影响业务报告格式")
@@ -230,11 +242,19 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 	rootCmd.AddCommand(commandSet.newImageShortcuts()...)
 	rootCmd.AddCommand(commandSet.newReportShortcuts()...)
 	rootCmd.AddCommand(diagnostics.NewDoctorCommandWithDefaults(func() diagnostics.DoctorDefaults {
+		var resolvedConfig *appconfig.Loaded
+		if configResolved {
+			resolved := loadedConfig
+			resolvedConfig = &resolved
+		}
 		return diagnostics.DoctorDefaults{
 			ConfigPath:               effectiveConfigPath,
+			LoadedConfig:             resolvedConfig,
+			ConfigLoadError:          configLoadError,
 			OutputDir:                cfg.OutputDir,
 			DisableCredentialHelpers: cfg.CredentialHelpersDisabled,
 			CredentialHelperTimeout:  configuredCredentialHelperTimeout(cfg),
+			ResolveRegistryPolicy:    registryPolicyResolver(cfg),
 		}
 	}))
 	rootCmd.AddCommand(completion.NewCommand())
@@ -246,6 +266,13 @@ func newRootCommand(cfg *appConfig, opts *outputOptions) *cobra.Command {
 	}))
 	rootCmd.AddCommand(newConfigCommand(cfg, &loadedConfig))
 	return rootCmd
+}
+
+func profileSelectionRequiresConfig(profile string, explicit bool) bool {
+	if explicit {
+		return strings.TrimSpace(profile) != ""
+	}
+	return strings.TrimSpace(os.Getenv(appconfig.ProfileEnvName)) != ""
 }
 
 type commandFactory struct {
@@ -269,6 +296,7 @@ func newRootCommandSet(cfg *appConfig) rootCommandSet {
 				DisableCredentialHelpers: cfg.CredentialHelpersDisabled,
 				CredentialHelperTimeout:  configuredCredentialHelperTimeout(cfg),
 				AuthRealmAllowlist:       append([]string(nil), cfg.RegistryAuthRealms...),
+				RegistryPolicies:         cloneAppRegistryPolicies(cfg.Registries),
 			}
 		})
 	}
@@ -277,6 +305,7 @@ func newRootCommandSet(cfg *appConfig) rootCommandSet {
 			return diagnostics.RegistryLoginCheckDefaults{
 				DisableCredentialHelpers: cfg.CredentialHelpersDisabled,
 				CredentialHelperTimeout:  configuredCredentialHelperTimeout(cfg),
+				ResolveRegistryPolicy:    registryPolicyResolver(cfg),
 			}
 		})
 	}
@@ -431,4 +460,30 @@ func configuredCredentialHelperTimeout(cfg *appConfig) time.Duration {
 	}
 	timeout, _ := appconfig.PositiveDuration("credential_helper_timeout", cfg.CredentialHelperTimeout, registryauth.DefaultCredentialHelperTimeout)
 	return timeout
+}
+
+func registryPolicyResolver(cfg *appConfig) diagnostics.RegistryPolicyResolver {
+	return func(registry string) (appconfig.RegistryPolicy, bool) {
+		if cfg == nil {
+			return appconfig.RegistryPolicy{}, false
+		}
+		return appconfig.ResolveRegistryPolicy(cfg.Registries, registry)
+	}
+}
+
+func cloneAppRegistryPolicies(policies map[string]appconfig.RegistryPolicy) map[string]appconfig.RegistryPolicy {
+	if policies == nil {
+		return nil
+	}
+	result := make(map[string]appconfig.RegistryPolicy, len(policies))
+	for registry, policy := range policies {
+		if policy.CredentialScope != nil {
+			policy.CredentialScope = append([]string{}, policy.CredentialScope...)
+		}
+		if policy.AuthRealms != nil {
+			policy.AuthRealms = append([]string{}, policy.AuthRealms...)
+		}
+		result[registry] = policy
+	}
+	return result
 }

@@ -40,6 +40,8 @@ func NewDoctorCommandWithDefaults(defaults func() DoctorDefaults) *cobra.Command
 				if cfg.ConfigPath != "" {
 					opts.ConfigPath = cfg.ConfigPath
 				}
+				opts.LoadedConfig = cfg.LoadedConfig
+				opts.ConfigLoadError = cfg.ConfigLoadError
 				if cfg.OutputDir != "" && !cmd.Flags().Changed("output-dir") {
 					opts.OutputDir = cfg.OutputDir
 				}
@@ -49,7 +51,14 @@ func NewDoctorCommandWithDefaults(defaults func() DoctorDefaults) *cobra.Command
 				if cfg.CredentialHelperTimeout > 0 && !cmd.Flags().Changed("credential-helper-timeout") {
 					opts.CredentialHelperTimeout = cfg.CredentialHelperTimeout
 				}
+				opts.ResolveRegistryPolicy = cfg.ResolveRegistryPolicy
 			}
+			opts.plainHTTPExplicit = cmd.Flags().Changed("plain-http")
+			opts.proxyExplicit = cmd.Flags().Changed("proxy")
+			opts.noProxyExplicit = cmd.Flags().Changed("no-proxy")
+			opts.registryCAFileExplicit = cmd.Flags().Changed("registry-ca-file")
+			opts.registryCAPathExplicit = cmd.Flags().Changed("registry-ca-path")
+			opts.timeoutExplicit = cmd.Flags().Changed("timeout")
 			report := runDoctor(cmd.Context(), opts)
 			return rpt.Print(cmd.OutOrStdout(), opts.Format, report, func(w io.Writer) {
 				printDoctorReport(w, report)
@@ -58,6 +67,10 @@ func NewDoctorCommandWithDefaults(defaults func() DoctorDefaults) *cobra.Command
 	}
 	cmd.Flags().StringArrayVar(&opts.Registries, "registry", nil, "检查 registry 连通性和凭据，可重复指定")
 	commandflags.AddPlainHTTPFlag(cmd, &opts.PlainHTTP)
+	cmd.Flags().StringVar(&opts.Proxy, "proxy", "", "registry /v2/ 检查使用的代理；未指定时读取精确 registry 策略或标准代理环境变量")
+	cmd.Flags().BoolVar(&opts.NoProxy, "no-proxy", false, "registry /v2/ 检查强制直连，不使用配置或环境代理")
+	cmd.Flags().StringVar(&opts.RegistryCAFile, "registry-ca-file", "", "registry /v2/ HTTPS 检查额外信任的 PEM CA 文件")
+	cmd.Flags().StringVar(&opts.RegistryCAPath, "registry-ca-path", "", "registry /v2/ HTTPS 检查额外信任的 PEM CA 目录")
 	commandflags.AddDockerConfigFlag(cmd, &opts.DockerConfig)
 	commandflags.AddCredentialHelperFlags(cmd, &opts.DisableCredentialHelpers, &opts.CredentialHelperTimeout, opts.CredentialHelperTimeout)
 	cmd.Flags().StringVar(&opts.OutputDir, "output-dir", opts.OutputDir, "检查磁盘空间的输出目录")
@@ -85,7 +98,7 @@ func runDoctor(ctx context.Context, opts DoctorOptions) DoctorReport {
 		GeneratedAt: time.Now().Format(time.RFC3339),
 		Platform:    runtime.GOOS + "/" + runtime.GOARCH,
 	}
-	cfg, configChecks := checkDoctorConfig(opts.ConfigPath)
+	cfg, configChecks := resolveDoctorConfig(opts.ConfigPath, opts.LoadedConfig, opts.ConfigLoadError)
 	groups := []doctorCheckGroup{
 		{index: 0, check: func() []DoctorCheck { return checkDoctorDocker(ctx, opts.Timeout) }},
 		{index: 1, check: func() []DoctorCheck { return configChecks }},

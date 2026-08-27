@@ -1,6 +1,7 @@
 package completion
 
 import (
+	"docker-manager/internal/appconfig"
 	"docker-manager/internal/docker"
 	"os"
 	"path/filepath"
@@ -105,9 +106,126 @@ func TestPrepareDockerCompletionUsesDMConfigWhenConfigFlagUnset(t *testing.T) {
 	}
 }
 
+func TestPrepareDockerCompletionUsesSelectedProfile(t *testing.T) {
+	t.Cleanup(func() { docker.Configure(docker.Options{}) })
+	configPath := filepath.Join(t.TempDir(), "dm.yaml")
+	data := "docker_host: tcp://base.example:2375\nprofiles:\n  production:\n    docker_host: tcp://production.example:2376\n"
+	if err := os.WriteFile(configPath, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := newCompletionTestRoot()
+	if err := cmd.PersistentFlags().Set("config", configPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.PersistentFlags().Set("profile", "production"); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareDockerCompletion(cmd); err != nil {
+		t.Fatalf("prepareDockerCompletion() error = %v", err)
+	}
+	if got := docker.CurrentOptions().Host; got != "tcp://production.example:2376" {
+		t.Fatalf("docker host = %q, want selected profile endpoint", got)
+	}
+}
+
+func TestPrepareDockerCompletionUsesDMProfile(t *testing.T) {
+	t.Cleanup(func() { docker.Configure(docker.Options{}) })
+	configPath := filepath.Join(t.TempDir(), "dm.yaml")
+	data := "profiles:\n  staging:\n    docker_host: tcp://staging.example:2375\n"
+	if err := os.WriteFile(configPath, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(configEnvName, configPath)
+	t.Setenv(appconfig.ProfileEnvName, "staging")
+	cmd := newCompletionTestRoot()
+	if err := prepareDockerCompletion(cmd); err != nil {
+		t.Fatalf("prepareDockerCompletion() error = %v", err)
+	}
+	if got := docker.CurrentOptions().Host; got != "tcp://staging.example:2375" {
+		t.Fatalf("docker host = %q, want DM_PROFILE endpoint", got)
+	}
+}
+
+func TestPrepareDockerCompletionUsesDefaultProfile(t *testing.T) {
+	t.Cleanup(func() { docker.Configure(docker.Options{}) })
+	configPath := filepath.Join(t.TempDir(), "dm.yaml")
+	data := "default_profile: staging\ndocker_host: tcp://base.example:2375\nprofiles:\n  staging:\n    docker_host: tcp://staging.example:2376\n"
+	if err := os.WriteFile(configPath, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := newCompletionTestRoot()
+	if err := cmd.PersistentFlags().Set("config", configPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareDockerCompletion(cmd); err != nil {
+		t.Fatalf("prepareDockerCompletion() error = %v", err)
+	}
+	if got := docker.CurrentOptions().Host; got != "tcp://staging.example:2376" {
+		t.Fatalf("docker host = %q, want default profile endpoint", got)
+	}
+}
+
+func TestPrepareDockerCompletionExplicitEmptyProfileDisablesEnvironmentAndDefault(t *testing.T) {
+	t.Cleanup(func() { docker.Configure(docker.Options{}) })
+	configPath := filepath.Join(t.TempDir(), "dm.yaml")
+	data := "default_profile: staging\ndocker_host: tcp://base.example:2375\nprofiles:\n  staging:\n    docker_host: tcp://staging.example:2376\n"
+	if err := os.WriteFile(configPath, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(appconfig.ProfileEnvName, "staging")
+	cmd := newCompletionTestRoot()
+	if err := cmd.PersistentFlags().Set("config", configPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.PersistentFlags().Set("profile", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareDockerCompletion(cmd); err != nil {
+		t.Fatalf("prepareDockerCompletion() error = %v", err)
+	}
+	if got := docker.CurrentOptions().Host; got != "tcp://base.example:2375" {
+		t.Fatalf("docker host = %q, want base endpoint", got)
+	}
+}
+
+func TestConfigProfilesCompletesConfiguredNames(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "dm.yaml")
+	data := "profiles:\n  production: {}\n  preview: {}\n  staging: {}\n"
+	if err := os.WriteFile(configPath, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := newCompletionTestRoot()
+	if err := cmd.PersistentFlags().Set("config", configPath); err != nil {
+		t.Fatal(err)
+	}
+	values, directive := ConfigProfiles(cmd, nil, "pr")
+	if strings.Join(values, ",") != "preview,production" {
+		t.Fatalf("ConfigProfiles() = %#v", values)
+	}
+	if directive != cobra.ShellCompDirectiveNoFileComp {
+		t.Fatalf("directive = %v, want NoFileComp", directive)
+	}
+}
+
+func TestCompletionRejectsExplicitMissingConfig(t *testing.T) {
+	t.Cleanup(func() { docker.Configure(docker.Options{}) })
+	missing := filepath.Join(t.TempDir(), "missing.yaml")
+	cmd := newCompletionTestRoot()
+	if err := cmd.PersistentFlags().Set("config", missing); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareDockerCompletion(cmd); err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("prepareDockerCompletion() error = %v, want explicit missing config failure", err)
+	}
+	if values, directive := ConfigProfiles(cmd, nil, ""); len(values) != 0 || directive != cobra.ShellCompDirectiveError {
+		t.Fatalf("ConfigProfiles() = (%#v, %v), want error directive", values, directive)
+	}
+}
+
 func newCompletionTestRoot() *cobra.Command {
 	cmd := &cobra.Command{Use: "dm"}
 	cmd.PersistentFlags().String("config", defaultConfigPath, "")
+	cmd.PersistentFlags().String("profile", "", "")
 	cmd.PersistentFlags().String("docker-host", "", "")
 	cmd.PersistentFlags().Bool("docker-tls-verify", false, "")
 	cmd.PersistentFlags().String("docker-cert-path", "", "")

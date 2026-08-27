@@ -22,11 +22,14 @@ const (
 )
 
 type configShowReport struct {
-	Path      string            `json:"path"`
-	Exists    bool              `json:"exists"`
-	Effective bool              `json:"effective"`
-	Values    map[string]any    `json:"values"`
-	Sources   map[string]string `json:"sources,omitempty"`
+	Path              string            `json:"path"`
+	Exists            bool              `json:"exists"`
+	Profile           string            `json:"profile,omitempty"`
+	ProfileSource     string            `json:"profile_source"`
+	AvailableProfiles []string          `json:"available_profiles,omitempty"`
+	Effective         bool              `json:"effective"`
+	Values            map[string]any    `json:"values"`
+	Sources           map[string]string `json:"sources,omitempty"`
 }
 
 func newConfigCommand(cfg *appConfig, loaded *appconfig.Loaded) *cobra.Command {
@@ -36,6 +39,7 @@ func newConfigCommand(cfg *appConfig, loaded *appconfig.Loaded) *cobra.Command {
 	}
 	configCmd.AddCommand(newConfigValidateCommand(loaded))
 	configCmd.AddCommand(newConfigShowCommand(cfg, loaded))
+	configCmd.AddCommand(newConfigProfilesCommand(loaded))
 	return configCmd
 }
 
@@ -49,8 +53,33 @@ func newConfigValidateCommand(loaded *appconfig.Loaded) *cobra.Command {
 				fmt.Fprintf(cmd.OutOrStdout(), "配置有效：未找到隐式默认配置，使用内置默认值 (%s)\n", configLoadedPath(loaded))
 				return nil
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "配置有效: %s\n", loaded.Path)
+			if loaded.Profile != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "配置有效: %s (profile=%s, source=%s)\n", loaded.Path, loaded.Profile, loaded.ProfileSource)
+				return nil
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "配置有效: %s (未选择 profile)\n", loaded.Path)
 			return nil
+		},
+	}
+}
+
+func newConfigProfilesCommand(loaded *appconfig.Loaded) *cobra.Command {
+	return &cobra.Command{
+		Use:   "profiles",
+		Short: "列出配置文件中的命名环境",
+		Args:  cobra.NoArgs,
+		Run: func(cmd *cobra.Command, _ []string) {
+			if loaded == nil || len(loaded.AvailableProfiles) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "未配置 profile")
+				return
+			}
+			for _, name := range loaded.AvailableProfiles {
+				marker := " "
+				if name == loaded.Profile {
+					marker = "*"
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "%s %s\n", marker, name)
+			}
 		},
 	}
 }
@@ -83,10 +112,13 @@ func buildConfigShowReport(cmd *cobra.Command, cfg *appConfig, loaded *appconfig
 		cfg = &appConfig{}
 	}
 	report := configShowReport{
-		Path:      configLoadedPath(loaded),
-		Exists:    loaded != nil && loaded.Exists,
-		Effective: effective,
-		Values:    make(map[string]any),
+		Path:              configLoadedPath(loaded),
+		Exists:            loaded != nil && loaded.Exists,
+		Profile:           loadedProfile(loaded),
+		ProfileSource:     loadedProfileSource(loaded),
+		AvailableProfiles: loadedAvailableProfiles(loaded),
+		Effective:         effective,
+		Values:            make(map[string]any),
 	}
 	if showSource {
 		report.Sources = make(map[string]string)
@@ -99,10 +131,7 @@ func buildConfigShowReport(cmd *cobra.Command, cfg *appConfig, loaded *appconfig
 	}
 
 	configSource := func(field string) string {
-		if loaded != nil && loaded.Fields[field] {
-			return "config:" + loaded.Path
-		}
-		return "default"
+		return loadedFieldSource(loaded, field)
 	}
 	rootFlags := cmd.Root().PersistentFlags()
 	configPathSource := "default"
@@ -112,9 +141,13 @@ func buildConfigShowReport(cmd *cobra.Command, cfg *appConfig, loaded *appconfig
 		configPathSource = "env:" + appconfig.EnvName
 	}
 	set("config_path", report.Path, configPathSource)
+	set("selected_profile", report.Profile, report.ProfileSource)
+	set("available_profiles", append([]string(nil), report.AvailableProfiles...), loadedProfilesSource(loaded))
+	set("default_profile", cfg.DefaultProfile, configSource("default_profile"))
 
 	if !effective {
 		setRawConfigValues(set, *cfg, configSource)
+		addRegistrySourceDetails(&report, loaded)
 		return report
 	}
 
@@ -140,6 +173,7 @@ func buildConfigShowReport(cmd *cobra.Command, cfg *appConfig, loaded *appconfig
 	set("credential_helpers_disabled", cfg.CredentialHelpersDisabled, configSource("credential_helpers_disabled"))
 	set("credential_helper_timeout", configuredCredentialHelperTimeout(cfg).String(), configSource("credential_helper_timeout"))
 	set("registry_auth_realms", append([]string(nil), cfg.RegistryAuthRealms...), configSource("registry_auth_realms"))
+	set("registries", cfg.Registries, configSource("registries"))
 
 	verbose, verboseSource, quiet, quietSource := configShowOutputValues(cmd, cfg, configSource)
 	set("verbose", verbose, verboseSource)
@@ -152,10 +186,12 @@ func buildConfigShowReport(cmd *cobra.Command, cfg *appConfig, loaded *appconfig
 	set("docker_cert_path", dockerOptions.CertPath, dockerValueSource(rootFlags.Changed("docker-cert-path"), "docker_cert_path", "DOCKER_CERT_PATH", loaded))
 	set("docker_api_version", dockerOptions.APIVersion, dockerValueSource(rootFlags.Changed("docker-api-version"), "docker_api_version", "DOCKER_API_VERSION", loaded))
 	set("docker_timeout", dockerOptions.Timeout.String(), dockerValueSource(rootFlags.Changed("docker-timeout"), "docker_timeout", "", loaded))
+	addRegistrySourceDetails(&report, loaded)
 	return report
 }
 
 func setRawConfigValues(set func(string, any, string), cfg appConfig, source func(string) string) {
+	set("default_profile", cfg.DefaultProfile, source("default_profile"))
 	set("proxy", cfg.Proxy, source("proxy"))
 	set("os", cfg.TargetOS, source("os"))
 	set("arch", cfg.Arch, source("arch"))
@@ -179,6 +215,7 @@ func setRawConfigValues(set func(string, any, string), cfg appConfig, source fun
 	set("credential_helpers_disabled", cfg.CredentialHelpersDisabled, source("credential_helpers_disabled"))
 	set("credential_helper_timeout", cfg.CredentialHelperTimeout, source("credential_helper_timeout"))
 	set("registry_auth_realms", append([]string(nil), cfg.RegistryAuthRealms...), source("registry_auth_realms"))
+	set("registries", cfg.Registries, source("registries"))
 	set("verbose", cfg.Verbose, source("verbose"))
 	set("quiet", cfg.Quiet, source("quiet"))
 	set("log_json", cfg.JSON, source("log_json"))
@@ -186,6 +223,11 @@ func setRawConfigValues(set func(string, any, string), cfg appConfig, source fun
 
 func printConfigShowReport(w io.Writer, report configShowReport) {
 	fmt.Fprintf(w, "配置文件: %s (exists=%v)\n", report.Path, report.Exists)
+	if report.Profile == "" {
+		fmt.Fprintf(w, "活动 profile: <none> [source=%s]\n", report.ProfileSource)
+	} else {
+		fmt.Fprintf(w, "活动 profile: %s [source=%s]\n", report.Profile, report.ProfileSource)
+	}
 	keys := make([]string, 0, len(report.Values))
 	for key := range report.Values {
 		keys = append(keys, key)
@@ -198,6 +240,78 @@ func printConfigShowReport(w io.Writer, report configShowReport) {
 		}
 		fmt.Fprintf(w, "%s: %v\n", key, report.Values[key])
 	}
+	var sourceOnly []string
+	for key := range report.Sources {
+		if _, exists := report.Values[key]; !exists {
+			sourceOnly = append(sourceOnly, key)
+		}
+	}
+	sort.Strings(sourceOnly)
+	for _, key := range sourceOnly {
+		fmt.Fprintf(w, "%s [source=%s]\n", key, report.Sources[key])
+	}
+}
+
+func addRegistrySourceDetails(report *configShowReport, loaded *appconfig.Loaded) {
+	if report == nil || report.Sources == nil || loaded == nil {
+		return
+	}
+	unique := map[string]struct{}{}
+	for field, source := range loaded.FieldSources {
+		if !strings.HasPrefix(field, "registries.") || source == "" {
+			continue
+		}
+		report.Sources[field] = source
+		unique[source] = struct{}{}
+	}
+	if len(unique) > 1 {
+		report.Sources["registries"] = "mixed"
+		return
+	}
+	for source := range unique {
+		report.Sources["registries"] = source
+	}
+}
+
+func loadedProfile(loaded *appconfig.Loaded) string {
+	if loaded == nil {
+		return ""
+	}
+	return loaded.Profile
+}
+
+func loadedProfileSource(loaded *appconfig.Loaded) string {
+	if loaded == nil || loaded.ProfileSource == "" {
+		return "default"
+	}
+	return loaded.ProfileSource
+}
+
+func loadedAvailableProfiles(loaded *appconfig.Loaded) []string {
+	if loaded == nil {
+		return nil
+	}
+	return append([]string(nil), loaded.AvailableProfiles...)
+}
+
+func loadedProfilesSource(loaded *appconfig.Loaded) string {
+	if loaded != nil && loaded.Exists && (loaded.Fields["profiles"] || len(loaded.AvailableProfiles) > 0) {
+		return "config:" + loaded.Path
+	}
+	return "default"
+}
+
+func loadedFieldSource(loaded *appconfig.Loaded, field string) string {
+	if loaded == nil {
+		return "default"
+	}
+	if source := loaded.FieldSources[field]; source != "" {
+		return source
+	}
+	if loaded.Fields[field] {
+		return "config:" + loaded.Path
+	}
+	return "default"
 }
 
 func configLoadedPath(loaded *appconfig.Loaded) string {
@@ -266,8 +380,8 @@ func dockerValueSource(flagChanged bool, field, env string, loaded *appconfig.Lo
 	if flagChanged {
 		return "flag:--" + strings.ReplaceAll(field, "_", "-")
 	}
-	if loaded != nil && loaded.Fields[field] {
-		return "config:" + loaded.Path
+	if source := loadedFieldSource(loaded, field); source != "default" {
+		return source
 	}
 	if value, exists := os.LookupEnv(env); exists && strings.TrimSpace(value) != "" {
 		return "env:" + env
@@ -289,7 +403,11 @@ func configShowRedactProfile(cmd *cobra.Command, cfg *appConfig, loaded *appconf
 	case rootFlags.Changed("redact-secrets"):
 		return string(profile), "flag:--redact-secrets"
 	case loaded != nil && (loaded.Fields["redact_profile"] || loaded.Fields["redact_secrets"]):
-		return string(profile), "config:" + loaded.Path
+		source := loadedFieldSource(loaded, "redact_profile")
+		if source == "default" {
+			source = loadedFieldSource(loaded, "redact_secrets")
+		}
+		return string(profile), source
 	default:
 		return string(profile), "default"
 	}

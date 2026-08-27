@@ -3,6 +3,7 @@ package completion
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -49,6 +50,19 @@ func FixedValues(values ...string) cobra.CompletionFunc {
 	}
 }
 
+func ConfigProfiles(cmd *cobra.Command, _ []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	root := completionRoot(cmd)
+	configPath, configFlagChanged := completionConfigSelection(root)
+	loaded, err := appconfig.LoadWithOptions(appconfig.ResolvePath(configPath, configFlagChanged), appconfig.LoadOptions{
+		Required:        appconfig.IsExplicitPath(configFlagChanged),
+		ProfileExplicit: true,
+	})
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveError
+	}
+	return filterCompletionValues(loaded.AvailableProfiles, toComplete), cobra.ShellCompDirectiveNoFileComp
+}
+
 func LocalContainers(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	if err := prepareDockerCompletion(cmd); err != nil {
 		return nil, cobra.ShellCompDirectiveError
@@ -86,27 +100,62 @@ func prepareDockerCompletion(cmd *cobra.Command) error {
 	if cmd == nil {
 		return nil
 	}
-	root := cmd.Root()
-	if root == nil {
-		root = cmd
-	}
-	flags := root.PersistentFlags()
-	configPath := defaultConfigPath
-	configFlagChanged := false
-	if flag := flags.Lookup("config"); flag != nil {
-		configPath = flag.Value.String()
-		configFlagChanged = flag.Changed
-	}
-	cfg, err := appconfig.Load(appconfig.ResolvePath(configPath, configFlagChanged))
+	root := completionRoot(cmd)
+	configPath, configFlagChanged := completionConfigSelection(root)
+	profileName, profileFlagChanged := completionProfileSelection(root)
+	loaded, err := appconfig.LoadWithOptions(appconfig.ResolvePath(configPath, configFlagChanged), appconfig.LoadOptions{
+		Required:        appconfig.IsExplicitPath(configFlagChanged) || completionProfileRequiresConfig(profileName, profileFlagChanged),
+		Profile:         profileName,
+		ProfileExplicit: profileFlagChanged,
+	})
 	if err != nil {
 		return err
 	}
-	opts, err := dockerconfig.OptionsFromRootFlags(cfg, root)
+	opts, err := dockerconfig.OptionsFromRootFlags(loaded.Config, root)
 	if err != nil {
 		return err
 	}
 	docker.Configure(opts)
 	return nil
+}
+
+func completionRoot(cmd *cobra.Command) *cobra.Command {
+	if cmd == nil {
+		return nil
+	}
+	root := cmd.Root()
+	if root == nil {
+		return cmd
+	}
+	return root
+}
+
+func completionConfigSelection(root *cobra.Command) (string, bool) {
+	configPath := defaultConfigPath
+	if root == nil {
+		return configPath, false
+	}
+	if flag := root.PersistentFlags().Lookup("config"); flag != nil {
+		return flag.Value.String(), flag.Changed
+	}
+	return configPath, false
+}
+
+func completionProfileSelection(root *cobra.Command) (string, bool) {
+	if root == nil {
+		return "", false
+	}
+	if flag := root.PersistentFlags().Lookup("profile"); flag != nil {
+		return flag.Value.String(), flag.Changed
+	}
+	return "", false
+}
+
+func completionProfileRequiresConfig(profile string, explicit bool) bool {
+	if explicit {
+		return strings.TrimSpace(profile) != ""
+	}
+	return strings.TrimSpace(os.Getenv(appconfig.ProfileEnvName)) != ""
 }
 
 func localContainerCompletionValues(ctx context.Context) ([]string, error) {

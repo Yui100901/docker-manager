@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -148,8 +149,11 @@ func TestPrepareDockerCompletionErrorsAndNilCommand(t *testing.T) {
 	}
 
 	root := newCompletionTestRoot()
-	invalidConfig := t.TempDir() + "/invalid.yaml"
-	if err := root.PersistentFlags().Set("config", invalidConfig); err != nil {
+	configPath := t.TempDir() + "/config.yaml"
+	if err := os.WriteFile(configPath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.PersistentFlags().Set("config", configPath); err != nil {
 		t.Fatal(err)
 	}
 	if err := root.PersistentFlags().Set("docker-host", "http://unsupported.example"); err != nil {
@@ -199,7 +203,10 @@ func TestCompletionValueHelpersCoverEmptyTrimAndIDEdges(t *testing.T) {
 func completionTestRootForServer(t *testing.T, server *httptest.Server) *cobra.Command {
 	t.Helper()
 	root := newCompletionTestRoot()
-	configPath := t.TempDir() + "/missing.yaml"
+	configPath := t.TempDir() + "/config.yaml"
+	if err := os.WriteFile(configPath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	host := "tcp://" + strings.TrimPrefix(server.URL, "http://")
 	for name, value := range map[string]string{
 		"config":             configPath,

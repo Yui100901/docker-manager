@@ -1,6 +1,8 @@
 package pull
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"net"
 	"net/http"
@@ -13,26 +15,43 @@ import (
 	"golang.org/x/net/http/httpproxy"
 )
 
+type pullHTTPClientOptions struct {
+	Proxy   string
+	NoProxy bool
+	Timeout time.Duration
+	RootCAs *x509.CertPool
+}
+
 func newPullHTTPClient(proxy string, timeout time.Duration) (*http_utils.HTTPClient, error) {
-	proxyFunc, err := proxyFuncFromSetting(proxy)
+	return newPullHTTPClientWithOptions(pullHTTPClientOptions{Proxy: proxy, Timeout: timeout})
+}
+
+func newPullHTTPClientWithOptions(opts pullHTTPClientOptions) (*http_utils.HTTPClient, error) {
+	proxyFunc, err := proxyFuncFromSettingWithNoProxy(opts.Proxy, opts.NoProxy)
 	if err != nil {
 		return nil, err
 	}
-	if timeout <= 0 {
-		timeout = defaultPullTimeout
+	if opts.Timeout <= 0 {
+		opts.Timeout = defaultPullTimeout
 	}
 
 	dialer := &net.Dialer{
-		Timeout:   timeout,
+		Timeout:   opts.Timeout,
 		KeepAlive: 30 * time.Second,
 	}
 	transport := &http.Transport{
 		Proxy:                 proxyFunc,
 		DialContext:           dialer.DialContext,
-		TLSHandshakeTimeout:   timeout,
-		ResponseHeaderTimeout: timeout,
+		TLSHandshakeTimeout:   opts.Timeout,
+		ResponseHeaderTimeout: opts.Timeout,
 		ExpectContinueTimeout: 1 * time.Second,
 		IdleConnTimeout:       90 * time.Second,
+	}
+	if opts.RootCAs != nil {
+		transport.TLSClientConfig = &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			RootCAs:    opts.RootCAs,
+		}
 	}
 	return &http_utils.HTTPClient{
 		Client: &http.Client{
@@ -43,6 +62,13 @@ func newPullHTTPClient(proxy string, timeout time.Duration) (*http_utils.HTTPCli
 }
 
 func proxyFuncFromSetting(proxy string) (func(*http.Request) (*url.URL, error), error) {
+	return proxyFuncFromSettingWithNoProxy(proxy, false)
+}
+
+func proxyFuncFromSettingWithNoProxy(proxy string, noProxy bool) (func(*http.Request) (*url.URL, error), error) {
+	if noProxy {
+		return nil, nil
+	}
 	if proxy == "" {
 		return proxyFromEnvironment, nil
 	}
@@ -53,6 +79,11 @@ func proxyFuncFromSetting(proxy string) (func(*http.Request) (*url.URL, error), 
 	}
 	if proxyURL.Scheme == "" || proxyURL.Host == "" {
 		return nil, fmt.Errorf("无效代理地址 %q: 必须包含 scheme 和 host，例如 http://127.0.0.1:7890", proxy)
+	}
+	switch strings.ToLower(proxyURL.Scheme) {
+	case "http", "https", "socks5":
+	default:
+		return nil, fmt.Errorf("无效代理地址 %q: 不支持 scheme %q", proxy, proxyURL.Scheme)
 	}
 	return http.ProxyURL(proxyURL), nil
 }

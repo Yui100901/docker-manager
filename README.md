@@ -10,7 +10,8 @@
 - 容器逆向和重建: `dm reverse` 只读输出 `docker run` 或 compose，`dm rerun` 显式确认后重建容器。
 - 容器离线迁移: `dm backup` 和 `dm restore` 支持批量包、合并包、checksum、恢复前计划预览、加密包、分卷包、README 和 restore 脚本。
 - 诊断报告: `dm health`、`dm network`、`dm logs`、`dm diff`、`dm prune`、`dm volumes`、`dm registry`、`dm doctor`。
-- 远程 Docker 管理: 支持 Docker 标准环境变量、`.dm.yaml` 和全局参数指定 Docker endpoint。
+- 远程 Docker 管理: 支持 Docker 标准环境变量、`.dm.yaml` 和全局参数指定 Docker endpoint，并可用命名 profile 切换多套环境。
+- Registry 网络策略: 可按精确 registry 配置独立 CA、proxy/no-proxy、timeout、凭据操作范围、认证 realm 和 plain HTTP。
 - Shell completion: 支持 bash、zsh、fish 和 PowerShell，容器/镜像/volume 候选会按当前 Docker endpoint 查询。
 
 ## 构建
@@ -114,6 +115,7 @@ Windows 安装脚本会把真实二进制安装为 `<InstallDir>\bin\dm.exe`，�
 
 ```bash
 --config string               配置文件路径，默认 .dm.yaml；未显式传入时优先读取 DM_CONFIG
+--profile string              选择命名环境；优先于 DM_PROFILE 和 default_profile
 --docker-host string          Docker daemon 地址，默认读取 DOCKER_HOST 或本地 Docker
 --docker-tls-verify           校验 Docker TCP 服务端证书，要求有效证书目录；默认读取 DOCKER_TLS_VERIFY
 --docker-cert-path string     Docker TLS/mTLS 证书目录，含 ca.pem/cert.pem/key.pem；默认读取 DOCKER_CERT_PATH
@@ -129,6 +131,7 @@ Windows 安装脚本会把真实二进制安装为 `<InstallDir>\bin\dm.exe`，�
 示例 `.dm.yaml`:
 
 ```yaml
+default_profile: development
 proxy: http://127.0.0.1:7890
 docker_host: tcp://docker.example.com:2376
 docker_tls_verify: true
@@ -149,6 +152,30 @@ credential_helpers_disabled: false
 credential_helper_timeout: 5s
 registry_auth_realms:
   - https://auth.example.com
+profiles:
+  development:
+    docker_host: tcp://docker-dev.example.com:2376
+    docker_cert_path: /etc/docker-manager/docker-certs/dev
+    output_dir: images/development
+  production:
+    docker_host: tcp://docker-prod.example.com:2376
+    docker_tls_verify: true
+    docker_cert_path: /etc/docker-manager/docker-certs/prod
+    output_dir: images/production
+    registries:
+      registry.prod.example.com:
+        ca_file: /etc/docker-manager/ca/registry-prod.pem
+        no_proxy: true
+        timeout: 20s
+        credential_scope: [pull, push, login]
+        auth_realms: [https://auth.prod.example.com]
+        plain_http: false
+registries:
+  registry.local:5000:
+    no_proxy: true
+    timeout: 10s
+    credential_scope: [pull, push]
+    plain_http: true
 verbose: false
 quiet: false
 log_json: false
@@ -158,12 +185,17 @@ log_json: false
 
 ```bash
 dm config validate
+dm config profiles
 dm config show --effective --show-source
 dm config show --effective --show-source --format json
+dm --profile production config show --effective --show-source
 ```
+
+命名环境选择优先级为：显式 `--profile` > 非空 `DM_PROFILE` > `default_profile` > 不选择 profile。顶层配置是所有环境的 base；选中的 profile 只覆盖其中显式出现的字段，省略字段继续继承，显式空字符串、`false` 和 `[]` 会清除继承值。profile 名只允许字母、数字、点、下划线和连字符，未知 profile 会拒绝执行。旧的扁平 `.dm.yaml` 不需要修改。
 
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
+| `default_profile` / `profiles` | 空 | 默认命名环境及其字段覆盖；可由 `DM_PROFILE` 或 `--profile` 切换 |
 | `proxy` | 空 | `dm pull` registry HTTP 代理；不控制 Docker daemon client |
 | `os` / `arch` | `linux` / `amd64` | pull 选择的目标镜像平台 |
 | `output_dir` | 命令默认目录 | pull、save、doctor 等命令的默认输出/检查目录 |
@@ -180,10 +212,17 @@ dm config show --effective --show-source --format json
 | `credential_helpers_disabled` | `false` | 禁止执行 Docker credential helper，回退到 `auths` |
 | `credential_helper_timeout` | `5s` | 单次 credential helper 独立超时 |
 | `registry_auth_realms` | 空 | 允许接收 registry 凭据的额外 HTTPS auth origin 列表 |
+| `registries` | 空 | 精确 `host[:port]` 对应的 registry 网络与凭据策略；profile 可按 registry 覆盖 |
 | `verbose` / `quiet` | `false` / `false` | 详细日志或静默模式，两者不能同时为 `true` |
 | `log_json` | `false` | 日志和错误使用 JSON；不改变业务报告的 `--format` |
 
-Docker API endpoint 优先级为: 全局命令行参数 > `.dm.yaml` > Docker 环境变量 > 本地 Docker 默认 endpoint。省略 Docker 配置项会继承对应环境变量；显式空字符串会清除环境变量回退。支持 `tcp://`、`unix://` 和 `npipe://`；其他 scheme 会在 client 初始化时拒绝。生产环境不建议裸露未启用 TLS 的 `tcp://host:2375`；`dm doctor` 会对明文 TCP endpoint 给出 warning。
+Docker API endpoint 优先级为: 全局命令行参数 > 选中 profile > 顶层 `.dm.yaml` > Docker 环境变量 > 本地 Docker 默认 endpoint。省略 Docker 配置项会继承对应环境变量；显式空字符串会清除环境变量回退。支持 `tcp://`、`unix://` 和 `npipe://`；其他 scheme 会在 client 初始化时拒绝。生产环境不建议裸露未启用 TLS 的 `tcp://host:2375`；`dm doctor` 会对明文 TCP endpoint 给出 warning。
+
+`registries` 的 key 以及 `dm registry`/`dm doctor --registry` 的参数必须是精确规范化的 `host[:port]`，不接受 scheme、路径、userinfo、查询、fragment 或通配符。策略支持 `ca_file`/`ca_path`、`proxy`、`no_proxy`、正 duration `timeout`、`credential_scope`、`auth_realms` 和 `plain_http`；proxy scheme 只允许 `http`、`https` 或 `socks5`。`credential_scope` 可包含 `pull`、`push`、`login`；省略时允许这三种既有操作，显式 `[]` 禁止使用凭据。该设置只收窄凭据使用，Bearer token 请求仍固定为当前 repository 的 pull scope。`plain_http` 默认为 `false`，只能对精确匹配项显式开启，且不能与 CA 同时配置。命令行显式 `--proxy`、`--timeout`、`--auth-realm` 和 `--plain-http[=false]` 继续覆盖策略。
+
+Per-registry CA、代理和 timeout 应用于 `dm` 自己的 registry `/v2/`、manifest、blob、token 请求，以及 push 前预检。`dm pull --to` 最终调用 Docker daemon 执行 push；daemon 的 registry CA、insecure registry 和代理仍需单独配置。`dm registry` 报告会区分 `dm` 直连检查和 daemon `RegistryLogin`，前者使用 policy，后者使用 daemon 网络配置。
+
+Per-registry `ca_file` 只接受不超过 16 MiB 的非 symlink、非 reparse 普通文件；`ca_path` 必须是非 symlink、非 reparse 目录，最多包含 256 个非链接普通文件且累计不超过 32 MiB。每个文件必须完全由可解析的 `CERTIFICATE` PEM block 构成，空目录、混入 README/私钥/垃圾内容、链接或特殊文件都会失败关闭。系统证书目录通常含 symlink，不应直接作为该 `ca_path`；请使用专用 CA 目录或单独的 `ca_file`。
 
 本工具默认面向管理员使用，因此日志和报告的默认策略为 `none`，不会隐藏敏感信息。输出需要共享时，可使用全局 `--redact-secrets`（等价于 `basic`）、`--redact-profile basic|strict`，或在配置中设置 `redact_profile`。YAML 仅在省略 `redact_profile` 时把 `redact_secrets: true` 解释为 `basic`；`redact_profile: none` 与 `redact_secrets: true` 会被视为冲突并拒绝加载。命令行同时显式指定两者时 `--redact-profile` 优先，命令级显式 `--redact-profile none` 可覆盖 YAML 或全局脱敏策略。该策略同时作用于 text、JSON、Markdown、HTML、错误、verbose HTTP 日志及 reverse 保存文件。Docker config 与 PATH 中的 credential helper 视为受信本地输入；可通过配置或 `--disable-credential-helpers`、`--credential-helper-timeout` 收紧执行边界。
 
@@ -196,7 +235,7 @@ Docker daemon TLS 规则如下：
 | TCP，证书目录非空，启用校验 | HTTPS + mTLS | 使用系统根证书加 `ca.pem` 校验 daemon，并加载 `cert.pem`/`key.pem` |
 | 启用校验但证书目录为空或不存在 | 初始化失败 | 不发起明文请求，不回退到 HTTP |
 
-`docker_cert_path`/`DOCKER_CERT_PATH` 是 Docker daemon TLS 的运行时证书来源，目录必须包含可读取的 `ca.pem`、`cert.pem` 和 `key.pem`。`.dm.yaml` 中的 `ca_file`、`ca_path`、`registry_ca_file`、`registry_ca_path` 当前只供 `dm doctor` 检查路径，不会注入 daemon 或 registry 的运行时信任链；registry 私有 CA 应安装到系统或 Docker 的信任目录。Docker daemon TCP transport 使用标准 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 环境变量，`.dm.yaml` 的 `proxy` 不控制 daemon client。同一 `dm` 进程只在 client 初始化时加载证书；原路径内证书被替换后，应重新执行命令以加载新证书。
+`docker_cert_path`/`DOCKER_CERT_PATH` 是 Docker daemon TLS 的运行时证书来源，目录必须包含可读取的 `ca.pem`、`cert.pem` 和 `key.pem`。`.dm.yaml` 顶层的兼容项 `ca_file`、`ca_path`、`registry_ca_file`、`registry_ca_path` 仍只供 `dm doctor` 检查路径，不会注入运行时信任；只有 `registries.<host>.ca_file/ca_path` 会进入 `dm` 自己的 registry HTTP client。Docker daemon 的 registry 私有 CA 仍应安装到 Docker 信任目录。Docker daemon TCP transport 使用标准 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 环境变量，`.dm.yaml` 的 `proxy` 不控制 daemon client。同一 `dm` 进程只在 client 初始化时加载证书；原路径内证书被替换后，应重新执行命令以加载新证书。
 
 ## Shell 自动补全
 

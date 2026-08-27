@@ -4,6 +4,14 @@
 
 ## Unreleased
 
+### 配置与多环境
+
+- 新增命名 profile/context，可在同一配置文件中保存多套 Docker endpoint、TLS、proxy、registry CA 和输出目录，并通过 `--profile`、`DM_PROFILE` 或 `default_profile` 切换。
+- profile 按字段覆盖顶层 base 配置，保留显式空字符串、`false` 和空列表语义；配置来源输出可区分 base、profile、环境变量和命令行参数。
+- 新增精确 `host[:port]` 匹配的 per-registry policy，支持独立 CA、proxy/no-proxy、timeout、凭据操作范围、Bearer realm allowlist 和显式 plain HTTP。
+- Registry policy 隔离应用于 pull 源、批量镜像、目标 registry 预检、`dm registry` 和 `dm doctor --registry`；Docker daemon 执行 push 时仍使用 daemon 自己的 CA/代理配置。
+- Pull 与 diagnostics 共用有界 registry CA 加载器：拒绝链接/reparse、特殊文件和混合 PEM，并限制单文件 16 MiB、目录 256 项及累计 32 MiB。
+
 ### 维护与依赖
 
 - 将项目构建基线升级到 Go 1.27.0。

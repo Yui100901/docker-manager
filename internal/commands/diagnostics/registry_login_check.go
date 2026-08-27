@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 
+	"docker-manager/internal/appconfig"
 	"docker-manager/internal/commandflags"
 	"docker-manager/internal/registryauth"
 	rpt "docker-manager/internal/report"
@@ -33,7 +35,14 @@ func NewRegistryReportCommandWithDefaults(defaults func() RegistryLoginCheckDefa
 				if cfg.CredentialHelperTimeout > 0 && !cmd.Flags().Changed("credential-helper-timeout") {
 					opts.CredentialHelperTimeout = cfg.CredentialHelperTimeout
 				}
+				opts.ResolveRegistryPolicy = cfg.ResolveRegistryPolicy
 			}
+			opts.plainHTTPExplicit = cmd.Flags().Changed("plain-http")
+			opts.proxyExplicit = cmd.Flags().Changed("proxy")
+			opts.noProxyExplicit = cmd.Flags().Changed("no-proxy")
+			opts.registryCAFileExplicit = cmd.Flags().Changed("registry-ca-file")
+			opts.registryCAPathExplicit = cmd.Flags().Changed("registry-ca-path")
+			opts.timeoutExplicit = cmd.Flags().Changed("timeout")
 			report, err := runRegistryLoginCheck(cmd.Context(), args[0], opts)
 			if err != nil {
 				return fmt.Errorf("检查 registry 登录失败: %w", err)
@@ -47,6 +56,10 @@ func NewRegistryReportCommandWithDefaults(defaults func() RegistryLoginCheckDefa
 		},
 	}
 	commandflags.AddRegistryClientFlags(cmd, &opts.DockerConfig, &opts.PlainHTTP, &opts.Timeout, opts.Timeout)
+	cmd.Flags().StringVar(&opts.Proxy, "proxy", "", "registry /v2/ 检查使用的代理；未指定时读取精确 registry 策略或标准代理环境变量")
+	cmd.Flags().BoolVar(&opts.NoProxy, "no-proxy", false, "registry /v2/ 检查强制直连，不使用配置或环境代理")
+	cmd.Flags().StringVar(&opts.RegistryCAFile, "registry-ca-file", "", "registry /v2/ HTTPS 检查额外信任的 PEM CA 文件")
+	cmd.Flags().StringVar(&opts.RegistryCAPath, "registry-ca-path", "", "registry /v2/ HTTPS 检查额外信任的 PEM CA 目录")
 	commandflags.AddCredentialHelperFlags(cmd, &opts.DisableCredentialHelpers, &opts.CredentialHelperTimeout, opts.CredentialHelperTimeout)
 	cmd.Flags().BoolVar(&opts.FailOnError, "fail-on-error", opts.FailOnError, "registry 检查出现 failed 状态时返回非零退出码")
 	cmd.Flags().BoolVar(&opts.FailOnWarning, "fail-on-warning", false, "registry 检查出现 warning 状态时也返回非零退出码")
@@ -62,34 +75,60 @@ func runRegistryLoginCheck(ctx context.Context, registryName string, opts Regist
 	if opts.Timeout <= 0 {
 		opts.Timeout = 5 * time.Second
 	}
+	opts, credentialAllowed, err := applyRegistryPolicy(normalized, opts)
+	if err != nil {
+		return RegistryLoginCheckReport{}, err
+	}
 	if opts.CredentialHelperTimeout <= 0 {
 		opts.CredentialHelperTimeout = registryauth.DefaultCredentialHelperTimeout
 	}
 	ctx, cancel := context.WithTimeout(ctx, opts.Timeout)
 	defer cancel()
+	httpClient, closeHTTPClient, err := newRegistryCheckHTTPClient(opts)
+	if err != nil {
+		return RegistryLoginCheckReport{}, fmt.Errorf("配置 registry /v2/ HTTP client 失败: %w", err)
+	}
+	defer closeHTTPClient()
 
 	configPath := opts.DockerConfig
 	if configPath == "" {
 		configPath = defaultDockerConfigPath()
 	}
-	cfg, configFound, configErr := readDockerConfig(configPath)
 	cred := registryCredential{ServerAddress: normalized}
-	if configErr != nil {
-		cred.Message = configErr.Error()
+	var (
+		configFound bool
+		configErr   error
+	)
+	credentialReport := credentialPolicyBlockedReport()
+	if !credentialAllowed {
+		configFound = regularFileExists(configPath)
 	} else {
-		cred = resolveRegistryCredentialWithOptions(ctx, cfg, normalized, opts)
+		cfg, found, err := readDockerConfig(configPath)
+		configFound = found
+		configErr = err
+		if configErr != nil {
+			cred.Message = configErr.Error()
+		} else {
+			cred = resolveRegistryCredentialWithOptions(ctx, cfg, normalized, opts)
+		}
+		credentialReport = buildCredentialReport(cred, configErr)
 	}
 
 	report := RegistryLoginCheckReport{
 		Registry:     normalized,
 		DockerConfig: configPath,
 		ConfigFound:  configFound,
-		Credential:   buildCredentialReport(cred, configErr),
-		RegistryPing: pingRegistryV2(ctx, normalized, opts.PlainHTTP, cred),
-		DockerLogin:  dockerRegistryLogin(ctx, normalized, cred),
+		Credential:   credentialReport,
+		RegistryPing: pingRegistryV2WithClient(ctx, httpClient, normalized, opts.PlainHTTP, cred),
+		DockerLogin:  dockerRegistryLogin(ctx, normalized, cred, credentialAllowed),
 	}
 	report.Recommendations = registryLoginRecommendations(report)
 	return report, nil
+}
+
+func regularFileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
 }
 
 func registryLoginCheckExitError(report RegistryLoginCheckReport, opts RegistryLoginCheckOptions) error {
@@ -108,16 +147,11 @@ func registryReportHasStatus(report RegistryLoginCheckReport, status string) boo
 
 func normalizeRegistryName(input string) (string, error) {
 	value := strings.TrimSpace(input)
-	value = strings.TrimPrefix(value, "https://")
-	value = strings.TrimPrefix(value, "http://")
-	value = strings.TrimSuffix(value, "/")
-	if value == "" {
-		return "", fmt.Errorf("registry 不能为空")
+	normalized, err := appconfig.NormalizeRegistryEndpoint(value)
+	if err != nil {
+		return "", fmt.Errorf("registry 只接受规范化的 host[:port]，例如 registry.local:5000: %w", err)
 	}
-	if strings.Contains(value, "/") {
-		return "", fmt.Errorf("registry 只接受主机名和可选端口，例如 registry.local:5000")
-	}
-	return value, nil
+	return normalized, nil
 }
 
 func buildCredentialReport(cred registryCredential, configErr error) CredentialReport {
@@ -138,10 +172,10 @@ func buildCredentialReport(cred registryCredential, configErr error) CredentialR
 
 func registryLoginRecommendations(report RegistryLoginCheckReport) []string {
 	var tips []string
-	if !report.ConfigFound {
+	if !report.ConfigFound && report.Credential.Source != "registry-policy" {
 		tips = append(tips, "未找到 Docker config.json，可先执行 docker login <registry>")
 	}
-	if !report.Credential.Found {
+	if !report.Credential.Found && report.Credential.Source != "registry-policy" {
 		tips = append(tips, "未找到可用凭据，push 前请执行 docker login "+report.Registry)
 	}
 	if report.RegistryPing.Status == "failed" {

@@ -429,6 +429,269 @@ func TestRootCommandLoadsDMConfigDefaults(t *testing.T) {
 	}
 }
 
+func TestDoctorUsesSelectedProfileForConfigChecks(t *testing.T) {
+	t.Cleanup(func() { docker.Configure(docker.Options{}) })
+	for _, name := range []string{"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy"} {
+		t.Setenv(name, "")
+	}
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "dm.yaml")
+	profileOutput := filepath.ToSlash(filepath.Join(dir, "profile-output"))
+	data := "proxy: http://base.example:8080\n" +
+		"output_dir: base-output\n" +
+		"profiles:\n" +
+		"  production:\n" +
+		"    proxy: profile-proxy\n" +
+		"    output_dir: " + profileOutput + "\n"
+	if err := os.WriteFile(configPath, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := appConfig{}
+	opts := outputOptions{}
+	cmd := newRootCommand(&cfg, &opts)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--config", configPath, "--profile", "production", "doctor", "--format", "json", "--check-e2e=false", "--timeout", "10ms"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	var report struct {
+		Checks []struct {
+			Name    string `json:"name"`
+			Status  string `json:"status"`
+			Message string `json:"message"`
+			Detail  string `json:"detail"`
+		} `json:"checks"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v, output=%q", err, out.String())
+	}
+	var configMatched, proxyMatched, outputMatched bool
+	for _, check := range report.Checks {
+		switch check.Name {
+		case "dm-config":
+			configMatched = check.Status == "warning" && strings.Contains(check.Detail, "profile=production")
+		case "proxy":
+			proxyMatched = check.Status == "warning"
+		case "disk":
+			outputMatched = strings.Contains(check.Detail, profileOutput)
+		}
+	}
+	if !configMatched || !proxyMatched || !outputMatched {
+		t.Fatalf("doctor checks = %#v, want selected profile config/proxy/output", report.Checks)
+	}
+}
+
+func TestRootCommandSelectsProfilesWithDocumentedPrecedence(t *testing.T) {
+	t.Cleanup(func() { docker.Configure(docker.Options{}) })
+	path := filepath.Join(t.TempDir(), "dm.yaml")
+	data := `default_profile: development
+docker_host: tcp://base.example:2375
+output_dir: base
+profiles:
+  development:
+    docker_host: tcp://development.example:2375
+    output_dir: development
+  production:
+    docker_host: tcp://production.example:2376
+    output_dir: production
+`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name        string
+		envProfile  string
+		profileArgs []string
+		wantProfile string
+		wantSource  string
+		wantHost    string
+		hostSource  string
+	}{
+		{name: "default profile", wantProfile: "development", wantSource: "config:default_profile", wantHost: "tcp://development.example:2375", hostSource: "profile:development@" + path},
+		{name: "environment profile", envProfile: "production", wantProfile: "production", wantSource: "env:DM_PROFILE", wantHost: "tcp://production.example:2376", hostSource: "profile:production@" + path},
+		{name: "flag wins", envProfile: "development", profileArgs: []string{"--profile", "production"}, wantProfile: "production", wantSource: "flag:--profile", wantHost: "tcp://production.example:2376", hostSource: "profile:production@" + path},
+		{name: "explicit empty disables default", envProfile: "production", profileArgs: []string{"--profile="}, wantSource: "flag:--profile", wantHost: "tcp://base.example:2375", hostSource: "config:" + path},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(appconfig.ProfileEnvName, tt.envProfile)
+			cfg := appConfig{}
+			opts := outputOptions{}
+			cmd := newRootCommand(&cfg, &opts)
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&bytes.Buffer{})
+			args := []string{"--config", path}
+			args = append(args, tt.profileArgs...)
+			args = append(args, "config", "show", "--effective", "--show-source", "--format", "json")
+			cmd.SetArgs(args)
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			var report configShowReport
+			if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+				t.Fatalf("json.Unmarshal() error = %v, output=%q", err, out.String())
+			}
+			if report.Profile != tt.wantProfile || report.ProfileSource != tt.wantSource {
+				t.Fatalf("profile = %q source=%q, want %q source=%q", report.Profile, report.ProfileSource, tt.wantProfile, tt.wantSource)
+			}
+			if report.Values["docker_host"] != tt.wantHost || report.Sources["docker_host"] != tt.hostSource {
+				t.Fatalf("docker_host = %#v source=%q, want %q source=%q", report.Values["docker_host"], report.Sources["docker_host"], tt.wantHost, tt.hostSource)
+			}
+			if got := strings.Join(report.AvailableProfiles, ","); got != "development,production" {
+				t.Fatalf("available profiles = %q", got)
+			}
+		})
+	}
+}
+
+func TestRootCommandDockerFlagOverridesSelectedProfile(t *testing.T) {
+	t.Cleanup(func() { docker.Configure(docker.Options{}) })
+	path := filepath.Join(t.TempDir(), "dm.yaml")
+	data := "profiles:\n  production:\n    docker_host: tcp://production.example:2376\n"
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := appConfig{}
+	opts := outputOptions{}
+	cmd := newRootCommand(&cfg, &opts)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--config", path, "--profile", "production", "--docker-host", "tcp://flag.example:2375", "config", "show", "--show-source", "--format", "json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var report configShowReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Values["docker_host"] != "tcp://flag.example:2375" || report.Sources["docker_host"] != "flag:--docker-host" {
+		t.Fatalf("docker host report = %#v %#v", report.Values, report.Sources)
+	}
+}
+
+func TestConfigShowReportsMixedRegistryFieldSources(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dm.yaml")
+	data := `registries:
+  registry.example:5000:
+    ca_file: /base/ca.pem
+    timeout: 5s
+profiles:
+  production:
+    registries:
+      registry.example:5000:
+        timeout: 2s
+`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := appConfig{}
+	opts := outputOptions{}
+	cmd := newRootCommand(&cfg, &opts)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--config", path, "--profile", "production", "config", "show", "--show-source", "--format", "json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var report configShowReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Sources["registries"] != "mixed" {
+		t.Fatalf("registries source = %q, want mixed", report.Sources["registries"])
+	}
+	if got := report.Sources["registries.registry.example:5000.ca_file"]; got != "config:"+path {
+		t.Fatalf("base registry field source = %q", got)
+	}
+	if got := report.Sources["registries.registry.example:5000.timeout"]; got != "profile:production@"+path {
+		t.Fatalf("profile registry field source = %q", got)
+	}
+}
+
+func TestConfigShowReportsEmptyRegistryEntrySource(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dm.yaml")
+	data := `registries:
+  base.example:
+    timeout: 5s
+profiles:
+  production:
+    registries:
+      new.example: {}
+`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := appConfig{}
+	opts := outputOptions{}
+	cmd := newRootCommand(&cfg, &opts)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--config", path, "--profile", "production", "config", "show", "--show-source", "--format", "json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var report configShowReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Sources["registries"] != "mixed" {
+		t.Fatalf("registries source = %q, want mixed", report.Sources["registries"])
+	}
+	if got := report.Sources["registries.new.example"]; got != "profile:production@"+path {
+		t.Fatalf("empty profile registry source = %q", got)
+	}
+}
+
+func TestConfigShowReportsExplicitEmptyProfilesSource(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dm.yaml")
+	if err := os.WriteFile(path, []byte("profiles: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := appConfig{}
+	opts := outputOptions{}
+	cmd := newRootCommand(&cfg, &opts)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--config", path, "config", "show", "--show-source", "--format", "json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var report configShowReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if got := report.Sources["available_profiles"]; got != "config:"+path {
+		t.Fatalf("available_profiles source = %q", got)
+	}
+}
+
+func TestRootCommandRejectsUnknownProfile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dm.yaml")
+	if err := os.WriteFile(path, []byte("profiles:\n  production: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := appConfig{}
+	opts := outputOptions{}
+	cmd := newRootCommand(&cfg, &opts)
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--config", path, "--profile", "missing", "version"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), `profile "missing" is not defined`) {
+		t.Fatalf("Execute() error = %v, want unknown profile rejection", err)
+	}
+}
+
 func TestWriteCommandErrorJSON(t *testing.T) {
 	var buf bytes.Buffer
 	writeCommandError(&buf, errors.New("boom"), outputOptions{JSON: true})

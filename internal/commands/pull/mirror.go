@@ -72,6 +72,9 @@ func (r *PullRunner) completePulledImage(outputFile string, info *ImageInfo, opt
 		return fmt.Errorf("解析 push registry 认证失败: %w", err)
 	}
 	if err := r.pushPulledImage(ctx, target, registryAuth, progressOutput); err != nil {
+		if targetInfo, parseErr := parseImageInfo(target); parseErr == nil && registryCredentialsDenied(targetInfo.Registry, registryCredentialPush, opts) {
+			return fmt.Errorf("push 镜像失败: %w；%s", err, registryCredentialPolicyDescription(registryCredentialPush))
+		}
 		return fmt.Errorf("push 镜像失败: %w", err)
 	}
 	log.Printf("镜像推送成功: %s", target)
@@ -87,20 +90,29 @@ func (r *PullRunner) checkPushTargetRegistry(ctx context.Context, target string,
 		return fmt.Errorf("解析目标 registry 失败: %w", err)
 	}
 	registryName := info.Registry
-	cred, credErr := r.loadPullRegistryCredential(ctx, registryName, opts)
-	targetOpts := opts
-	targetOpts.PlainHTTP = pushTargetUsesPlainHTTP(opts)
-	result := r.pingRegistryV2(ctx, registryName, targetOpts, cred, info)
+	targetRunner, targetOpts, err := r.bindRegistryPolicy(registryName, registryCredentialPush, opts)
+	if err != nil {
+		return fmt.Errorf("应用目标 registry %s 策略失败: %w", registryName, err)
+	}
+	targetOpts.PlainHTTP = pushTargetUsesPlainHTTP(targetOpts)
+	cred, credErr := targetRunner.loadPullRegistryCredential(ctx, registryName, targetOpts)
+	result := targetRunner.pingRegistryV2(ctx, registryName, targetOpts, cred, info)
 	switch result.status {
 	case registryPingOK:
 		log.Printf("Push target registry check passed: registry=%s credential=%v", registryName, cred.Found)
 		return nil
 	case registryPingAuthRequired:
+		if registryCredentialsDenied(registryName, registryCredentialPush, targetOpts) {
+			return fmt.Errorf("目标 registry %s 需要认证；%s", registryName, registryCredentialPolicyDescription(registryCredentialPush))
+		}
 		if credErr != nil {
 			return fmt.Errorf("目标 registry %s 需要认证，但读取 Docker 凭据失败: %w", registryName, credErr)
 		}
 		return fmt.Errorf("目标 registry %s 需要认证，但未找到 Docker 凭据；请先执行 docker login %s，或通过 --docker-config 指定配置", registryName, registryName)
 	default:
+		if registryCredentialsDenied(registryName, registryCredentialPush, targetOpts) {
+			return fmt.Errorf("目标 registry %s 推送前检查失败: %s；%s", registryName, result.message, registryCredentialPolicyDescription(registryCredentialPush))
+		}
 		if credErr != nil {
 			return fmt.Errorf("目标 registry %s 推送前检查失败: %s；同时读取 Docker 凭据失败: %w", registryName, result.message, credErr)
 		}
@@ -113,7 +125,11 @@ func (r *PullRunner) dockerPushRegistryAuth(ctx context.Context, target string, 
 	if err != nil {
 		return "", err
 	}
-	cred, err := r.loadPullRegistryCredential(ctx, info.Registry, opts)
+	targetRunner, targetOpts, err := r.bindRegistryPolicy(info.Registry, registryCredentialPush, opts)
+	if err != nil {
+		return "", fmt.Errorf("应用目标 registry %s 策略失败: %w", info.Registry, err)
+	}
+	cred, err := targetRunner.loadPullRegistryCredential(ctx, info.Registry, targetOpts)
 	if err != nil {
 		return "", err
 	}

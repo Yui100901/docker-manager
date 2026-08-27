@@ -3,24 +3,39 @@ package diagnostics
 import (
 	"time"
 
+	"docker-manager/internal/appconfig"
 	"docker-manager/internal/commandflags"
 	"docker-manager/internal/registryauth"
 )
 
+type RegistryPolicyResolver func(registry string) (appconfig.RegistryPolicy, bool)
+
 type RegistryLoginCheckOptions struct {
 	DockerConfig             string
 	PlainHTTP                bool
+	Proxy                    string
+	NoProxy                  bool
+	RegistryCAFile           string
+	RegistryCAPath           string
 	Timeout                  time.Duration
 	FailOnError              bool
 	FailOnWarning            bool
 	DisableCredentialHelpers bool
 	CredentialHelperTimeout  time.Duration
+	ResolveRegistryPolicy    RegistryPolicyResolver
+	plainHTTPExplicit        bool
+	proxyExplicit            bool
+	noProxyExplicit          bool
+	registryCAFileExplicit   bool
+	registryCAPathExplicit   bool
+	timeoutExplicit          bool
 	commandflags.FormatOptions
 }
 
 type RegistryLoginCheckDefaults struct {
 	DisableCredentialHelpers bool
 	CredentialHelperTimeout  time.Duration
+	ResolveRegistryPolicy    RegistryPolicyResolver
 }
 
 type RegistryLoginCheckReport struct {

@@ -25,7 +25,10 @@ type dockerRegistryLoginService struct {
 	cli *mobyclient.Client
 }
 
-func dockerRegistryLogin(ctx context.Context, registryName string, cred registryCredential) CheckResult {
+func dockerRegistryLogin(ctx context.Context, registryName string, cred registryCredential, credentialAllowed bool) CheckResult {
+	if !credentialAllowed {
+		return CheckResult{Status: "skipped", Message: "registry policy credential_scope 不允许 login，未向 Docker daemon 发送凭据"}
+	}
 	if !cred.Found {
 		return CheckResult{Status: "skipped", Message: "没有可用于 Docker RegistryLogin 的凭据"}
 	}

@@ -24,6 +24,9 @@ func NewPullRunnerWithTimeout(proxy, targetOS, arch string, timeout time.Duratio
 	return &PullRunner{
 		platform:            targetPlatform{targetOS: targetOS, targetArch: arch},
 		httpClient:          client,
+		baseProxy:           proxy,
+		baseTimeout:         timeout,
+		policyClients:       &registryPolicyClientCache{clients: make(map[registryPolicyClientKey]*http_utils.HTTPClient)},
 		loadPulledImage:     loadImageTar,
 		tagPulledImage:      tagImage,
 		pushPulledImage:     pushImage,
@@ -52,6 +55,11 @@ func (r *PullRunner) getImage(imageName string, opts PullOptions) error {
 	if err != nil {
 		return fmt.Errorf("镜像名称解析失败: %w", err)
 	}
+	baseOpts := opts
+	sourceRunner, sourceOpts, err := r.bindRegistryPolicy(imageInfo.Registry, registryCredentialPull, opts)
+	if err != nil {
+		return fmt.Errorf("应用 registry %s 策略失败: %w", imageInfo.Registry, err)
+	}
 	log.Printf("获取镜像%s:%s,目标平台%s/%s", imageInfo.Image, imageInfo.Tag, r.platform.targetOS, r.platform.targetArch)
 
 	if err := ctx.Err(); err != nil {
@@ -68,11 +76,11 @@ func (r *PullRunner) getImage(imageName string, opts PullOptions) error {
 		}
 	}()
 
-	manifest, auth, err := r.fetchManifest(ctx, imageInfo, opts)
+	manifest, auth, err := sourceRunner.fetchManifest(ctx, imageInfo, sourceOpts)
 	if err != nil {
 		return fmt.Errorf("获取清单失败: %w", err)
 	}
-	if err := validateManifestLayers(manifest, opts.Limits); err != nil {
+	if err := validateManifestLayers(manifest, sourceOpts.Limits); err != nil {
 		return err
 	}
 
@@ -85,7 +93,7 @@ func (r *PullRunner) getImage(imageName string, opts PullOptions) error {
 		return fmt.Errorf("创建清单文件失败: %w", err)
 	}
 
-	err = r.downloadConfig(ctx, imageInfo, manifest, auth, opts, tempDir)
+	err = sourceRunner.downloadConfig(ctx, imageInfo, manifest, auth, sourceOpts, tempDir)
 	if err != nil {
 		return fmt.Errorf("下载配置文件失败: %w", err)
 	}
@@ -93,12 +101,12 @@ func (r *PullRunner) getImage(imageName string, opts PullOptions) error {
 	if err != nil {
 		return fmt.Errorf("统计临时文件失败: %w", err)
 	}
-	opts.resourceBudget, err = newPullResourceBudget(opts.Limits, initialTemporaryBytes)
+	sourceOpts.resourceBudget, err = newPullResourceBudget(sourceOpts.Limits, initialTemporaryBytes)
 	if err != nil {
 		return err
 	}
 
-	err = r.downloadLayers(ctx, imageInfo, manifest, auth, opts, tempDir)
+	err = sourceRunner.downloadLayers(ctx, imageInfo, manifest, auth, sourceOpts, tempDir)
 	if err != nil {
 		return fmt.Errorf("下载镜像层失败: %w", err)
 	}
@@ -107,11 +115,11 @@ func (r *PullRunner) getImage(imageName string, opts PullOptions) error {
 		return err
 	}
 
-	outputFile, err := resolveOutputFile(imageInfo, opts)
+	outputFile, err := resolveOutputFile(imageInfo, sourceOpts)
 	if err != nil {
 		return fmt.Errorf("解析输出路径失败: %w", err)
 	}
-	if err := validatePackageTemporaryBudget(ctx, tempDir, opts.Limits.TemporaryBytes); err != nil {
+	if err := validatePackageTemporaryBudget(ctx, tempDir, sourceOpts.Limits.TemporaryBytes); err != nil {
 		return err
 	}
 	err = packageImage(ctx, tempDir, outputFile)
@@ -123,7 +131,8 @@ func (r *PullRunner) getImage(imageName string, opts PullOptions) error {
 		return err
 	}
 
-	return r.completePulledImage(outputFile, imageInfo, opts)
+	baseOpts.Limits = sourceOpts.Limits
+	return r.completePulledImage(outputFile, imageInfo, baseOpts)
 }
 
 func configureHTTPLogging(verbose bool) {

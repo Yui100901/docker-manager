@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"docker-manager/internal/appconfig"
 	"docker-manager/internal/docker"
 
 	mobyclient "github.com/moby/moby/client"
@@ -78,6 +79,46 @@ func TestCheckDoctorConfigUsesStrictSharedSchema(t *testing.T) {
 	_, checks := checkDoctorConfig(path)
 	if len(checks) != 1 || checks[0].Status != "failed" || !strings.Contains(checks[0].Message, "unknown_option") {
 		t.Fatalf("checks = %#v, want shared KnownFields failure", checks)
+	}
+}
+
+func TestResolveDoctorConfigUsesPreloadedSelectedProfile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".dm.yaml")
+	data := `proxy: http://base.example:8080
+profiles:
+  production:
+    proxy: profile-proxy
+`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := appconfig.LoadWithOptions(path, appconfig.LoadOptions{Profile: "production", ProfileExplicit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("proxy: http://changed.example:8080\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, checks := resolveDoctorConfig(path, &loaded, nil)
+	if cfg.Proxy != "profile-proxy" {
+		t.Fatalf("cfg.Proxy = %q, want selected profile value", cfg.Proxy)
+	}
+	if len(checks) != 1 || checks[0].Status != "warning" || !strings.Contains(checks[0].Detail, "profile=production") {
+		t.Fatalf("checks = %#v, want selected profile detail and proxy warning", checks)
+	}
+}
+
+func TestResolveDoctorConfigPreservesRootLoadError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".dm.yaml")
+	loadErr := errors.New(`profile "missing" is not defined`)
+
+	cfg, checks := resolveDoctorConfig(path, nil, loadErr)
+	if cfg.Proxy != "" || cfg.OutputDir != "" || cfg.Registries != nil {
+		t.Fatalf("cfg = %#v, want empty config", cfg)
+	}
+	if len(checks) != 1 || checks[0].Status != "failed" || !strings.Contains(checks[0].Message, "missing") || checks[0].Detail != path {
+		t.Fatalf("checks = %#v, want preserved root load failure", checks)
 	}
 }
 

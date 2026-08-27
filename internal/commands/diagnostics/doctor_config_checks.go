@@ -14,13 +14,32 @@ import (
 func checkDoctorConfig(path string) (doctorConfig, []DoctorCheck) {
 	loaded, err := appconfig.LoadWithOptions(path, appconfig.LoadOptions{})
 	if err != nil {
-		return doctorConfig{}, []DoctorCheck{{
-			Name:        "dm-config",
-			Status:      "failed",
-			Message:     err.Error(),
-			Recommended: "检查配置文件路径和读取权限",
-		}}
+		return failedDoctorConfig(path, err)
 	}
+	return checkDoctorLoadedConfig(loaded)
+}
+
+func resolveDoctorConfig(path string, loaded *appconfig.Loaded, loadErr error) (doctorConfig, []DoctorCheck) {
+	if loadErr != nil {
+		return failedDoctorConfig(path, loadErr)
+	}
+	if loaded != nil {
+		return checkDoctorLoadedConfig(*loaded)
+	}
+	return checkDoctorConfig(path)
+}
+
+func failedDoctorConfig(path string, err error) (doctorConfig, []DoctorCheck) {
+	return doctorConfig{}, []DoctorCheck{{
+		Name:        "dm-config",
+		Status:      "failed",
+		Message:     err.Error(),
+		Detail:      path,
+		Recommended: "检查配置文件、profile 名称、路径和读取权限",
+	}}
+}
+
+func checkDoctorLoadedConfig(loaded appconfig.Loaded) (doctorConfig, []DoctorCheck) {
 	cfg := loaded.Config
 	if !loaded.Exists {
 		return cfg, []DoctorCheck{{
@@ -31,11 +50,19 @@ func checkDoctorConfig(path string) (doctorConfig, []DoctorCheck) {
 		}}
 	}
 	check := DoctorCheck{Name: "dm-config", Status: "ok", Message: "配置文件通过严格校验", Detail: loaded.Path}
+	if loaded.Profile != "" {
+		check.Message = "配置文件和选中 profile 通过严格校验"
+		check.Detail = fmt.Sprintf("%s; profile=%s; source=%s", loaded.Path, loaded.Profile, loaded.ProfileSource)
+	}
 	if cfg.Proxy != "" {
 		if _, err := url.ParseRequestURI(cfg.Proxy); err != nil {
 			check.Status = "warning"
 			check.Message = "配置文件 proxy 可能无效"
-			check.Detail = err.Error()
+			if check.Detail != "" {
+				check.Detail += "; " + err.Error()
+			} else {
+				check.Detail = err.Error()
+			}
 			check.Recommended = "proxy 应包含 scheme 和 host，例如 http://127.0.0.1:7890"
 		}
 	}

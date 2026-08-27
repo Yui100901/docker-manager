@@ -42,11 +42,15 @@ func authHeaders(headers map[string]string, auth *pullRegistryAuth) map[string]s
 // the Authorization header required by the next registry request.
 func (r *PullRunner) resolveRegistryAuth(ctx context.Context, header string, info *ImageInfo, opts PullOptions) (*pullRegistryAuth, error) {
 	challenge := parseAuthChallenge(header)
+	credentialDenied := registryCredentialsDenied(info.Registry, effectiveCredentialOperation(opts), opts)
 	cred, credErr := r.loadPullRegistryCredential(ctx, info.Registry, opts)
 	switch strings.ToLower(challenge.Scheme) {
 	case "bearer":
 		token, err := r.fetchBearerToken(ctx, challenge, info, cred, opts)
 		if err != nil {
+			if credentialDenied {
+				return nil, fmt.Errorf("获取 Bearer token 失败: %w；%s", err, registryCredentialPolicyDescription(effectiveCredentialOperation(opts)))
+			}
 			if credErr != nil {
 				return nil, fmt.Errorf("获取 Bearer token 失败: %w；读取 Docker 凭据也失败: %v", err, credErr)
 			}
@@ -58,6 +62,9 @@ func (r *PullRunner) resolveRegistryAuth(ctx context.Context, header string, inf
 			return nil, credErr
 		}
 		if cred.Username == "" && cred.Password == "" {
+			if credentialDenied {
+				return nil, fmt.Errorf("registry %s 需要 Basic 认证；%s", info.Registry, registryCredentialPolicyDescription(effectiveCredentialOperation(opts)))
+			}
 			return nil, fmt.Errorf("registry %s 需要 Basic 认证，但未找到 Docker 凭据", info.Registry)
 		}
 		return &pullRegistryAuth{Authorization: registryauth.BasicAuthHeader(cred.Username, cred.Password)}, nil
@@ -71,10 +78,20 @@ func (r *PullRunner) resolveRegistryAuth(ctx context.Context, header string, inf
 			}
 		}
 		if strings.TrimSpace(header) == "" {
+			if credentialDenied {
+				return nil, fmt.Errorf("registry %s 返回 401 但没有 WWW-Authenticate challenge；%s", info.Registry, registryCredentialPolicyDescription(effectiveCredentialOperation(opts)))
+			}
 			return nil, fmt.Errorf("registry %s 返回 401 但没有 WWW-Authenticate challenge", info.Registry)
 		}
 		return nil, fmt.Errorf("不支持的 registry 认证方式 %q", challenge.Scheme)
 	}
+}
+
+func effectiveCredentialOperation(opts PullOptions) string {
+	if opts.credentialOperation != "" {
+		return opts.credentialOperation
+	}
+	return registryCredentialPull
 }
 
 func parseAuthChallenge(header string) authChallenge {
@@ -286,6 +303,9 @@ func isBuiltInDockerHubRealm(registryName string, realm *url.URL) bool {
 }
 
 func (r *PullRunner) loadPullRegistryCredential(ctx context.Context, registryName string, opts PullOptions) (pullRegistryCredential, error) {
+	if !registryCredentialsAllowed(registryName, opts) {
+		return pullRegistryCredential{}, nil
+	}
 	configPath := opts.DockerConfig
 	if configPath == "" {
 		configPath = defaultPullDockerConfigPath()

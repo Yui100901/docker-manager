@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"docker-manager/internal/appconfig"
 	"docker-manager/internal/commandflags"
 	"docker-manager/internal/parallel"
 
@@ -37,6 +38,7 @@ type PullBatchOptions struct {
 	DisableCredentialHelpers bool
 	CredentialHelperTimeout  time.Duration
 	AuthRealmAllowlist       []string
+	RegistryPolicies         map[string]appconfig.RegistryPolicy
 	Limits                   PullResourceLimits
 	Concurrency              int
 	Retries                  int
@@ -45,6 +47,7 @@ type PullBatchOptions struct {
 	StateFile                string
 	ReportFile               string
 	ProgressOutput           io.Writer
+	policyOverrides          registryPolicyOverrides
 	commandflags.FormatOptions
 }
 
@@ -219,8 +222,10 @@ func runPullBatchItem(ctx context.Context, imageName string, opts PullBatchOptio
 		DisableCredentialHelpers: opts.DisableCredentialHelpers,
 		CredentialHelperTimeout:  opts.CredentialHelperTimeout,
 		AuthRealmAllowlist:       append([]string(nil), opts.AuthRealmAllowlist...),
+		RegistryPolicies:         cloneRegistryPolicies(opts.RegistryPolicies),
 		Limits:                   effectivePullResourceLimits(opts.Limits),
 		ProgressOutput:           progressOutput,
+		policyOverrides:          opts.policyOverrides,
 	}
 	itemCtx, cancel := context.WithTimeout(ctx, pullOpts.Limits.TotalTimeout)
 	defer cancel()
@@ -275,6 +280,11 @@ func (r *PullRunner) targetManifestExists(ctx context.Context, imageName, target
 	if err != nil {
 		return false, err
 	}
+	targetRunner, targetOpts, err := r.bindRegistryPolicy(info.Registry, registryCredentialPush, opts)
+	if err != nil {
+		return false, fmt.Errorf("应用目标 registry %s 策略失败: %w", info.Registry, err)
+	}
+	targetOpts.PlainHTTP = pushTargetUsesPlainHTTP(targetOpts)
 	headers := map[string]string{
 		"Accept": strings.Join([]string{
 			dockerManifestV2,
@@ -283,10 +293,8 @@ func (r *PullRunner) targetManifestExists(ctx context.Context, imageName, target
 			ocispec.MediaTypeImageIndex,
 		}, ", "),
 	}
-	targetOpts := opts
-	targetOpts.PlainHTTP = pushTargetUsesPlainHTTP(opts)
 	limit := effectivePullResourceLimits(opts.Limits).ManifestBytes
-	_, _, err = r.fetchRegistryBytesOnceLimit(ctx, registryAPIURL(targetOpts, info, "manifests", getReference(info)), headers, nil, info, targetOpts, nil, limit)
+	_, _, err = targetRunner.fetchRegistryBytesOnceLimit(ctx, registryAPIURL(targetOpts, info, "manifests", getReference(info)), headers, nil, info, targetOpts, nil, limit)
 	if err == nil {
 		return true, nil
 	}
