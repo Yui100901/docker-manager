@@ -253,6 +253,13 @@ func extractBackupArchiveWithLimits(ctx context.Context, archivePath, destDir st
 		if err != nil {
 			return err
 		}
+		// Validate archive budgets before deriving or touching a filesystem path.
+		// On Unix, an overlong tar name can make lstat/mkdir return ENAMETOOLONG
+		// first, hiding the deterministic archive limit error we promise callers.
+		regular := header.Typeflag == tar.TypeReg
+		if err := tarBudget.Add(header.Name, header.Size, regular); err != nil {
+			return err
+		}
 		target, err := safeExtractPath(destDir, header.Name)
 		if err != nil {
 			return err
@@ -266,9 +273,6 @@ func extractBackupArchiveWithLimits(ctx context.Context, archivePath, destDir st
 		seen[header.Name] = struct{}{}
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := tarBudget.Add(header.Name, header.Size, false); err != nil {
-				return err
-			}
 			if header.Size != 0 {
 				return fmt.Errorf("backup archive directory %q has a non-zero size", header.Name)
 			}
@@ -276,9 +280,6 @@ func extractBackupArchiveWithLimits(ctx context.Context, archivePath, destDir st
 				return err
 			}
 		case tar.TypeReg:
-			if err := tarBudget.Add(header.Name, header.Size, true); err != nil {
-				return err
-			}
 			if err := diskBudget.Add(header.Size); err != nil {
 				return err
 			}
@@ -297,9 +298,6 @@ func extractBackupArchiveWithLimits(ctx context.Context, archivePath, destDir st
 				return err
 			}
 		default:
-			if err := tarBudget.Add(header.Name, header.Size, false); err != nil {
-				return err
-			}
 			return fmt.Errorf("backup archive contains unsupported entry type %d at %q", header.Typeflag, header.Name)
 		}
 	}

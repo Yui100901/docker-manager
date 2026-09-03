@@ -63,11 +63,11 @@ Windows PowerShell:
 .\scripts\package-release.ps1 -Version v0.1.0 -Platform linux/amd64,windows/amd64
 ```
 
-产物默认写入独立的 `dist/<version>-<commit>/`，包括按平台命名的 `tar.gz`/`zip`、`checksums.txt`、`release-manifest.json` 和 `release-summary.md`；同版本和提交的目录已存在时会拒绝覆盖。归档内包含目标平台对应的安装和卸载脚本、`INSTALL.md`、`CHANGELOG.md` 以及 README 链接的维护文档，发布前会逐项校验 manifest 和归档 digest。
+产物默认写入独立的 `dist/<version>-<commit>/`，包括按平台命名的 `tar.gz`/`zip`、`checksums.txt`、`release-manifest.json` 和 `release-summary.md`；同版本和提交的目录已存在时会拒绝覆盖。Linux 包包含 shell 安装/卸载脚本，Windows 包包含 PowerShell 安装/卸载脚本；Darwin 包只提供二进制和手动安装说明，不附带仅支持 Linux 的 shell installer。所有归档都包含 `INSTALL.md`、`CHANGELOG.md` 以及 README 链接的维护文档，发布前会逐项校验 manifest 和归档 digest。
 
 ## 安装
 
-Linux/macOS:
+Linux:
 
 ```bash
 sudo bash scripts/install.sh --binary ./bin/dev/dm
@@ -76,6 +76,8 @@ sudo bash scripts/install.sh --build
 sudo bash scripts/install.sh --binary ./bin/dev/dm --completion bash --completion zsh --completion fish
 sudo bash scripts/install.sh --binary ./bin/dev/dm --no-completion
 ```
+
+`scripts/install.sh` 和 `scripts/uninstall.sh` 当前只支持 Linux，并会在其他系统上提前拒绝。`--build --dry-run` 只输出计划，不要求 `PATH` 中存在 Go，也不会创建源码树中的 `bin/install` 或任何安装目标。
 
 默认安装位置:
 
@@ -89,6 +91,24 @@ sudo bash scripts/install.sh --binary ./bin/dev/dm --no-completion
 ```bash
 sudo bash scripts/uninstall.sh
 sudo bash scripts/uninstall.sh --purge
+```
+
+Linux 安装状态使用严格按数据解析、不会被 shell 执行的私有 `install.env` manifest v3。manifest 中的 128-bit 安装 token 同时写入 config/data 两个目录各自的 `.docker-manager-managed` marker；`--purge` 只有在 manifest、两个 marker、路径和 token 一致后才会继续。v2 manifest 仍可执行不删除 config/data 的普通卸载，但如需 `--purge`，必须先重新运行 `install.sh` 迁移到 v3。
+
+config/data 不能指向系统根、用户根等宽路径，不能相互重叠或包含 prefix、binary、completion、profile 等安装产物。purge 会在删除 wrapper 或 profile 前预检完整目标树，并拒绝目标目录本身或任一后代中的 mount、symlink、特殊文件和非当前用户所有的条目；对祖先挂载则拒绝 `root != /` 的 bind/subtree view，以及当前 mount namespace 中可见、与目标 `root=/` 挂载共享 `(major:minor, fstype, source)` 身份的重复 root mount。独立文件系统的单一 `root=/` 挂载仍可用。Linux mountinfo 无法可靠区分 source 已卸载或被其他 namespace 隐藏的 root bind，因此这类动态挂载变化仍是残余边界，生产 purge 应在挂载拓扑稳定且目标位于专用目录时执行。root profile 必须与受管内容精确匹配；普通用户 profile 的 marker 结构异常会失败关闭，卸载替换前还会复核 inode、内容和 mode。普通用户 profile 的原 mode 会恢复；其 ACL/xattr 在 GNU `cp --preserve=all` 可用时保留，回退到 `cp -p` 的环境只提供尽力保留，不构成跨平台保证。
+
+Darwin/macOS 发布包不包含 `install.sh`/`uninstall.sh`，请直接安装二进制：
+
+```bash
+sudo mkdir -p /usr/local/bin
+sudo install -m 0755 ./dm /usr/local/bin/dm
+dm version
+```
+
+手动卸载：
+
+```bash
+sudo rm -f /usr/local/bin/dm
 ```
 
 Windows:
@@ -242,7 +262,7 @@ dm --profile production config show --effective --show-source
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
 | `default_profile` / `profiles` | 空 | 默认命名环境及其字段覆盖；可由 `DM_PROFILE` 或 `--profile` 切换 |
-| `proxy` | 空 | `dm pull` registry HTTP 代理；不控制 Docker daemon client |
+| `proxy` | 空 | `dm pull` registry HTTP 代理；只有原始空字符串表示未配置，空白值或带首尾空白的值会被拒绝；非空值只允许带 scheme 和非空 hostname、无 fragment 的 `http`、`https`、`socks5` URL，可含 userinfo；不控制 Docker daemon client |
 | `os` / `arch` | `linux` / `amd64` | pull 选择的目标镜像平台 |
 | `output_dir` | 命令默认目录 | pull、save、doctor 等命令的默认输出/检查目录 |
 | `docker_host` | Docker 环境变量或本地 endpoint | Docker daemon 地址 |
@@ -265,13 +285,13 @@ dm --profile production config show --effective --show-source
 | `audit_actor` | 空 | 声明操作人；与系统用户名、UID/SID 和主机名同时记录，不替代系统身份 |
 | `audit_detail` | `safe` | `safe` 只写 HMAC 标识和错误分类；`full` 额外写经过 strict 脱敏和长度限制的显示值/错误消息 |
 | `audit_on_error` | `deny-mutation` | 审计失败策略：`warn`、`deny-mutation` 或 `fail` |
-| `audit_max_bytes` / `audit_max_files` | `64 MiB` / `5` | 单文件轮转阈值和保留的编号轮转文件数；字节数必须使用 YAML 整数，非零值不得小于 `65536` |
+| `audit_max_bytes` / `audit_max_files` | `64 MiB` / `5` | 单文件轮转阈值和保留数；字节数必须使用 YAML 整数，取 `0` 或 `65536..1 TiB`，文件数取 `0..100`；非法 CLI 值在打开 sink 前退出 `1` |
 | `audit_key_file` | `<audit_file>.key` | HMAC 标识 key 文件；应与 JSONL 一起保护和备份，轮换 key 会改变标识关联值 |
 | `redact_profile` | `none` | `none`、`basic` 或 `strict`；管理员默认保留原始日志和输出 |
 | `redact_secrets` | `false` | 兼容配置；`true` 等价于 `redact_profile: basic` |
 | `credential_helpers_disabled` | `false` | 禁止执行 Docker credential helper，回退到 `auths` |
 | `credential_helper_timeout` | `5s` | 单次 credential helper 独立超时 |
-| `registry_auth_realms` | 空 | 允许接收 registry 凭据的额外 HTTPS auth origin 列表 |
+| `registry_auth_realms` | 空 | 允许接收 registry 凭据的额外 HTTPS auth origin 列表；每项必须包含非空 hostname |
 | `registries` | 空 | 精确 `host[:port]` 对应的 registry 网络与凭据策略；profile 可按 registry 覆盖 |
 | `verbose` / `quiet` | `false` / `false` | 详细日志或静默模式，两者不能同时为 `true` |
 | `log_json` | `false` | 日志和错误使用 JSON；不改变业务报告的 `--format` |
@@ -280,7 +300,7 @@ dm --profile production config show --effective --show-source
 
 `operation_*` 配置对一次命令共享同一个 controller，选中 profile 可以覆盖 base，显式命令 flag 再覆盖配置。diagnostics、backup 和 reverse/rerun 的叶子命令提供 `--concurrency`、`--operation-timeout`、`--rate-limit` 和 `--max-items`；`0` 表示不额外限制对应维度。`dm pull` 保留原有批量 `--concurrency` 和单镜像 `--total-timeout` 语义，同时遵守配置 controller 的并发、外层超时、启动速率和累计资源预算。
 
-`--max-items` 是一次命令内跨资源类型累计的预算，而不是每个循环各自的限制。例如 network 报告会累计 container 和 network，volumes 会累计 volume 和 container。预算超限会在对应 Docker mutation 或文件写入开始前失败。并发、速率和超时共用命令 context，取消或超时时会停止尚未启动的任务。
+`--max-items` 是一次命令内跨资源类型累计的预算，而不是每个循环各自的限制。例如 network 报告会累计 container 和 network，volumes 会累计 volume 和 container；backup/restore 累计 container、按名称去重的 custom network 和 named volume。Backup 会在任何输出前复核已计费容器身份及资源集合，发生漂移时要求重试；restore 的多个输入会在产生 text/structured dry-run 输出或访问 Docker 前全部预检并预留预算。预算超限会在对应 Docker mutation 或文件写入开始前失败。并发、速率和超时共用命令 context，取消或超时时会停止尚未启动的任务。
 
 health、logs 和 `dm report all` 还会流式计数 Docker 日志：`--max-log-bytes` 限制单个容器，`--max-total-log-bytes` 限制本次命令所有容器累计读取量。默认分别为 `16 MiB` 和 `256 MiB`，命令 flag 优先于 profile/base 配置；达到限制会停止继续读取并返回运行错误。
 
@@ -319,11 +339,13 @@ dm report all --format sarif --threshold health.unhealthy=0 --threshold prune.ca
 
 在 Unix 上，新建审计目录使用 `0700`，JSONL、HMAC key 和 lock 文件使用 `0600`；Windows 部署仍应通过目录 ACL 限制访问。写入持有跨进程文件锁，达到 `audit_max_bytes` 后按 `.1`、`.2` 等完整事件边界轮转。数据、key、lock 和轮转路径会拒绝 symlink、Windows junction/reparse 及非普通文件。审计 key 默认位于 `<audit_file>.key`；不要与公开报告一起分发。
 
+显式 `--audit-max-bytes` 和 `--audit-max-files` 与 YAML 使用同一边界校验；非法值在创建审计目录、key、lock 或 JSONL 前返回运行错误，即使 `--audit-on-error=warn` 也不会降级继续。
+
 进程退出码固定为：`0` 成功；`1` 配置、连接、执行、输出或审计等运行错误；`2` 只有报告已成功生成但 `--fail-on`/`--threshold` 门禁未通过；`130` 收到 SIGINT 或 context cancel。运行错误与门禁失败同时出现时返回 `1`，取消优先返回 `130`。
 
 Docker API endpoint 优先级为: 全局命令行参数 > 选中 profile > 顶层 `.dm.yaml` > Docker 环境变量 > 本地 Docker 默认 endpoint。省略 Docker 配置项会继承对应环境变量；显式空字符串会清除环境变量回退。支持 `tcp://`、`unix://` 和 `npipe://`；其他 scheme 会在 client 初始化时拒绝。生产环境不建议裸露未启用 TLS 的 `tcp://host:2375`；`dm doctor` 会对明文 TCP endpoint 给出 warning。
 
-`registries` 的 key 以及 `dm registry`/`dm doctor --registry` 的参数必须是精确规范化的 `host[:port]`，不接受 scheme、路径、userinfo、查询、fragment 或通配符。策略支持 `ca_file`/`ca_path`、`proxy`、`no_proxy`、正 duration `timeout`、`credential_scope`、`auth_realms` 和 `plain_http`；proxy scheme 只允许 `http`、`https` 或 `socks5`。`credential_scope` 可包含 `pull`、`push`、`login`；省略时允许这三种既有操作，显式 `[]` 禁止使用凭据。该设置只收窄凭据使用，Bearer token 请求仍固定为当前 repository 的 pull scope。`plain_http` 默认为 `false`，只能对精确匹配项显式开启，且不能与 CA 同时配置。命令行显式 `--proxy`、`--timeout`、`--auth-realm` 和 `--plain-http[=false]` 继续覆盖策略。
+`registries` 的 key 以及 `dm registry`/`dm doctor --registry` 的参数必须是精确规范化的 `host[:port]`，不接受 scheme、路径、userinfo、查询、fragment 或通配符。策略支持 `ca_file`/`ca_path`、`proxy`、`no_proxy`、正 duration `timeout`、`credential_scope`、`auth_realms` 和 `plain_http`；顶层、profile 和 per-registry proxy 共用校验，只有原始空字符串表示未配置，空白值或带首尾空白的值会被早期拒绝；非空值只允许带 scheme 和非空 hostname、无 fragment 的 `http`、`https`、`socks5` URL，合法 userinfo 会保留。显式或环境 registry proxy 在交给 HTTP transport 前也会拒绝空 hostname。`auth_realms` 和 `--auth-realm` 只接受带非空 hostname 的 HTTPS origin。`credential_scope` 可包含 `pull`、`push`、`login`；省略时允许这三种既有操作，显式 `[]` 禁止使用凭据。该设置只收窄凭据使用，Bearer token 请求仍固定为当前 repository 的 pull scope。`plain_http` 默认为 `false`，只能对精确匹配项显式开启，且不能与 CA 同时配置。命令行显式 `--proxy`、`--timeout`、`--auth-realm` 和 `--plain-http[=false]` 继续覆盖策略。
 
 Per-registry CA、代理和 timeout 应用于 `dm` 自己的 registry `/v2/`、manifest、blob、token 请求，以及 push 前预检。`dm pull --to` 最终调用 Docker daemon 执行 push；daemon 的 registry CA、insecure registry 和代理仍需单独配置。`dm registry` 报告会区分 `dm` 直连检查和 daemon `RegistryLogin`，前者使用 policy，后者使用 daemon 网络配置。
 
@@ -353,7 +375,7 @@ dm completion fish
 dm completion powershell
 ```
 
-安装脚本默认安装对应 shell completion。Linux/macOS 默认生成 bash 补全，可通过 `--completion` 指定多个 shell；Windows 默认生成 PowerShell completion 并写入可卸载的 profile 片段。
+Linux 安装脚本默认安装对应 shell completion；Linux 默认生成 bash 补全，可通过 `--completion` 指定多个 shell。Darwin 发布包不附安装脚本，需按包内说明手动安装二进制；Windows 默认生成 PowerShell completion 并写入可卸载的 profile 片段。
 
 补全会读取当前 Docker endpoint 配置，容器、镜像和 volume 候选可以来自远程 Docker。
 
@@ -362,8 +384,8 @@ dm completion powershell
 | 命令 | 功能 |
 | --- | --- |
 | `dm pull` / `dm image pull` | 从 registry 拉取镜像，支持未压缩、gzip、zstd 镜像层归档、导入 Docker、批量同步和重新推送 |
-| `dm save` / `dm image save` | 导出本地镜像，支持筛选、通配符、dry-run 和批量导出 |
-| `dm load` / `dm image load` | 导入镜像 tar/tar.gz/tgz，默认递归扫描目录 |
+| `dm save` / `dm image save` | 导出本地镜像，支持筛选、通配符、dry-run 和批量导出；最多一个输出路径 |
+| `dm load` / `dm image load` | 导入镜像 tar/tar.gz/tgz，默认递归扫描目录；最多一个输入路径 |
 | `dm tree` / `dm image tree` | 分析镜像层、历史、大小占比和本地容器引用 |
 | `dm reverse` | 从容器 inspect 生成 `docker run` 或 compose，只读输出 |
 | `dm rerun` | 基于 inspect 执行容器重建，实际执行必须传 `--confirm` |
@@ -377,7 +399,7 @@ dm completion powershell
 | `dm prune` | 生成可清理资源报告；执行 image/volume 清理需额外确认 Docker 非原子删除边界 |
 | `dm volumes` | 分析 volume 使用关系、大小和疑似未使用资源 |
 | `dm registry` | 检查 registry 凭据、连通性和 Docker RegistryLogin |
-| `dm doctor` | 检查 Docker、registry、代理、磁盘、配置和工具链 |
+| `dm doctor` | 检查 Docker、registry、代理、磁盘、配置和工具链；不接受位置参数 |
 | `dm version` | 输出版本、commit、构建时间和平台 |
 
 ## 常用示例
@@ -406,7 +428,17 @@ dm pull busybox:latest --max-layers 256 --max-layer-bytes 10737418240 --max-expa
 | `--max-layers` | 1000 | 10000 | manifest 层数 |
 | `--total-timeout` | 1h | 24h | 单个镜像从 manifest、`--skip-existing` 检查到归档或推送的总耗时 |
 
-`--timeout` 默认 `30s`，约束连接、TLS 握手和响应头；`--total-timeout` 是覆盖完整单镜像流程的外层 deadline。拉取和解压会流式计数，任一累计预算超限或取消时停止 worker 并清理临时文件。tar 输出在目标目录内以 `0600`、128-bit 随机名 staging 写入，完成 `close` 和 `fsync` 后再原子替换目标；失败时保留已有普通文件。输出路径链中的符号链接、Windows junction/reparse，以及作为目标的目录或其他非普通文件都会被拒绝。
+`--timeout` 默认 `30s`，约束连接、TLS 握手和响应头；`--total-timeout` 是覆盖完整单镜像流程的外层 deadline。拉取和解压会流式计数，任一累计预算超限或取消时停止 worker 并清理临时文件。tar 输出在目标目录内以 `0600`、128-bit 随机名 staging 写入，完成 `close` 和文件 `fsync` 后再 rename 到目标；rename 前失败会保留已有普通文件。Unix 在 rename 后还会同步父目录；父目录同步失败会返回错误，batch 不记录 success，但新归档可能已经通过 rename 发布。输出路径链中的符号链接、Windows junction/reparse，以及作为目标的目录或其他非普通文件都会被拒绝。
+
+单次 pull 与 batch 共用归档输出目录的跨进程生命周期 scope，batch 内部并发任务复用已持有的 scope。锁定期间会持续复核目录和 lifecycle lock marker 身份；Unix 锁定已打开的父目录 inode，Windows marker handle 不允许 delete sharing，因此替换或 unlink marker 不能绕过活跃归档。批量 pull 还会在任何 registry/Docker 回调前预计算绝对归档路径，并拒绝 state、report、归档及辅助锁之间的精确、hardlink、仅大小写和祖先/后代碰撞。`.dm-pull-` 和 `.docker-manager-pull-` 是内部保留 basename namespace，原始名称以及 Windows canonical/实际 8.3 basename 均会检查；standalone pull 在首个 registry HTTP 请求前拒绝保留名，batch 在任何 pull/exists callback 前拒绝。Windows 还拒绝设备/扩展 namespace、设备名、尾点/尾空格、unsafe UNC server/share、尚不存在且形似 DOS 8.3 短名的组件，以及任一启用了 per-directory case sensitivity 的现存父目录；已存在祖先会解析成长路径，用于检测实际 short-name alias 冲突，不会无条件拒绝所有已存在的 8.3 alias。
+
+审计授权后，batch 持有 state/report 生命周期锁；resume state 只从锚定父目录中的普通文件读取，最大 `64 MiB`。每个成功项写入版本化 fingerprint，包含归档绝对路径、大小、SHA-256、目标 OS/arch 和 effective Docker load（显式 `--load` 或存在 push target）；旧 state 缺 fingerprint、归档缺失/篡改，或路径、平台、load 语义变化时都会重新拉取并迁移 state。State/report 使用随机排他 `0600` staging，`basic`/`strict` 会在持久化副本中脱敏 message，`none` 保留管理员原文。Deadline 到期时 report 仍包含每个已计划项，包括未调度项；state/report 持久化错误和 context 错误通过 `errors.Join` 一并保留。Windows `0600` 不等价于私有 ACL，且 Go 不保证任意 Windows 文件系统具有与 Unix 相同的 rename 原子语义，部署时仍需限制目录 ACL 并使用本地文件系统。
+
+State 提交协议当前为 v2。写 state 前先持久化固定 `.dm-pull-state-untrusted.marker`，其 payload 包含版本、state basename 原始字节的 hex 和 128-bit transaction；state rename 与目录同步成功后，只有 marker 文件身份、transaction 和 owner 均匹配才会清理。残留 marker 或 commit protocol 0/1 的 success 会保守重拉；属于其他 state、畸形、超限或被替换的 marker 会在 pull/exists callback 前失败关闭。Marker 创建持久化失败时不写 state，清理失败时保持 untrusted，删除后的目录同步失败最多导致下次保守重拉。
+
+2026-09-01 的 P0-P2 回查已完成最终受影响面的 Windows normal、MinGW race、20/50 次高风险重复、vet、staticcheck、gosec 和格式检查；随后本机可执行的全仓 test/race/vet/build、依赖校验、govulncheck、覆盖率、安装/卸载 smoke 和 PowerShell 7/5.1 completion 也全部通过。2026-09-02 11:00 已将包含最新修复的 linux/amd64 主程序及 backup、appconfig、pull、diagnostics 定向 test binary 部署到 `192.168.31.40`；当前服务器执行副本的主程序、backup、pull、appconfig、diagnostics SHA-256 分别为 `fe8b3480b1aaee52fd0c2e2251385d150b0fd5809e63d9e9949c4599c611b8b6`、`8af8936772c537417613de12c4ccdce3bc95ea510af02ccb9f7f63ace999b3e0`、`81b95bb82a558d554409b3a1f354cf8de06106344f311ba8c1c149a0a9f76fd7`、`06a867e4366b6e1ef79fbc8a88da0cc0009bad56e9f352fd4ac2050b0a728d65`、`3d4e7b94894ca525e6b5170c471c0a6df5b654109313288a6c1055e82511d657`。服务器定向回归、真实 registry standalone/batch、backup/restore 预算、prune 安全边界和只读报告验收通过，测试资源集合前后无变化。本机无 Docker CLI、无可用 WSL 发行版和 ShellCheck，因此未在本机运行 Docker 或 ShellCheck；本轮也未运行 full/destructive E2E，Docker 24/27/29、真实 TLS 2376、企业 registry/OIDC 仍属于发布前外部矩阵；完整证据见 [docs/TESTING.md](docs/TESTING.md)。
+
+Linux installer 另在服务器 run `/root/dm-installer-final-20260902-140133` 完成 17 PASS 的安全定向矩阵，以及 `e2e.sh --mode install` 的 19 PASS / 10 XFAIL / 0 FAIL；用经固定大小和 SHA-256 校验的 Bash 3.2.57 实际执行 manifest v3、空 completion 数组、全 completion 和只读 profile 安装/清理用例均通过。该 installer-only run 不作为 Docker 资源前后集合比较或清理证据。
 
 镜像导入导出:
 

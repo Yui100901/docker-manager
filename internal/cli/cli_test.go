@@ -507,7 +507,7 @@ func TestDoctorUsesSelectedProfileForConfigChecks(t *testing.T) {
 		"output_dir: base-output\n" +
 		"profiles:\n" +
 		"  production:\n" +
-		"    proxy: profile-proxy\n" +
+		"    proxy: http://profile-proxy.example:8080\n" +
 		"    output_dir: " + profileOutput + "\n"
 	if err := os.WriteFile(configPath, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
@@ -539,9 +539,9 @@ func TestDoctorUsesSelectedProfileForConfigChecks(t *testing.T) {
 	for _, check := range report.Checks {
 		switch check.Name {
 		case "dm-config":
-			configMatched = check.Status == "warning" && strings.Contains(check.Detail, "profile=production")
+			configMatched = check.Status == "ok" && strings.Contains(check.Detail, "profile=production")
 		case "proxy":
-			proxyMatched = check.Status == "warning"
+			proxyMatched = check.Status == "ok" && strings.Contains(check.Detail, "profile-proxy.example")
 		case "disk":
 			outputMatched = strings.Contains(check.Detail, profileOutput)
 		}

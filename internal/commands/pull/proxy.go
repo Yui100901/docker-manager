@@ -77,7 +77,7 @@ func proxyFuncFromSettingWithNoProxy(proxy string, noProxy bool) (func(*http.Req
 	if err != nil {
 		return nil, fmt.Errorf("无效代理地址 %q: %w", proxy, err)
 	}
-	if proxyURL.Scheme == "" || proxyURL.Host == "" {
+	if proxyURL.Scheme == "" || proxyURL.Host == "" || proxyURL.Hostname() == "" {
 		return nil, fmt.Errorf("无效代理地址 %q: 必须包含 scheme 和 host，例如 http://127.0.0.1:7890", proxy)
 	}
 	switch strings.ToLower(proxyURL.Scheme) {
@@ -92,7 +92,14 @@ func proxyFromEnvironment(req *http.Request) (*url.URL, error) {
 	if req == nil || req.URL == nil {
 		return nil, nil
 	}
-	return environmentProxyConfig().ProxyFunc()(req.URL)
+	proxyURL, err := environmentProxyConfig().ProxyFunc()(req.URL)
+	if err != nil || proxyURL == nil {
+		return proxyURL, err
+	}
+	if proxyURL.Scheme == "" || proxyURL.Host == "" || proxyURL.Hostname() == "" {
+		return nil, fmt.Errorf("无效环境代理地址: 必须包含 scheme 和 host")
+	}
+	return proxyURL, nil
 }
 
 func firstEnv(names ...string) string {

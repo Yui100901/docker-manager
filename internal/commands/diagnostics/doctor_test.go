@@ -94,7 +94,7 @@ func TestResolveDoctorConfigUsesPreloadedSelectedProfile(t *testing.T) {
 	data := `proxy: http://base.example:8080
 profiles:
   production:
-    proxy: profile-proxy
+    proxy: http://profile-proxy.example:8080
 `
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
@@ -108,11 +108,11 @@ profiles:
 	}
 
 	cfg, checks := resolveDoctorConfig(path, &loaded, nil)
-	if cfg.Proxy != "profile-proxy" {
+	if cfg.Proxy != "http://profile-proxy.example:8080" {
 		t.Fatalf("cfg.Proxy = %q, want selected profile value", cfg.Proxy)
 	}
-	if len(checks) != 1 || checks[0].Status != "warning" || !strings.Contains(checks[0].Detail, "profile=production") {
-		t.Fatalf("checks = %#v, want selected profile detail and proxy warning", checks)
+	if len(checks) != 1 || checks[0].Status != "ok" || !strings.Contains(checks[0].Detail, "profile=production") {
+		t.Fatalf("checks = %#v, want selected profile detail and valid proxy", checks)
 	}
 }
 
@@ -135,10 +135,26 @@ func TestCheckDoctorProxyWarnsOnInvalidURL(t *testing.T) {
 	t.Setenv("http_proxy", "")
 	t.Setenv("https_proxy", "")
 
-	checks := checkDoctorProxy(doctorConfig{Proxy: "127.0.0.1:7890"})
+	for _, value := range []string{"127.0.0.1:7890", "http://:8080"} {
+		t.Run(value, func(t *testing.T) {
+			checks := checkDoctorProxy(doctorConfig{Proxy: value})
+			if len(checks) != 1 || checks[0].Status != "warning" {
+				t.Fatalf("checks = %#v, want proxy warning", checks)
+			}
+		})
+	}
+}
 
+func TestCheckDoctorProxyWarnsOnEmptyHostnameEnvironmentProxy(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "")
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("http_proxy", "")
+	t.Setenv("https_proxy", "")
+	t.Setenv("HTTPS_PROXY", "http://:8080")
+
+	checks := checkDoctorProxy(doctorConfig{})
 	if len(checks) != 1 || checks[0].Status != "warning" {
-		t.Fatalf("checks = %#v, want proxy warning", checks)
+		t.Fatalf("checks = %#v, want environment proxy warning", checks)
 	}
 }
 
@@ -252,6 +268,17 @@ func TestDoctorCommandRejectsNegativeDiskThreshold(t *testing.T) {
 	err := cmd.Execute()
 	if err == nil || !strings.Contains(err.Error(), "--min-disk-free-mb") {
 		t.Fatalf("Execute() error = %v, want negative threshold rejection", err)
+	}
+}
+
+func TestDoctorCommandRejectsArguments(t *testing.T) {
+	cmd := NewDoctorCommand()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"ignored-extra-argument"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "unknown command") {
+		t.Fatalf("Execute() error = %v, want argument rejection", err)
 	}
 }
 

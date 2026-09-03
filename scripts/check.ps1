@@ -32,12 +32,21 @@ function Invoke-Native {
 Push-Location $RootDir
 try {
     Write-Host "==> gofmt check"
-    $goFiles = Get-ChildItem -Path . -Recurse -Filter *.go |
-        Where-Object { $_.FullName -notmatch "\\vendor\\" } |
-        ForEach-Object { $_.FullName }
+    # Use Git's exclusion rules so local caches and generated artifacts do not
+    # expand the file set or exceed Windows' native command-line limit.
+    $goFiles = @(git -c core.quotepath=false ls-files --cached --others --exclude-standard -- "*.go")
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to enumerate Go files (git exit code $LASTEXITCODE)."
+    }
     $gofmtFiles = @()
-    if ($goFiles.Count -gt 0) {
-        $gofmtFiles = @(gofmt -l $goFiles)
+    foreach ($goFile in $goFiles) {
+        $formatted = @(& gofmt -l $goFile)
+        if ($LASTEXITCODE -ne 0) {
+            throw "gofmt failed for $goFile (exit code $LASTEXITCODE)."
+        }
+        if ($formatted.Count -gt 0) {
+            $gofmtFiles += $formatted
+        }
     }
     if ($gofmtFiles.Count -gt 0) {
         $gofmtFiles | ForEach-Object { Write-Error "Run gofmt on $_" }

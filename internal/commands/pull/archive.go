@@ -66,9 +66,21 @@ func packageImage(ctx context.Context, tempDir, outputFile string) error {
 }
 
 func createTarArchiveWithContext(ctx context.Context, sourceDir, outputFile string) error {
+	return createTarArchiveWithContextAndSync(ctx, sourceDir, outputFile, syncPullOutputDirectory)
+}
+
+func createTarArchiveWithContextAndSync(ctx context.Context, sourceDir, outputFile string, syncDirectory func(*os.Root) error) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if syncDirectory == nil {
+		syncDirectory = syncPullOutputDirectory
+	}
+	ctx, releaseLifecycle, err := holdPullArchiveLifecycle(ctx, outputFile)
+	if err != nil {
+		return fmt.Errorf("获取归档输出目录生命周期锁失败: %w", err)
+	}
+	defer releaseLifecycle()
 
 	outputRoot, outputName, outputPath, parentInfo, err := openPullArchiveOutput(outputFile)
 	if err != nil {
@@ -137,6 +149,11 @@ func createTarArchiveWithContext(ctx context.Context, sourceDir, outputFile stri
 	closeTarErr := tw.Close()
 	syncFileErr := file.Sync()
 	stagedInfo, statFileErr := file.Stat()
+	if statFileErr == nil {
+		// The writer legitimately changes the staging file after creation. Keep
+		// the final descriptor snapshot for deferred ownership-safe cleanup.
+		stagingOwner = stagedInfo
+	}
 	closeFileErr := file.Close()
 	fileOpen = false
 	if walkErr != nil {
@@ -160,10 +177,19 @@ func createTarArchiveWithContext(ctx context.Context, sourceDir, outputFile stri
 	if err := verifyPullArchivePublication(outputRoot, stagingName, outputName, outputPath, parentInfo, stagedInfo); err != nil {
 		return err
 	}
+	if err := verifyPullBatchLifecyclePath(ctx, outputPath); err != nil {
+		return fmt.Errorf("发布归档前生命周期锁校验失败: %w", err)
+	}
 	if err := outputRoot.Rename(stagingName, outputName); err != nil {
 		return fmt.Errorf("发布归档 %s 失败: %w", outputPath, err)
 	}
 	cleanupStaging = false
+	if err := syncDirectory(outputRoot); err != nil {
+		return fmt.Errorf("同步归档输出目录失败: %w", err)
+	}
+	if err := verifyPullBatchLifecyclePath(ctx, outputPath); err != nil {
+		return fmt.Errorf("发布归档后生命周期锁校验失败: %w", err)
+	}
 	return nil
 }
 
@@ -282,8 +308,7 @@ func removeOwnedPullArchiveStaging(root *os.Root, stagingName string, ownerInfo 
 	if err != nil {
 		return fmt.Errorf("检查归档临时文件失败: %w", err)
 	}
-	if ownerInfo == nil || pullArchiveInfoIsReparsePoint(currentInfo) || !currentInfo.Mode().IsRegular() ||
-		!ownerInfo.Mode().IsRegular() || !os.SameFile(currentInfo, ownerInfo) {
+	if !safePullBatchFileIdentity(ownerInfo, currentInfo) {
 		return fmt.Errorf("拒绝删除已被替换的归档临时文件: %s", stagingName)
 	}
 	if err := root.Remove(stagingName); err != nil && !os.IsNotExist(err) {
@@ -300,8 +325,7 @@ func verifyPullArchivePublication(root *os.Root, stagingName, outputName, output
 	if err != nil {
 		return fmt.Errorf("检查归档临时文件失败: %w", err)
 	}
-	if pullArchiveInfoIsReparsePoint(currentStagedInfo) || !currentStagedInfo.Mode().IsRegular() ||
-		!stagedInfo.Mode().IsRegular() || !os.SameFile(currentStagedInfo, stagedInfo) {
+	if !safePullBatchFileIdentity(stagedInfo, currentStagedInfo) {
 		return fmt.Errorf("归档临时文件在发布前发生变化: %s", stagingName)
 	}
 	return nil
@@ -311,7 +335,7 @@ func verifyPullArchiveOutputPath(root *os.Root, outputName, outputPath string, p
 	if err := rejectPullArchiveOutputLinks(outputPath); err != nil {
 		return err
 	}
-	currentParentInfo, err := os.Lstat(filepath.Dir(outputPath))
+	currentParentInfo, err := pullPathLstatNoFollow(filepath.Dir(outputPath))
 	if err != nil {
 		return fmt.Errorf("检查归档输出目录失败: %w", err)
 	}
@@ -333,30 +357,6 @@ func verifyPullArchiveOutputPath(root *os.Root, outputName, outputPath string, p
 		return fmt.Errorf("检查归档输出失败: %w", err)
 	}
 	return nil
-}
-
-func rejectPullArchiveOutputLinks(outputPath string) error {
-	for current, output := filepath.Clean(outputPath), true; ; current, output = filepath.Dir(current), false {
-		info, err := os.Lstat(current)
-		if err == nil {
-			if pullArchiveInfoIsReparsePoint(info) {
-				return fmt.Errorf("拒绝通过符号链接或重解析点写入归档输出: %s", current)
-			}
-			if output {
-				if !info.Mode().IsRegular() {
-					return fmt.Errorf("拒绝替换非普通归档输出: %s", current)
-				}
-			} else if !info.IsDir() {
-				return fmt.Errorf("归档输出路径祖先不是目录: %s", current)
-			}
-		} else if !os.IsNotExist(err) {
-			return fmt.Errorf("检查归档输出路径 %s 失败: %w", current, err)
-		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			return nil
-		}
-	}
 }
 
 func pullArchiveInfoIsReparsePoint(info os.FileInfo) bool {

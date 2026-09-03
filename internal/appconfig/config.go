@@ -254,16 +254,8 @@ func (policy RegistryPolicy) Validate() error {
 	if _, err := PositiveDuration("timeout", policy.Timeout, 0); err != nil {
 		return err
 	}
-	if value := strings.TrimSpace(policy.Proxy); value != "" {
-		parsed, err := url.Parse(value)
-		if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.Fragment != "" {
-			return fmt.Errorf("proxy %q must contain a scheme and host and must not contain a fragment", policy.Proxy)
-		}
-		switch strings.ToLower(parsed.Scheme) {
-		case "http", "https", "socks5":
-		default:
-			return fmt.Errorf("proxy %q uses unsupported scheme %q; expected http, https, or socks5", policy.Proxy, parsed.Scheme)
-		}
+	if err := validateProxy(policy.Proxy); err != nil {
+		return err
 	}
 	seen := make(map[string]struct{}, len(policy.CredentialScope))
 	for _, value := range policy.CredentialScope {
@@ -419,6 +411,9 @@ func validateConfigValues(cfg Config) error {
 	if cfg.Verbose && cfg.Quiet {
 		return errors.New("verbose and quiet cannot both be true")
 	}
+	if err := validateProxy(cfg.Proxy); err != nil {
+		return err
+	}
 	profile := strings.ToLower(strings.TrimSpace(cfg.RedactProfile))
 	switch profile {
 	case "", "none", "basic", "strict":
@@ -530,19 +525,48 @@ func validateAuditConfig(cfg Config) error {
 	default:
 		return fmt.Errorf("audit_on_error must be warn, deny-mutation, or fail, got %q", cfg.AuditOnError)
 	}
-	if cfg.AuditMaxBytes < 0 || cfg.AuditMaxBytes > 1<<40 {
-		return fmt.Errorf("audit_max_bytes must be between 0 and %d", int64(1<<40))
-	}
-	if cfg.AuditMaxBytes > 0 && cfg.AuditMaxBytes < int64(audit.DefaultMaxEventBytes) {
-		return fmt.Errorf("audit_max_bytes must be 0 or at least %d", audit.DefaultMaxEventBytes)
-	}
-	if cfg.AuditMaxFiles < 0 || cfg.AuditMaxFiles > 100 {
-		return fmt.Errorf("audit_max_files must be between 0 and 100")
+	if err := ValidateAuditRotation(cfg.AuditMaxBytes, cfg.AuditMaxFiles); err != nil {
+		return err
 	}
 	if len(cfg.AuditActor) > 256 || strings.ContainsAny(cfg.AuditActor, "\r\n\x00") {
 		return fmt.Errorf("audit_actor must not exceed 256 bytes or contain control line characters")
 	}
 	return nil
+}
+
+// ValidateAuditRotation applies the shared config and CLI bounds for audit
+// rotation. Zero retains the audit package defaults.
+func ValidateAuditRotation(maxBytes int64, maxFiles int) error {
+	if maxBytes < 0 || maxBytes > 1<<40 {
+		return fmt.Errorf("audit_max_bytes must be between 0 and %d", int64(1<<40))
+	}
+	if maxBytes > 0 && maxBytes < int64(audit.DefaultMaxEventBytes) {
+		return fmt.Errorf("audit_max_bytes must be 0 or at least %d", audit.DefaultMaxEventBytes)
+	}
+	if maxFiles < 0 || maxFiles > 100 {
+		return fmt.Errorf("audit_max_files must be between 0 and 100")
+	}
+	return nil
+}
+
+func validateProxy(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	value := strings.TrimSpace(raw)
+	if value != raw {
+		return fmt.Errorf("proxy %q must not contain leading or trailing whitespace", raw)
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.Hostname() == "" || parsed.Fragment != "" {
+		return fmt.Errorf("proxy %q must contain a scheme and host and must not contain a fragment", raw)
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https", "socks5":
+		return nil
+	default:
+		return fmt.Errorf("proxy %q uses unsupported scheme %q; expected http, https, or socks5", raw, parsed.Scheme)
+	}
 }
 
 func validateProfileName(name string) error {
@@ -1057,7 +1081,7 @@ func mappingValue(node *yaml.Node, name string) (*yaml.Node, bool) {
 func validateHTTPSOrigins(name string, origins []string) error {
 	for _, origin := range origins {
 		parsed, err := url.Parse(strings.TrimSpace(origin))
-		if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil ||
+		if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Hostname() == "" || parsed.User != nil ||
 			strings.Contains(parsed.Hostname(), "*") || (parsed.Path != "" && parsed.Path != "/") ||
 			parsed.RawQuery != "" || parsed.Fragment != "" {
 			return fmt.Errorf("%s entry %q must be an HTTPS origin without credentials, path, query, or fragment", name, origin)

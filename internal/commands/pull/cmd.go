@@ -107,11 +107,6 @@ func NewPullCommandWithDefaults(defaults func() CommandDefaults) *cobra.Command 
 					if printErr != nil {
 						return printErr
 					}
-					if batchOpts.ReportFile != "" {
-						if writeErr := writePullBatchReport(batchOpts.ReportFile, report); writeErr != nil {
-							return writeErr
-						}
-					}
 				}
 				return err
 			}

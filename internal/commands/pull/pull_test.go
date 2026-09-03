@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -332,8 +333,12 @@ func TestProxyFuncFromSettingProxyPrecedenceMatrix(t *testing.T) {
 }
 
 func TestProxyFuncFromSettingRejectsInvalidProxy(t *testing.T) {
-	if _, err := proxyFuncFromSetting("127.0.0.1:7890"); err == nil {
-		t.Fatal("proxyFuncFromSetting() error = nil, want invalid proxy error")
+	for _, value := range []string{"127.0.0.1:7890", "http://:8080"} {
+		t.Run(value, func(t *testing.T) {
+			if _, err := proxyFuncFromSetting(value); err == nil {
+				t.Fatal("proxyFuncFromSetting() error = nil, want invalid proxy error")
+			}
+		})
 	}
 }
 
@@ -592,17 +597,21 @@ func TestDefaultOutputFileNameSanitizesTag(t *testing.T) {
 }
 
 func TestPullCommandReturnsInvalidProxyError(t *testing.T) {
-	cmd := NewPullCommand()
-	cmd.SetOut(io.Discard)
-	cmd.SetErr(io.Discard)
-	cmd.SetArgs([]string{"--proxy", "127.0.0.1:7890", "busybox:latest"})
+	for _, value := range []string{"127.0.0.1:7890", "http://:8080"} {
+		t.Run(value, func(t *testing.T) {
+			cmd := NewPullCommand()
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			cmd.SetArgs([]string{"--proxy", value, "busybox:latest"})
 
-	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("Execute() error = nil, want invalid proxy error")
-	}
-	if !strings.Contains(err.Error(), "配置代理失败") {
-		t.Fatalf("Execute() error = %q, want proxy error", err.Error())
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatal("Execute() error = nil, want invalid proxy error")
+			}
+			if !strings.Contains(err.Error(), "配置代理失败") {
+				t.Fatalf("Execute() error = %q, want proxy error", err.Error())
+			}
+		})
 	}
 }
 
@@ -778,6 +787,29 @@ func TestResolvePushTargetRejectsInvalidTarget(t *testing.T) {
 	}
 	if _, err := resolvePushTarget(testBusyboxInfo(), "registry.local/team@sha256:abc"); err == nil {
 		t.Fatal("resolvePushTarget() error = nil, want digest target error")
+	}
+}
+
+func TestGetImageRejectsReservedOutputBeforeNetwork(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	runner := newTestPullRunner()
+	runner.httpClient = &http_utils.HTTPClient{Client: server.Client()}
+	imageName := strings.TrimPrefix(server.URL, "http://") + "/team/app:latest"
+	err := runner.getImage(imageName, PullOptions{
+		Output:    filepath.Join(t.TempDir(), ".dm-pull-user-output.tar"),
+		PlainHTTP: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "保留命名空间") {
+		t.Fatalf("getImage() error = %v, want reserved output rejection", err)
+	}
+	if got := hits.Load(); got != 0 {
+		t.Fatalf("HTTP requests before reserved output rejection = %d, want 0", got)
 	}
 }
 

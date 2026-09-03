@@ -241,6 +241,7 @@ func TestLoadRejectsInvalidRegistryPolicies(t *testing.T) {
 		{name: "invalid scope", data: "registries:\n  registry.example:\n    credential_scope: [catalog]\n", want: "credential_scope"},
 		{name: "duplicate scope", data: "registries:\n  registry.example:\n    credential_scope: [pull, PULL]\n", want: "duplicate"},
 		{name: "insecure realm", data: "registries:\n  registry.example:\n    auth_realms: [http://auth.example]\n", want: "HTTPS origin"},
+		{name: "realm empty hostname", data: "registries:\n  registry.example:\n    auth_realms: [https://:443]\n", want: "HTTPS origin"},
 		{name: "invalid proxy", data: "registries:\n  registry.example:\n    proxy: proxy.example\n", want: "scheme and host"},
 		{name: "scheme in key", data: "registries:\n  'https://registry.example': {}\n", want: "without a scheme"},
 		{name: "path in key", data: "registries:\n  'registry.example/team': {}\n", want: "host[:port]"},

@@ -130,7 +130,7 @@ func validateProxyURL(raw string) error {
 	if err != nil {
 		return err
 	}
-	if u.Scheme == "" || u.Host == "" {
+	if u.Scheme == "" || u.Host == "" || u.Hostname() == "" {
 		return fmt.Errorf("缺少 scheme 或 host")
 	}
 	switch strings.ToLower(u.Scheme) {

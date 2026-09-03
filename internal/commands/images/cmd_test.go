@@ -6,9 +6,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/moby/moby/api/types/image"
+	"github.com/spf13/cobra"
 )
 
 type fakeImageManager struct {
@@ -100,6 +102,28 @@ func TestSaveCommandUsesConfiguredDefaultOutputDir(t *testing.T) {
 	want := filepath.Join(outputDir, "repo_app-v1.tar")
 	if manager.saveCalls[0].outputFile != want {
 		t.Fatalf("outputFile = %q, want %q", manager.saveCalls[0].outputFile, want)
+	}
+}
+
+func TestImageCommandsRejectExtraPathArguments(t *testing.T) {
+	manager := &fakeImageManager{}
+	withFakeImageManager(t, manager)
+
+	commands := map[string]*cobra.Command{
+		"load": NewLoadCommand(),
+		"save": NewSaveCommandWithDefaults(nil),
+	}
+	for name, cmd := range commands {
+		t.Run(name, func(t *testing.T) {
+			cmd.SetArgs([]string{"first", "ignored"})
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), "at most 1") {
+				t.Fatalf("Execute() error = %v, want extra argument rejection", err)
+			}
+		})
+	}
+	if len(manager.loadCalls) != 0 || len(manager.saveCalls) != 0 {
+		t.Fatalf("invalid commands reached image manager: load=%v save=%v", manager.loadCalls, manager.saveCalls)
 	}
 }
 

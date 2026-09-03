@@ -69,6 +69,18 @@ func TestProxyFromEnvironmentSupportsLowercaseVariables(t *testing.T) {
 	}
 }
 
+func TestProxyFromEnvironmentRejectsEmptyHostname(t *testing.T) {
+	clearProxyEnv(t)
+	t.Setenv("HTTPS_PROXY", "http://:8080")
+	req, err := http.NewRequest(http.MethodGet, "https://registry.example/v2/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proxyURL, err := proxyFromEnvironment(req); err == nil || proxyURL != nil {
+		t.Fatalf("proxyFromEnvironment() = %v, %v, want empty-hostname rejection", proxyURL, err)
+	}
+}
+
 func TestSecureRegistryRedirectPolicyStripsCredentialsAcrossOrigins(t *testing.T) {
 	original := &http.Request{URL: mustParseURL(t, "https://registry.example/v2/")}
 	redirected := &http.Request{

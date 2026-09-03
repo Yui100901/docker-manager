@@ -107,6 +107,24 @@ func TestCreateTarArchiveReplacesExistingOutput(t *testing.T) {
 	assertNoPullArchiveStaging(t, outputDir)
 }
 
+func TestCreateTarArchiveReturnsDirectorySyncFailureAfterCompletePublish(t *testing.T) {
+	outputDir := t.TempDir()
+	outputPath := filepath.Join(outputDir, "image.tar")
+	syncErr := errors.New("directory sync failed")
+	syncCalled := false
+	err := createTarArchiveWithContextAndSync(context.Background(), writePullArchiveSource(t, "durable-check"), outputPath, func(*os.Root) error {
+		syncCalled = true
+		return syncErr
+	})
+	if !syncCalled || !errors.Is(err, syncErr) {
+		t.Fatalf("syncCalled/error = %v/%v, want directory sync failure", syncCalled, err)
+	}
+	if marker := readPullArchiveMarker(t, outputPath); marker != "durable-check" {
+		t.Fatalf("published marker = %q, want durable-check", marker)
+	}
+	assertNoPullArchiveStaging(t, outputDir)
+}
+
 func TestCreateTarArchiveConcurrentReplacementPublishesOwnStaging(t *testing.T) {
 	const writers = 8
 	outputDir := t.TempDir()
@@ -133,10 +151,18 @@ func TestCreateTarArchiveConcurrentReplacementPublishesOwnStaging(t *testing.T) 
 	close(start)
 	wg.Wait()
 	close(errs)
+	succeeded := 0
 	for err := range errs {
-		if err != nil {
-			t.Fatalf("concurrent createTarArchiveWithContext() error = %v", err)
+		if err == nil {
+			succeeded++
+			continue
 		}
+		if !strings.Contains(err.Error(), "正在被另一进程使用") {
+			t.Fatalf("concurrent createTarArchiveWithContext() unexpected error = %v", err)
+		}
+	}
+	if succeeded == 0 {
+		t.Fatal("concurrent createTarArchiveWithContext() had no successful publisher")
 	}
 
 	marker := readPullArchiveMarker(t, outputPath)
@@ -144,6 +170,43 @@ func TestCreateTarArchiveConcurrentReplacementPublishesOwnStaging(t *testing.T) 
 		t.Fatalf("published marker is not from a complete writer: length=%d", len(marker))
 	}
 	assertNoPullArchiveStaging(t, outputDir)
+}
+
+func TestCreateTarArchiveRejectsHeldOutputDirectoryLifecycleLock(t *testing.T) {
+	outputDir := t.TempDir()
+	outputPath := filepath.Join(outputDir, "image.tar")
+	locks, err := acquirePullBatchLifecycleLocks(context.Background(), outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = createTarArchiveWithContext(context.Background(), writePullArchiveSource(t, "blocked"), outputPath)
+	if err == nil || !strings.Contains(err.Error(), "正在被另一进程使用") {
+		releasePullBatchLifecycleLocks(locks)
+		t.Fatalf("createTarArchiveWithContext() error = %v, want lifecycle lock rejection", err)
+	}
+	if _, statErr := os.Lstat(outputPath); !errors.Is(statErr, os.ErrNotExist) {
+		releasePullBatchLifecycleLocks(locks)
+		t.Fatalf("output stat error = %v, want not exist", statErr)
+	}
+	releasePullBatchLifecycleLocks(locks)
+	if err := createTarArchiveWithContext(context.Background(), writePullArchiveSource(t, "published"), outputPath); err != nil {
+		t.Fatalf("createTarArchiveWithContext() after release error = %v", err)
+	}
+	if marker := readPullArchiveMarker(t, outputPath); marker != "published" {
+		t.Fatalf("published marker = %q, want published", marker)
+	}
+}
+
+func TestCreateTarArchiveRejectsLifecycleLockPathAsOutput(t *testing.T) {
+	outputDir := t.TempDir()
+	outputPath := pullBatchLifecycleLockPath(outputDir)
+	err := createTarArchiveWithContext(context.Background(), writePullArchiveSource(t, "unsafe"), outputPath)
+	if err == nil || !strings.Contains(err.Error(), "保留命名空间") {
+		t.Fatalf("createTarArchiveWithContext() error = %v, want reserved lifecycle path rejection", err)
+	}
+	if _, statErr := os.Lstat(outputPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("lifecycle output stat error = %v, want not exist", statErr)
+	}
 }
 
 func TestPullArchiveRejectsAndPreservesReplacedStaging(t *testing.T) {

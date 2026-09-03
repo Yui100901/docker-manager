@@ -1,6 +1,8 @@
 package diagnostics
 
 import (
+	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -21,6 +23,21 @@ func TestRegistryPolicyExplicitProxyOverridesConfiguredNoProxy(t *testing.T) {
 	}
 	if resolved.Proxy != explicitProxy || resolved.NoProxy {
 		t.Fatalf("resolved policy = %#v, want explicit proxy with no_proxy=false", resolved)
+	}
+}
+
+func TestParseRegistryProxyURLRejectsEmptyHostname(t *testing.T) {
+	if _, err := parseRegistryProxyURL("http://:8080"); err == nil {
+		t.Fatal("parseRegistryProxyURL() error = nil, want empty-hostname rejection")
+	}
+}
+
+func TestValidatedRegistryProxyFuncRejectsEmptyHostname(t *testing.T) {
+	proxyFunc := validatedRegistryProxyFunc(func(*http.Request) (*url.URL, error) {
+		return &url.URL{Scheme: "http", Host: ":8080"}, nil
+	})
+	if proxyURL, err := proxyFunc(&http.Request{}); err == nil || proxyURL != nil {
+		t.Fatalf("validatedRegistryProxyFunc() = %v, %v, want empty-hostname rejection", proxyURL, err)
 	}
 }
 

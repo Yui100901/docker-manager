@@ -10,8 +10,6 @@ import (
 	"sort"
 	"strings"
 
-	"docker-manager/internal/runcontrol"
-
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
 )
@@ -70,7 +68,7 @@ func restoreBackupDir(ctx context.Context, backupDir string, opts RestoreOptions
 	if opts.Name != "" && len(manifest.Containers) != 1 {
 		return fmt.Errorf("--name 只支持恢复单个备份")
 	}
-	if err := runcontrol.CheckItems(ctx, "restore-container", len(manifest.Containers)); err != nil {
+	if err := reserveRestoreManifestItems(ctx, manifest, opts.itemBudget); err != nil {
 		return err
 	}
 	if err := validateRestoreManifestArtifacts(backupDir, manifest, opts); err != nil {
@@ -80,7 +78,7 @@ func restoreBackupDir(ctx context.Context, backupDir string, opts RestoreOptions
 	if err != nil {
 		return err
 	}
-	prepared := &preparedRestoreBackup{source: backupDir, dir: backupDir, manifest: manifest, svc: svc}
+	prepared := &preparedRestoreBackup{source: backupDir, dir: backupDir, manifest: manifest, svc: svc, itemBudgetReserved: true}
 	if !opts.DryRun {
 		prepared.targets, prepared.existingTargets, err = preflightRestoreDockerTargets(ctx, svc, backupDir, manifest, opts)
 		if err != nil {
@@ -96,6 +94,12 @@ func restoreBackupDir(ctx context.Context, backupDir string, opts RestoreOptions
 func executePreparedRestore(ctx context.Context, prepared *preparedRestoreBackup, opts RestoreOptions) error {
 	if err := checkBackupContext(ctx); err != nil {
 		return err
+	}
+	if !prepared.itemBudgetReserved {
+		if err := reserveRestoreManifestItems(ctx, prepared.manifest, opts.itemBudget); err != nil {
+			return err
+		}
+		prepared.itemBudgetReserved = true
 	}
 	if opts.DryRun && prepared.signatureStatus != "" {
 		fmt.Fprintf(opts.Output, "恢复来源验证: %s\n", prepared.signatureStatus)

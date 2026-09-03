@@ -84,6 +84,14 @@ func TestBearerRealmRequiresHTTPSEvenWhenHostIsAllowlisted(t *testing.T) {
 	}
 }
 
+func TestBearerRealmRejectsEmptyHostname(t *testing.T) {
+	info := &ImageInfo{Registry: "registry.example", Repository: "team", Image: "app", Tag: "latest"}
+	_, err := validateBearerRealm("https://:443/token", info, PullOptions{AuthRealmAllowlist: []string{"https://:443"}})
+	if err == nil || !strings.Contains(err.Error(), "绝对 HTTPS URL") {
+		t.Fatalf("validateBearerRealm() error = %v, want empty-hostname rejection", err)
+	}
+}
+
 func TestDockerHubBuiltInRealmIsAllowed(t *testing.T) {
 	info := &ImageInfo{Registry: defaultRegistry, Repository: "library", Image: "busybox", Tag: "latest"}
 	got, err := validateBearerRealm("https://auth.docker.io/token", info, PullOptions{})
@@ -96,7 +104,7 @@ func TestDockerHubBuiltInRealmIsAllowed(t *testing.T) {
 }
 
 func TestAuthRealmAllowlistRejectsNonOriginValues(t *testing.T) {
-	for _, value := range []string{"", "http://auth.example", "https://user:pass@auth.example", "https://auth.example/token", "*.example.com"} {
+	for _, value := range []string{"", "http://auth.example", "https://user:pass@auth.example", "https://auth.example/token", "*.example.com", "https://:443", ":443"} {
 		if err := validateAuthRealmAllowlist([]string{value}); err == nil {
 			t.Fatalf("allowlist value %q accepted", value)
 		}

@@ -47,7 +47,7 @@ func TestRunPullBatchRetriesAndWritesState(t *testing.T) {
 		if image == "team/api:v1" && attempts[image] == 1 {
 			return failOnce
 		}
-		return nil
+		return writePullBatchTestArtifact(opts, image)
 	}
 	exists := func(ctx context.Context, image, target string, opts PullOptions) (bool, error) {
 		return false, nil
@@ -91,7 +91,7 @@ func TestRunPullBatchAllowsPullWithoutTarget(t *testing.T) {
 		if opts.Load {
 			t.Fatal("PullOptions.Load = true, want false")
 		}
-		return nil
+		return writePullBatchTestArtifact(opts, image)
 	}
 	exists := func(ctx context.Context, image, target string, opts PullOptions) (bool, error) {
 		t.Fatal("exists should not be called without --to")
@@ -131,15 +131,38 @@ func TestRunPullBatchRejectsSkipExistingWithoutTarget(t *testing.T) {
 func TestRunPullBatchResumeSkipsSuccessfulStateItem(t *testing.T) {
 	dir := t.TempDir()
 	stateFile := filepath.Join(dir, "state.json")
+	opts := PullBatchOptions{
+		Images:      []string{"busybox:latest"},
+		To:          "registry.local/mirror",
+		OutputDir:   dir,
+		StateFile:   stateFile,
+		Concurrency: 1,
+		Retries:     0,
+		Resume:      true,
+		platform:    targetPlatform{targetOS: "linux", targetArch: "amd64"},
+	}
 	target, err := resolvePullBatchTarget("busybox:latest", "registry.local/mirror")
 	if err != nil {
 		t.Fatal(err)
 	}
+	archivePath := pullBatchTestArchivePath(t, dir, "busybox:latest")
+	if err := os.WriteFile(archivePath, []byte("verified archive"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	fingerprint, err := buildPullBatchResumeFingerprint(context.Background(), pullBatchPlanItem{
+		Image: "busybox:latest", Target: target, ArchivePath: archivePath,
+	}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := writePullBatchState(stateFile, pullBatchState{Items: map[string]pullBatchStateItem{
-		"busybox:latest": {Image: "busybox:latest", Target: target, Status: pullBatchStatusSuccess},
+		"busybox:latest": {Image: "busybox:latest", Target: target, Status: pullBatchStatusSuccess, Fingerprint: fingerprint},
 	}}); err != nil {
 		t.Fatal(err)
 	}
+	// --to already implies Docker load, so adding --load does not change the
+	// completed action fingerprint.
+	opts.Load = true
 	pullCalled := false
 	pull := func(image string, opts PullOptions) error {
 		pullCalled = true
@@ -149,15 +172,7 @@ func TestRunPullBatchResumeSkipsSuccessfulStateItem(t *testing.T) {
 		return false, nil
 	}
 
-	report, err := runPullBatchWithDeps(context.Background(), PullBatchOptions{
-		Images:      []string{"busybox:latest"},
-		To:          "registry.local/mirror",
-		OutputDir:   dir,
-		StateFile:   stateFile,
-		Concurrency: 1,
-		Retries:     0,
-		Resume:      true,
-	}, pull, exists)
+	report, err := runPullBatchWithDeps(context.Background(), opts, pull, exists)
 	if err != nil {
 		t.Fatalf("runPullBatchWithDeps() error = %v", err)
 	}
@@ -173,6 +188,43 @@ func TestRunPullBatchResumeSkipsSuccessfulStateItem(t *testing.T) {
 	}
 	if state.Items["busybox:latest"].Status != pullBatchStatusSuccess {
 		t.Fatalf("state item = %#v, want success preserved", state.Items["busybox:latest"])
+	}
+}
+
+func TestRunPullBatchLegacyResumeStateRepullsAndMigratesFingerprint(t *testing.T) {
+	dir := t.TempDir()
+	stateFile := filepath.Join(dir, "state.json")
+	if err := writePullBatchState(stateFile, pullBatchState{Items: map[string]pullBatchStateItem{
+		"busybox:latest": {Image: "busybox:latest", Status: pullBatchStatusSuccess},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	pullCalls := 0
+	report, err := runPullBatchWithDeps(context.Background(), PullBatchOptions{
+		Images:      []string{"busybox:latest"},
+		OutputDir:   dir,
+		StateFile:   stateFile,
+		Concurrency: 1,
+		Resume:      true,
+		platform:    targetPlatform{targetOS: "linux", targetArch: "amd64"},
+	}, func(_ string, opts PullOptions) error {
+		pullCalls++
+		return writePullBatchTestArtifact(opts, "migrated")
+	}, func(context.Context, string, string, PullOptions) (bool, error) {
+		return false, nil
+	})
+	if err != nil {
+		t.Fatalf("runPullBatchWithDeps() error = %v", err)
+	}
+	if pullCalls != 1 || report.Succeeded != 1 || report.Skipped != 0 {
+		t.Fatalf("pullCalls/report = %d/%#v, want migrated pull success", pullCalls, report)
+	}
+	state, err := readPullBatchState(stateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Items["busybox:latest"].Fingerprint == nil {
+		t.Fatal("migrated state fingerprint = nil")
 	}
 }
 
@@ -261,4 +313,28 @@ func TestRunPullBatchRespectsConcurrencyAndCancel(t *testing.T) {
 	if maxActive > 2 {
 		t.Fatalf("max active workers = %d, want <= 2", maxActive)
 	}
+}
+
+func writePullBatchTestArtifact(opts PullOptions, content string) error {
+	if err := os.MkdirAll(filepath.Dir(opts.Output), 0700); err != nil {
+		return err
+	}
+	return os.WriteFile(opts.Output, []byte(content), 0600)
+}
+
+func pullBatchTestArchivePath(t *testing.T, outputDir, image string) string {
+	t.Helper()
+	info, err := parseImageInfo(image)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := resolveOutputFile(info, PullOptions{OutputDir: outputDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalized, err := normalizePullBatchPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return normalized
 }

@@ -105,6 +105,7 @@ func TestConfigValidateRejectsAdditionalRealmAndProfileEdges(t *testing.T) {
 		{name: "realm query", cfg: Config{RegistryAuthRealms: []string{"https://auth.example?service=registry"}}, want: "HTTPS origin"},
 		{name: "realm fragment", cfg: Config{RegistryAuthRealms: []string{"https://auth.example#token"}}, want: "HTTPS origin"},
 		{name: "realm missing host", cfg: Config{RegistryAuthRealms: []string{"https:///token"}}, want: "HTTPS origin"},
+		{name: "realm empty hostname", cfg: Config{RegistryAuthRealms: []string{"https://:443"}}, want: "HTTPS origin"},
 		{name: "credential helper timeout", cfg: Config{CredentialHelperTimeout: "-1s"}, want: "greater than zero"},
 	}
 

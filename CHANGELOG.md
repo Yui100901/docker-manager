@@ -23,7 +23,34 @@
 - 新增可选 JSONL 审计 lifecycle，记录系统/声明操作人、profile、HMAC endpoint、分页候选集、mutation 授权/拒绝、结果、耗时和错误分类。`safe` 默认只保留脱敏标识，`full` 额外保留经过 strict 脱敏和长度限制的详情。
 - 审计失败支持 `warn`、`deny-mutation`、`fail`（及 `--audit-required`）策略；文件 sink 使用 Unix 私有模式、跨进程锁、完整事件边界轮转、持久 HMAC key，并拒绝数据/key/lock/rotation 路径中的 symlink、junction/reparse 和非普通文件；Windows 访问边界由部署目录 ACL 配合约束。
 - 配置 threshold 改为严格 `scope.metric=max` 命名空间；补齐 doctor 超时/取消传播、pull batch state/report 发布前审计授权、同一 root 重复执行隔离，以及显式审计 flag 对参数/flag/配置加载失败的 lifecycle。
-- E2 最终验收已完成：Go 1.27.0 本地全量门禁通过，覆盖率为 75.94%；`192.168.31.40` 的 Docker 28.1.1 / API 1.49 只读验收为 39 PASS / 0 FAIL，四类 Docker 资源集合前后完全一致，临时二进制、报告、审计和缓存均已清理。完整证据见 `docs/TESTING.md`。
+- 2026-08-27 的历史 E2 基线验收已完成：Go 1.27.0 本地全量门禁通过，覆盖率为 75.94%；`192.168.31.40` 的 Docker 28.1.1 / API 1.49 只读验收为 39 PASS / 0 FAIL，四类 Docker 资源集合前后完全一致，临时二进制、报告、审计和缓存均已清理。该结果不代表当前最终工作树已完成服务器复测，完整证据见 `docs/TESTING.md`。
+
+### Linux 安装和 Darwin 发布边界
+
+- `scripts/install.sh`/`uninstall.sh` 明确只支持 Linux，非 Linux 系统会提前拒绝；Darwin 归档不再包含这两个脚本，包内 `INSTALL.md` 改为二进制手动安装/卸载步骤。Linux 包继续携带 shell 脚本，Windows 包继续携带 PowerShell 脚本。
+- Linux `install.env` 升级为私有 manifest v3，并由卸载器按 allowlist 和严格 quoting 规则作为数据解析，不再 source。manifest 的 128-bit token 与 config/data 两个 `.docker-manager-managed` marker 绑定；purge 要求三者的版本、角色、绝对路径和 token 一致。v2 可继续执行保留 config/data 的普通卸载，但 purge 必须先重新安装迁移到 v3。
+- config/data 安装路径拒绝系统/用户/XDG 宽根目录、彼此重叠或包含安装产物；purge 在首次删除前预检两个完整目录树，并通过 `/proc/self/mountinfo` 拒绝目标本身及后代 mount，以及 `root != /` 的祖先 bind/subtree view。对 `root=/` 祖先仅在当前 namespace 可见的重复 `(major:minor, fstype, source)` 身份下拒绝，以保留独立文件系统挂载兼容性；source 已卸载或被其他 namespace 隐藏时无法可靠区分 root bind，属于已记录残余边界。symlink、特殊文件和外来 owner 仍失败关闭。
+- root profile 只在内容精确匹配时覆盖/删除，普通用户 profile 拒绝畸形 marker；卸载侧在替换前复核 inode、内容和 mode，安装侧当前复核 inode。普通用户 profile 的 mode 显式恢复；其 ACL/xattr 在 GNU `cp --preserve=all` 路径会保留，`cp -p` 回退仅为尽力保留，不声明跨环境保证。
+- `install.sh --build --dry-run` 不再要求 Go，也不创建 build/install 目录或目标文件。服务器 run `/root/dm-installer-final-20260902-140133` 的 installer 定向矩阵为 17 PASS，`e2e.sh --mode install` 为 19 PASS / 10 XFAIL / 0 FAIL；Bash 3.2.57 实际运行验证了空/全 completion 数组、manifest v3 和只读 profile。该 installer-only run 未用于声明最终 Docker 资源集合比较或清理完成。
+
+### P0-P2 回查修复
+
+- 单次 pull 与 batch 现在共用归档输出目录生命周期 scope，batch 内部并发归档复用已持有的锁；不同 metadata 文件但共享输出目录的 batch，以及 standalone 与 batch，不能并发覆盖同一归档。锁定期间持续复核目录和 lifecycle lock marker 身份；Unix 锁定已打开的父目录 inode，Windows marker handle 禁止 delete sharing，unlink/替换 marker 不能绕过活跃 scope。
+- Pull batch 在审计授权后、读取 resume state 和任何 registry/Docker 回调前获取 state/report 生命周期锁；安全读取 state 时锚定父目录、拒绝链接/reparse/非普通文件并限制为 `64 MiB`。state/report 使用随机排他 `0600` staging、发布前身份复核和 Unix 目录同步；路径精确冲突、hardlink、大小写碰撞、祖先/后代拓扑及辅助锁冲突均在回调前失败。`.dm-pull-`/`.docker-manager-pull-` 在原始 basename 和 Windows canonical/实际 8.3 basename 上均为内部保留 namespace；standalone 在首个 HTTP 请求前拒绝，batch 在 callback 前拒绝。Windows 还拒绝设备/扩展 namespace、设备名、尾点/尾空格、unsafe UNC server/share、尚不存在且形似 DOS 8.3 短名的组件和启用 per-directory case sensitivity 的现存父目录；已存在祖先解析成长路径后，仅在检测到实际 short-name alias 冲突时拒绝。
+- Tar 归档在同目录私有 staging 完成 close 和文件 sync 后 rename；rename 前失败保留旧目标。Unix rename 后父目录 sync 失败会返回错误且 batch 不记录 success，但新归档可能已经发布；Windows 的 `0600` 不等价于私有 ACL，rename 也不声明具有与 Unix 相同的文件系统语义。
+- Resume state 的成功项新增版本化 fingerprint：归档绝对路径、大小、SHA-256、目标 OS/arch 和 effective Docker load。旧 state 缺 fingerprint、归档缺失/篡改，或路径、平台、load 语义变化时均安全重拉并迁移；成功回调未产生可验证归档时不会记录 success。
+- State commit protocol 升至 v2。写 state 前持久化固定 `.dm-pull-state-untrusted.marker`，payload 为版本、state basename 原始字节 hex 和 128-bit transaction；state rename/目录同步成功后按 marker 文件身份、transaction 和 owner 清理。残留 marker 或 protocol 0/1 success 保守重拉；其他 owner、畸形、超限或被替换 marker 在 pull/exists callback 前失败关闭，marker 创建/清理持久化失败不会被误报为可信 success。
+- Pull batch 的 state/report 持久化按 `none/basic/strict` 脱敏，state 写失败不会在后续发布中回写为假成功；deadline report 包含全部已计划项，包括尚未调度项。Report I/O 后重新检查 context，state、report 和 context 错误通过 `errors.Join` 同时保留；context canceled 分支继续不发布 report。
+- Backup/restore 的 `--max-items` 统一累计 container 与去重后的 custom network、named volume；backup 在任何输出前复核已计费容器身份和资源集合，restore 多输入 text/structured dry-run 在产生 stdout 或访问 Docker 前完成全部预算预留，并复用已验证 manifest 快照。
+- 顶层、profile、per-registry、显式和环境 registry proxy 均要求允许的 scheme 与非空 hostname；配置中的空白值、首尾空白和 fragment 会早期拒绝。HTTPS auth realm、Bearer challenge/allowlist 及带 scheme 的 `--to` 同样拒绝空 hostname，doctor 对非法环境代理给出 warning。非法 audit rotation 在打开 sink 前固定返回退出码 `1`，不受 `warn` 降级；`doctor` 不接受位置参数，`load`/`save` 最多接受一个路径。
+- E2E registry 数据改用带归属标签的显式 named volume，清理前复核归属并使用 `docker rm -fv --`，避免匿名 volume 泄漏。
+- 修复确认式目录 restore 预检失败时的临时快照泄漏：`prepareRestoreBackup` 现在在返回错误后仍保留并执行已创建 snapshot cleanup；新增隔离 `TMPDIR` 回归，普通 `-count=20`、race 及服务器不访问 Docker 的定向回归均通过。
+- 最终扩展受影响 regex 在 Windows normal/race 分别通过（12.631s/13.344s），5 个 marker 高风险用例 `-count=20` 通过（14.941s）；3 个 deadline 用例改用确定性 deadline context 后 normal/race 各 `-count=50` 通过（22.994s/45.240s）。Pull vet、staticcheck v0.8.1、变更 Go 文件 gofmt 和 `git diff --check` 均通过；gosec v2.28.0 全仓为 52 项已分诊告警（含 Windows API 必需的 3 条 G103），新增 G115 已归零。
+- 空 hostname URL 边界在 appconfig、pull、diagnostics 的新增用例中通过 normal `-count=50` 和 MinGW race `-count=20`；三包全部 `Proxy|Realm|PushTarget` 用例及 CLI 四条配置消费路径的 normal/race 通过，四个受影响包的 vet、staticcheck v0.8.1 和 Linux/amd64 交叉编译通过。
+- 本机可执行的全仓 test/race/vet/build、`go mod tidy -diff`、隔离 `go mod verify`、govulncheck v1.7.0、actionlint v1.7.12、覆盖率门禁、PowerShell 安装/卸载 smoke、PowerShell 7/5.1 completion 和五平台发布打包均通过；覆盖率为 76.45%（13998/18309），Windows 发布包的版本及安装/卸载 smoke 通过。本机交叉编译的 linux/amd64、`CGO_ENABLED=0` pull test binary 上传前 SHA-256 为 `6279420e40bef553f4897eee0782d21c99d87446aba35cff12f3fe494272bfbc`；服务器实际执行副本的 SHA 和结果见 2026-09-02 条目及 `docs/TESTING.md`。本机无 Docker CLI、无可用 WSL 发行版和 ShellCheck，本轮未运行 full/destructive E2E。此前中间版本的远端结果不作为最终代码证据。
+- 2026-09-02 09:37 服务器定向验收（阶段性旧构建）：Ubuntu 22.04 / Docker 28.1.1/API 1.49 使用主程序 SHA-256 `ae082618e7e211f34d161d01dce299a4b7d4b17ec739ab0985b4bc317791aa4d`，pull/state-marker/关键替换/URL 边界用例全部 PASS；匿名 `registry:2` push 和唯一 stopped-container prune 通过，doctor、health、network、logs、volumes、prune dry-run、report all、审计与阈值退出码验证通过。测试前后 container/image/network/volume 计数 `227/6988/19/129` 且稳定字段集合无变化。该条目是阶段证据，不代表后续 restore 修复及预算/batch 回归；真实 TLS 2376、Docker 24/27/29 和 full/destructive E2E 仍保留为发布前外部矩阵。
+- 2026-09-02 11:00 当前服务器定向验收：使用包含最新修复的 linux/amd64 主程序 SHA-256 `fe8b3480b1aaee52fd0c2e2251385d150b0fd5809e63d9e9949c4599c611b8b6`；backup/pull/appconfig/diagnostics 测试二进制 SHA-256 依次为 `8af8936772c537417613de12c4ccdce3bc95ea510af02ccb9f7f63ace999b3e0`、`81b95bb82a558d554409b3a1f354cf8de06106344f311ba8c1c149a0a9f76fd7`、`06a867e4366b6e1ef79fbc8a88da0cc0009bad56e9f352fd4ac2050b0a728d65`、`3d4e7b94894ca525e6b5170c471c0a6df5b654109313288a6c1055e82511d657`。P0-P2 定向测试、真实 registry standalone/batch、backup/restore `--max-items`、prune 安全边界、只读报告/审计和脚本清理归属验证通过；测试前后四类 Docker 资源集合均无差异（`227/7012/19/129`）。默认 digest-pinned volume helper 在服务器未安装，仅以显式 `busybox:latest` 验证 probe 生命周期；Docker 24/27/29、真实 TLS 2376、企业 registry/OIDC 和 full/destructive E2E 仍保留为发布前外部矩阵。
+- 2026-09-02 17:05 最新服务器安装边界复测：`/root/dm-server-eval-20260902-servergap-1705/e2e-install-latest` 使用当前脚本和 linux/amd64 主程序，`e2e.sh --mode install` 为 `19 PASS / 10 XFAIL / 0 FAIL`；普通 bind、`root=/` tmpfs-root bind 和独立 tmpfs 三个挂载子场景均通过，ShellCheck 0.8/Bash syntax 返回 0。脚本 SHA-256 为 install `b414afc59ec986b8d0a87e509cf99e38ea42fc28fc17c62aeb3a15258625f2a4`、uninstall `6615b022bbc0ce1b034885b2d1d6e785d64bc2eae9dc9ddf4aabe4393aee4f8e`、e2e `8eb5199f9599d49f3722a620ea0f26ba965b093b7ad401800b5d17dfe0d6c8dc`，主程序 `2dd982ca178572969bb5a7eb33ea292ff21edaf8b2e4693db31bdcbe2cd2fc2d`。同 run 的 v2 legacy-only completion 尾空字段拒绝、合法 v2 verify/普通卸载、v2->v3 migration+purge 返回 `V2_LEGACY_TAIL_PASS`；临时测试资源已按归属清理。
 
 ### 维护与依赖
 
@@ -300,9 +327,10 @@ GitHub Release:
 - 安装脚本支持自定义安装目录、配置目录、数据目录、环境变量、completion、dry-run 和 purge 卸载。
 - Windows 安装入口改为直接安装 `dm.exe`。
 - 发布包按平台裁剪脚本:
-  - Linux/macOS 包只包含 shell 安装/卸载脚本。
+  - Linux 包只包含 shell 安装/卸载脚本。
   - Windows 包只包含 PowerShell 安装/卸载脚本。
-- 发布包包含二进制、`README.md`、`LICENSE`、`dm.yaml.example`、`INSTALL.md`、安装脚本和卸载脚本。
+  - Darwin 包不包含平台不兼容的安装/卸载脚本，按包内 `INSTALL.md` 手动安装二进制。
+- 发布包包含二进制、`README.md`、`LICENSE`、`dm.yaml.example` 和 `INSTALL.md`；Linux/Windows 包另外包含对应平台的安装及卸载脚本。
 - `scripts/package-release.*` 生成按平台命名的归档、`checksums.txt`、`release-manifest.json`、`release-summary.md` 和包内 `INSTALL.md`。
 - `checksums.txt` 会保留仍存在于发布目录中的历史归档校验行，重新生成同名归档时自动替换该行，便于回滚核验。
 - 新增轻量静态检查脚本 `scripts/check.sh` 和 `scripts/check.ps1`。

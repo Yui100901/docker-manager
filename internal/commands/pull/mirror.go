@@ -263,7 +263,7 @@ func stripPushTargetScheme(target string) (string, error) {
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return "", fmt.Errorf("--to only supports http:// or https:// targets: %s", target)
 	}
-	if parsed.Host == "" {
+	if parsed.Host == "" || parsed.Hostname() == "" {
 		return "", fmt.Errorf("--to target is missing registry host: %s", target)
 	}
 	if parsed.RawQuery != "" || parsed.Fragment != "" || parsed.User != nil {

@@ -969,6 +969,64 @@ func TestAuditStartHonorsCommandCancellation(t *testing.T) {
 	}
 }
 
+func TestExplicitAuditRotationFlagsRejectInvalidValuesRegardlessOfPolicy(t *testing.T) {
+	tests := []struct {
+		name      string
+		flag      string
+		want      string
+		auditFile bool
+	}{
+		{name: "max bytes below event floor", flag: "--audit-max-bytes=1", want: "audit_max_bytes", auditFile: true},
+		{name: "negative max files", flag: "--audit-max-files=-1", want: "audit_max_files"},
+	}
+	for _, test := range tests {
+		for _, policy := range []string{"warn", "deny-mutation", "fail"} {
+			t.Run(test.name+"/"+policy, func(t *testing.T) {
+				auditPath := filepath.Join(t.TempDir(), "events.jsonl")
+				cfg := appConfig{}
+				root, lifecycle := newRootCommandWithLifecycle(&cfg, &outputOptions{})
+				root.SetOut(&bytes.Buffer{})
+				root.SetErr(&bytes.Buffer{})
+				args := []string{"--audit-on-error=" + policy, test.flag, "version"}
+				if test.auditFile {
+					args = append([]string{"--audit-file", auditPath}, args...)
+				}
+				root.SetArgs(args)
+
+				executeErr := root.Execute()
+				if executeErr == nil || !strings.Contains(executeErr.Error(), test.want) {
+					t.Fatalf("Execute() error = %v, want %q validation error", executeErr, test.want)
+				}
+				if code := commandExitCode(executeErr); code != 1 {
+					t.Fatalf("commandExitCode() = %d, want 1", code)
+				}
+				if finishErr := lifecycle.finish(executeErr); finishErr != nil {
+					t.Fatalf("finish() error = %v", finishErr)
+				}
+				if _, err := os.Stat(auditPath); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("audit file stat error = %v, want not exist", err)
+				}
+			})
+		}
+	}
+}
+
+func TestExplicitZeroAuditRotationFlagsRetainDefaults(t *testing.T) {
+	cfg := appConfig{}
+	root, lifecycle := newRootCommandWithLifecycle(&cfg, &outputOptions{})
+	root.SetOut(&bytes.Buffer{})
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"--audit-max-bytes=0", "--audit-max-files=0", "version"})
+
+	executeErr := root.Execute()
+	if executeErr != nil {
+		t.Fatalf("Execute() error = %v", executeErr)
+	}
+	if finishErr := lifecycle.finish(executeErr); finishErr != nil {
+		t.Fatalf("finish() error = %v", finishErr)
+	}
+}
+
 type emptyErrorGroup struct{}
 
 func (emptyErrorGroup) Error() string   { return "empty error group" }

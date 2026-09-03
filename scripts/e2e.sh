@@ -19,6 +19,7 @@ LABEL_KEY=${DM_E2E_LABEL_KEY:-dm.e2e}
 LABEL_VALUE=${DM_E2E_LABEL_VALUE:-${SUFFIX}}
 LABEL="${LABEL_KEY}=${LABEL_VALUE}"
 REGISTRY_NAME="dm_e2e_registry_${SUFFIX}"
+REGISTRY_VOLUME_NAME="dm_e2e_registry_data_${SUFFIX}"
 CONTAINER_NAME="dm_e2e_container_${SUFFIX}"
 SECOND_CONTAINER_NAME="dm_e2e_container_b_${SUFFIX}"
 RERUN_CONTAINER_NAME="dm_e2e_rerun_${SUFFIX}"
@@ -224,12 +225,14 @@ cleanup() {
       "${RUNTIME_PROBE_NAME}" \
       "${REGISTRY_NAME}"; do
       if [ "$(docker inspect --format "{{ index .Config.Labels \"${LABEL_KEY}\" }}" "${owned_container}" 2>/dev/null || true)" = "${LABEL_VALUE}" ]; then
-        docker rm -f "${owned_container}" >/dev/null 2>&1 || true
+        docker rm -fv -- "${owned_container}" >/dev/null 2>&1 || true
       fi
     done
-    if [ "$(docker volume inspect --format "{{ index .Labels \"${LABEL_KEY}\" }}" "${VOLUME_NAME}" 2>/dev/null || true)" = "${LABEL_VALUE}" ]; then
-      docker volume rm "${VOLUME_NAME}" >/dev/null 2>&1 || true
-    fi
+    for owned_volume in "${VOLUME_NAME}" "${REGISTRY_VOLUME_NAME}"; do
+      if [ "$(docker volume inspect --format "{{ index .Labels \"${LABEL_KEY}\" }}" "${owned_volume}" 2>/dev/null || true)" = "${LABEL_VALUE}" ]; then
+        docker volume rm -- "${owned_volume}" >/dev/null 2>&1 || true
+      fi
+    done
     if [ -n "${REGISTRY:-}" ]; then
       docker image rm "${REGISTRY}/${SOURCE_LOCAL_TAG}" >/dev/null 2>&1 || true
       docker image ls --format '{{.Repository}}:{{.Tag}}' |
@@ -510,7 +513,7 @@ verify_docker_runtime() {
     echo "Docker 无法在 20s 内创建测试容器，full/destructive 测试无法继续。" >&2
     echo "请先确认 Docker/containerd 运行状态，或换用干净测试机。" >&2
     if [ "$(docker inspect --format "{{ index .Config.Labels \"${LABEL_KEY}\" }}" "${RUNTIME_PROBE_NAME}" 2>/dev/null || true)" = "${LABEL_VALUE}" ]; then
-      docker rm -f "${RUNTIME_PROBE_NAME}" >/dev/null 2>&1 || true
+      docker rm -fv -- "${RUNTIME_PROBE_NAME}" >/dev/null 2>&1 || true
     fi
     exit 1
   fi
@@ -518,12 +521,12 @@ verify_docker_runtime() {
     echo "Docker 无法在 20s 内启动测试容器，full/destructive 测试无法继续。" >&2
     echo "请先确认 Docker/containerd 运行状态，或换用干净测试机。" >&2
     if [ "$(docker inspect --format "{{ index .Config.Labels \"${LABEL_KEY}\" }}" "${RUNTIME_PROBE_NAME}" 2>/dev/null || true)" = "${LABEL_VALUE}" ]; then
-      docker rm -f "${RUNTIME_PROBE_NAME}" >/dev/null 2>&1 || true
+      docker rm -fv -- "${RUNTIME_PROBE_NAME}" >/dev/null 2>&1 || true
     fi
     exit 1
   fi
   if [ "$(docker inspect --format "{{ index .Config.Labels \"${LABEL_KEY}\" }}" "${RUNTIME_PROBE_NAME}" 2>/dev/null || true)" = "${LABEL_VALUE}" ]; then
-    docker rm -f "${RUNTIME_PROBE_NAME}" >/dev/null 2>&1 || true
+    docker rm -fv -- "${RUNTIME_PROBE_NAME}" >/dev/null 2>&1 || true
   fi
 }
 
@@ -543,10 +546,12 @@ claim_docker_scope() {
       exit 1
     fi
   done
-  if docker volume inspect "${VOLUME_NAME}" >/dev/null 2>&1; then
-    echo "Refusing to reuse existing Docker test volume: ${VOLUME_NAME}" >&2
-    exit 1
-  fi
+  for candidate in "${VOLUME_NAME}" "${REGISTRY_VOLUME_NAME}"; do
+    if docker volume inspect "${candidate}" >/dev/null 2>&1; then
+      echo "Refusing to reuse existing Docker test volume: ${candidate}" >&2
+      exit 1
+    fi
+  done
   if docker image inspect "${SOURCE_LOCAL_TAG}" >/dev/null 2>&1; then
     echo "Refusing to reuse existing Docker test image tag: ${SOURCE_LOCAL_TAG}" >&2
     exit 1
@@ -587,17 +592,510 @@ write_report() {
   } >"${REPORT_MD}"
 }
 
+verify_install_manifest_contract() {
+  local manifest="$1"
+  local completion_base="$2"
+  local data_dir="$3"
+  local config_dir token
+  config_dir=$(dirname -- "${manifest}")
+  local mode
+  if mode=$(stat -c '%a' "${manifest}" 2>/dev/null); then
+    :
+  elif mode=$(stat -f '%Lp' "${manifest}" 2>/dev/null); then
+    :
+  else
+    echo "cannot inspect install manifest mode: ${manifest}" >&2
+    return 1
+  fi
+  [ "${mode}" = "600" ] || {
+    echo "install manifest mode is ${mode}, want 600" >&2
+    return 1
+  }
+  grep -Fqx "DM_MANIFEST_VERSION='3'" "${manifest}"
+  token=$(sed -n "s/^DM_INSTALL_TOKEN='\([0-9a-f][0-9a-f]*\)'$/\1/p" "${manifest}")
+  [[ "${token}" =~ ^[0-9a-f]{32}$ ]]
+  grep -Fqx "DM_COMPLETION_COUNT='4'" "${manifest}"
+  grep -Eq '^DM_COMPLETION_FILE_0=' "${manifest}"
+  grep -Eq '^DM_COMPLETION_FILE_1=' "${manifest}"
+  grep -Eq '^DM_COMPLETION_FILE_2=' "${manifest}"
+  grep -Eq '^DM_COMPLETION_FILE_3=' "${manifest}"
+  [ -f "${completion_base}/bash-completion/completions/dm" ]
+  [ -f "${completion_base}/zsh/site-functions/_dm" ]
+  [ -f "${completion_base}/fish/vendor_completions.d/dm.fish" ]
+  [ -f "${completion_base}/powershell/Completions/dm.ps1" ]
+  [ "$(stat -c '%a' "${config_dir}/.docker-manager-managed")" = "600" ]
+  [ "$(stat -c '%a' "${data_dir}/.docker-manager-managed")" = "600" ]
+  grep -Fqx "role=config" "${config_dir}/.docker-manager-managed"
+  grep -Fqx "path=${config_dir}" "${config_dir}/.docker-manager-managed"
+  grep -Fqx "token=${token}" "${config_dir}/.docker-manager-managed"
+  grep -Fqx "role=data" "${data_dir}/.docker-manager-managed"
+  grep -Fqx "path=${data_dir}" "${data_dir}/.docker-manager-managed"
+  grep -Fqx "token=${token}" "${data_dir}/.docker-manager-managed"
+}
+
+manifest_quote_for_test() {
+  local value="$1"
+  value=${value//\'/\'\\\'\'}
+  printf "'%s'" "${value}"
+}
+
+verify_completion_file_state() {
+  local expected="$1"
+  local path="$2"
+  case "${expected}" in
+    1)
+      [ -f "${path}" ]
+      [ ! -L "${path}" ]
+      ;;
+    0)
+      [ ! -e "${path}" ]
+      [ ! -L "${path}" ]
+      ;;
+    *)
+      echo "invalid expected completion state: ${expected}" >&2
+      return 1
+      ;;
+  esac
+}
+
+verify_completion_state() {
+  local manifest="$1"
+  local completion_base="$2"
+  local expected_count="$3"
+  local expect_bash="$4"
+  local expect_zsh="$5"
+  local expect_fish="$6"
+  local expect_powershell="$7"
+  local actual_count indexed_count index path raw presence_count
+  case "${expected_count}" in
+    0|1|4) ;;
+    *)
+      echo "invalid expected completion count: ${expected_count}" >&2
+      return 1
+      ;;
+  esac
+  for raw in "${expect_bash}" "${expect_zsh}" "${expect_fish}" "${expect_powershell}"; do
+    case "${raw}" in
+      0|1) ;;
+      *)
+        echo "invalid expected completion presence flag: ${raw}" >&2
+        return 1
+      ;;
+    esac
+  done
+  presence_count=$((expect_bash + expect_zsh + expect_fish + expect_powershell))
+  [ "${presence_count}" -eq "${expected_count}" ] || {
+    echo "completion presence flags total ${presence_count}, want ${expected_count}" >&2
+    return 1
+  }
+
+  actual_count=$(sed -n "s/^DM_COMPLETION_COUNT='\([0-9][0-9]*\)'$/\1/p" "${manifest}")
+  [ "${actual_count}" = "${expected_count}" ] || {
+    echo "completion count is ${actual_count}, want ${expected_count}" >&2
+    return 1
+  }
+  indexed_count=$(grep -Ec '^DM_COMPLETION_FILE_[0-9]+=' "${manifest}" || true)
+  [ "${indexed_count}" -eq "${expected_count}" ] || {
+    echo "indexed completion entry count is ${indexed_count}, want ${expected_count}" >&2
+    return 1
+  }
+
+  for index in 0 1 2 3; do
+    if [ "${index}" -lt "${expected_count}" ]; then
+      case "${index}" in
+        0) path="${completion_base}/bash-completion/completions/dm" ;;
+        1) path="${completion_base}/zsh/site-functions/_dm" ;;
+        2) path="${completion_base}/fish/vendor_completions.d/dm.fish" ;;
+        3) path="${completion_base}/powershell/Completions/dm.ps1" ;;
+      esac
+      raw=$(manifest_quote_for_test "${path}")
+      grep -Fqx "DM_COMPLETION_FILE_${index}=${raw}" "${manifest}" || {
+        echo "manifest completion entry ${index} does not match ${path}" >&2
+        return 1
+      }
+    else
+      if grep -Eq "^DM_COMPLETION_FILE_${index}=" "${manifest}"; then
+        echo "manifest contains completion entry outside count: ${index}" >&2
+        return 1
+      fi
+    fi
+  done
+
+  verify_completion_file_state "${expect_bash}" "${completion_base}/bash-completion/completions/dm"
+  verify_completion_file_state "${expect_zsh}" "${completion_base}/zsh/site-functions/_dm"
+  verify_completion_file_state "${expect_fish}" "${completion_base}/fish/vendor_completions.d/dm.fish"
+  verify_completion_file_state "${expect_powershell}" "${completion_base}/powershell/Completions/dm.ps1"
+}
+
+verify_install_rejection_preserved_state() {
+  local wrapper="$1"
+  local installed_binary="$2"
+  local config_dir="$3"
+  local data_dir="$4"
+  local forbidden_marker="$5"
+  [ -x "${wrapper}" ]
+  [ -x "${installed_binary}" ]
+  [ -d "${config_dir}" ]
+  [ -d "${data_dir}" ]
+  [ ! -e "${forbidden_marker}" ]
+}
+
+verify_failed_fresh_install_cleanup() {
+  local prefix="$1"
+  local config_dir="$2"
+  local data_dir="$3"
+  [ ! -e "${prefix}" ]
+  [ ! -e "${config_dir}" ]
+  [ ! -e "${data_dir}" ]
+  [ ! -e "${prefix}/bin/dm" ]
+  [ ! -e "${prefix}/lib/docker-manager/dm-bin" ]
+  [ ! -e "${config_dir}/install.env" ]
+  [ ! -e "${config_dir}/.docker-manager-managed" ]
+  [ ! -e "${data_dir}/.docker-manager-managed" ]
+}
+
+verify_failed_reinstall_rollback() {
+  local manifest="$1"
+  local saved_manifest="$2"
+  local config_marker="$3"
+  local saved_config_marker="$4"
+  local data_marker="$5"
+  local saved_data_marker="$6"
+  local wrapper="$7"
+  local saved_wrapper="$8"
+  local installed_binary="$9"
+  shift 9
+  local saved_installed_binary="$1"
+  cmp -s "${saved_manifest}" "${manifest}"
+  cmp -s "${saved_config_marker}" "${config_marker}"
+  cmp -s "${saved_data_marker}" "${data_marker}"
+  cmp -s "${saved_wrapper}" "${wrapper}"
+  cmp -s "${saved_installed_binary}" "${installed_binary}"
+}
+
+run_bind_mount_ancestor_case() {
+  local name="uninstall rejects bind-mounted ancestor"
+  local log_file
+  log_file="${LOG_DIR}/$(safe_name "${name}").log"
+  local reason=""
+  if [ "$(uname -s)" != "Linux" ]; then
+    reason="Linux mount namespaces are required"
+  elif [ "$(id -u)" -ne 0 ]; then
+    reason="root/CAP_SYS_ADMIN is required to create a mount namespace"
+  elif ! command -v unshare >/dev/null 2>&1 || ! command -v mount >/dev/null 2>&1 || ! command -v umount >/dev/null 2>&1; then
+    reason="unshare/mount/umount are unavailable"
+  elif ! unshare --mount --fork /bin/true >/dev/null 2>&1; then
+    reason="mount namespace creation is not permitted"
+  fi
+
+  if [ -n "${reason}" ]; then
+    printf 'SKIP %s: %s\n' "${name}" "${reason}"
+    printf '%s\n' "SKIP: ${reason}" >"${log_file}"
+    record_result "${name}" "SKIP" "0" "0" "${log_file}"
+    return 0
+  fi
+
+  local fixture="${WORK_DIR}/bind-mount-ancestor"
+  local helper="${fixture}/case.sh"
+  mkdir -p "${fixture}"
+  cat >"${helper}" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+install_script="$1"
+uninstall_script="$2"
+dm_binary="$3"
+fixture="$4"
+mount_parent="${fixture}/mounted-parent"
+source_tree="${fixture}/external-source"
+prefix="${mount_parent}/prefix"
+config_dir="${mount_parent}/config"
+data_dir="${mount_parent}/data"
+independent_parent="${fixture}/independent-parent"
+independent_prefix="${independent_parent}/prefix"
+independent_config_dir="${independent_parent}/config"
+independent_data_dir="${independent_parent}/data"
+root_bind_parent="${fixture}/root-bind-parent"
+root_bind_source="${fixture}/root-bind-source"
+root_bind_prefix="${root_bind_parent}/prefix"
+root_bind_config_dir="${root_bind_parent}/config"
+root_bind_data_dir="${root_bind_parent}/data"
+mounted=0
+independent_mounted=0
+root_source_mounted=0
+root_bind_mounted=0
+
+cleanup() {
+  if [ "${root_bind_mounted}" -eq 1 ]; then
+    umount "${root_bind_parent}" >/dev/null 2>&1 || return 0
+    root_bind_mounted=0
+  fi
+  if [ "${root_source_mounted}" -eq 1 ]; then
+    umount "${root_bind_source}" >/dev/null 2>&1 || return 0
+    root_source_mounted=0
+  fi
+  if [ "${independent_mounted}" -eq 1 ]; then
+    # Do not remove the fixture if a mount remains attached.
+    umount "${independent_parent}" >/dev/null 2>&1 || return 0
+    independent_mounted=0
+  fi
+  if [ "${mounted}" -eq 1 ]; then
+    # Never recursively remove the fixture while a mount is still attached;
+    # that could traverse into the mounted source tree on cleanup.
+    umount "${mount_parent}" >/dev/null 2>&1 || return 0
+    mounted=0
+  fi
+  rm -rf -- "${fixture}"
+}
+trap cleanup EXIT
+
+mount --make-rprivate /
+mkdir -p "${mount_parent}" "${source_tree}"
+bash "${install_script}" \
+  --binary "${dm_binary}" \
+  --prefix "${prefix}" \
+  --config-dir "${config_dir}" \
+  --data-dir "${data_dir}" \
+  --no-completion \
+  --no-profile
+
+# The source tree deliberately carries a valid manifest and markers whose
+# recorded paths still name the lexical target. A bind over the parent then
+# makes purge operate on this unrelated copy unless it rejects the ancestor.
+cp -a "${mount_parent}/." "${source_tree}/"
+printf 'external sentinel\n' >"${source_tree}/external-sentinel"
+mount --bind "${source_tree}" "${mount_parent}"
+mounted=1
+
+set +e
+bash "${uninstall_script}" \
+  --prefix "${prefix}" \
+  --config-dir "${config_dir}" \
+  --data-dir "${data_dir}" \
+  --purge
+status=$?
+set -e
+[ "${status}" -ne 0 ] || {
+  echo "purge accepted a bind-mounted ancestor" >&2
+  exit 1
+}
+[ -f "${source_tree}/external-sentinel" ] || {
+  echo "purge removed the external sentinel" >&2
+  exit 1
+}
+[ -x "${prefix}/bin/dm" ] || {
+  echo "purge mutated the mounted installation before rejecting the ancestor" >&2
+  exit 1
+}
+
+umount "${mount_parent}"
+mounted=0
+[ -x "${prefix}/bin/dm" ] || {
+  echo "purge mutated the original installation" >&2
+  exit 1
+}
+[ -f "${source_tree}/external-sentinel" ] || {
+  echo "purge removed the external sentinel after unmount" >&2
+  exit 1
+}
+
+# A bind of another filesystem's root reports root=/ too. The duplicate
+# mount-identity guard should reject that view while leaving the source and
+# original installation untouched.
+mkdir -p "${root_bind_parent}" "${root_bind_source}"
+bash "${install_script}" \
+  --binary "${dm_binary}" \
+  --prefix "${root_bind_prefix}" \
+  --config-dir "${root_bind_config_dir}" \
+  --data-dir "${root_bind_data_dir}" \
+  --no-completion \
+  --no-profile
+mount -t tmpfs -o size=64m dm-e2e-root-bind "${root_bind_source}"
+root_source_mounted=1
+cp -a "${root_bind_parent}/." "${root_bind_source}/"
+printf 'root bind external sentinel\n' >"${root_bind_source}/external-sentinel"
+mount --bind "${root_bind_source}" "${root_bind_parent}"
+root_bind_mounted=1
+
+set +e
+bash "${uninstall_script}" \
+  --prefix "${root_bind_prefix}" \
+  --config-dir "${root_bind_config_dir}" \
+  --data-dir "${root_bind_data_dir}" \
+  --purge
+status=$?
+set -e
+[ "${status}" -ne 0 ] || {
+  echo "purge accepted a root=/ bind-mounted ancestor" >&2
+  exit 1
+}
+[ -f "${root_bind_source}/external-sentinel" ] || {
+  echo "purge removed the root-bind external sentinel" >&2
+  exit 1
+}
+[ -x "${root_bind_prefix}/bin/dm" ] || {
+  echo "purge mutated the root-bind source before rejecting the ancestor" >&2
+  exit 1
+}
+umount "${root_bind_parent}"
+root_bind_mounted=0
+[ -x "${root_bind_prefix}/bin/dm" ] || {
+  echo "purge mutated the original root-bind installation" >&2
+  exit 1
+}
+umount "${root_bind_source}"
+root_source_mounted=0
+
+# An independent filesystem mount has root=/ in mountinfo and is a supported
+# location for an explicitly configured installation. Verify that purge can
+# remove the managed trees inside such a mount.
+mkdir -p "${independent_parent}"
+mount -t tmpfs -o size=64m dm-e2e-independent "${independent_parent}"
+independent_mounted=1
+bash "${install_script}" \
+  --binary "${dm_binary}" \
+  --prefix "${independent_prefix}" \
+  --config-dir "${independent_config_dir}" \
+  --data-dir "${independent_data_dir}" \
+  --no-completion \
+  --no-profile
+bash "${uninstall_script}" \
+  --prefix "${independent_prefix}" \
+  --config-dir "${independent_config_dir}" \
+  --data-dir "${independent_data_dir}" \
+  --purge
+[ ! -e "${independent_config_dir}" ] || {
+  echo "purge left config data on an independent filesystem mount" >&2
+  exit 1
+}
+[ ! -e "${independent_data_dir}" ] || {
+  echo "purge left data on an independent filesystem mount" >&2
+  exit 1
+}
+umount "${independent_parent}"
+independent_mounted=0
+SH
+  chmod 0700 "${helper}"
+  run_case "${name}" unshare --mount --fork -- "${helper}" \
+    "${ROOT_DIR}/scripts/install.sh" \
+    "${ROOT_DIR}/scripts/uninstall.sh" \
+    "${DM_BIN}" \
+    "${fixture}"
+}
+
 run_install_mode() {
   local prefix="${WORK_DIR}/install-root"
   local config_dir="${WORK_DIR}/install-config"
   local data_dir="${WORK_DIR}/install-data"
   local bin_dir="${prefix}/bin"
-  run_case "install script dry-run" bash "${ROOT_DIR}/scripts/install.sh" --binary "${DM_BIN}" --prefix "${prefix}" --config-dir "${config_dir}" --data-dir "${data_dir}" --no-profile --dry-run
-  run_case "install script" bash "${ROOT_DIR}/scripts/install.sh" --binary "${DM_BIN}" --prefix "${prefix}" --config-dir "${config_dir}" --data-dir "${data_dir}" --no-profile
+  local libexec_dir="${prefix}/lib/docker-manager"
+  local completion_dir="${prefix}/share"
+  local manifest="${config_dir}/install.env"
+  local config_marker="${config_dir}/.docker-manager-managed"
+  local saved_manifest="${WORK_DIR}/install.env.valid"
+  local saved_config_marker="${WORK_DIR}/config-marker.valid"
+  local data_marker="${data_dir}/.docker-manager-managed"
+  local saved_data_marker="${WORK_DIR}/data-marker.valid"
+  local saved_wrapper="${WORK_DIR}/dm-wrapper.valid"
+  local saved_installed_binary="${WORK_DIR}/dm-bin.valid"
+  local failing_binary="${WORK_DIR}/dm-completion-fail"
+  local failed_prefix="${WORK_DIR}/failed-install-root"
+  local failed_config_dir="${WORK_DIR}/failed-install-config"
+  local failed_data_dir="${WORK_DIR}/failed-install-data"
+  local foreign_prefix="${WORK_DIR}/foreign-install-root"
+  local foreign_config_dir="${WORK_DIR}/foreign-install-config"
+  local foreign_data_dir="${WORK_DIR}/foreign-install-data"
+  local foreign_config_sentinel="${foreign_config_dir}/keep.txt"
+  local foreign_data_sentinel="${foreign_data_dir}/keep.txt"
+  local injection_marker="${WORK_DIR}/manifest-injection-executed"
+  local external_sentinel="${WORK_DIR}/purge-external-sentinel"
+  local purge_symlink="${data_dir}/unsafe-link"
+  cat >"${failing_binary}" <<'SH'
+#!/usr/bin/env sh
+if [ "${1:-}" = "completion" ]; then
+  echo "injected completion failure" >&2
+  exit 73
+fi
+exit 74
+SH
+  chmod 0755 "${failing_binary}"
+
+  run_case "install script dry-run" bash "${ROOT_DIR}/scripts/install.sh" --binary "${DM_BIN}" --prefix "${prefix}" --config-dir "${config_dir}" --data-dir "${data_dir}" --completion all --no-profile --dry-run
+  run_expect_fail "install rejects broad config directory" bash "${ROOT_DIR}/scripts/install.sh" --binary "${DM_BIN}" --prefix "${prefix}" --config-dir "${HOME}" --data-dir "${data_dir}" --no-completion --no-profile --dry-run
+  mkdir -p "${foreign_prefix}" "${foreign_config_dir}" "${foreign_data_dir}"
+  printf 'foreign config\n' >"${foreign_config_sentinel}"
+  printf 'foreign data\n' >"${foreign_data_sentinel}"
+  run_expect_fail "fresh install rejects non-empty unowned state" bash "${ROOT_DIR}/scripts/install.sh" --binary "${DM_BIN}" --prefix "${foreign_prefix}" --config-dir "${foreign_config_dir}" --data-dir "${foreign_data_dir}" --no-completion --no-profile
+  run_case "foreign state remains unchanged" cmp -s "${foreign_config_sentinel}" <(printf 'foreign config\n')
+  run_case "foreign data remains unchanged" cmp -s "${foreign_data_sentinel}" <(printf 'foreign data\n')
+  rm -rf -- "${foreign_prefix}" "${foreign_config_dir}" "${foreign_data_dir}"
+  run_expect_fail "fresh install rolls back completion failure" bash "${ROOT_DIR}/scripts/install.sh" --binary "${failing_binary}" --prefix "${failed_prefix}" --config-dir "${failed_config_dir}" --data-dir "${failed_data_dir}" --completion bash --no-profile
+  run_case "failed fresh install leaves no managed state" verify_failed_fresh_install_cleanup "${failed_prefix}" "${failed_config_dir}" "${failed_data_dir}"
+  run_case "install script" bash "${ROOT_DIR}/scripts/install.sh" --binary "${DM_BIN}" --prefix "${prefix}" --config-dir "${config_dir}" --data-dir "${data_dir}" --completion all --no-profile
   run_case "installed wrapper version" "${bin_dir}/dm" version
   run_case "installed wrapper doctor dm-config" "${bin_dir}/dm" doctor --format json --check-e2e=false
   test -f "${config_dir}/dm.yaml"
-  test -f "${config_dir}/install.env"
+  test -f "${manifest}"
+  run_case "install manifest contract" verify_install_manifest_contract "${manifest}" "${completion_dir}" "${data_dir}"
+
+  run_case "completion all state" verify_completion_state "${manifest}" "${completion_dir}" 4 1 1 1 1
+  run_case "reduce completion to bash" bash "${ROOT_DIR}/scripts/install.sh" --binary "${DM_BIN}" --prefix "${prefix}" --config-dir "${config_dir}" --data-dir "${data_dir}" --completion bash --no-profile
+  run_case "completion bash state" verify_completion_state "${manifest}" "${completion_dir}" 1 1 0 0 0
+  run_case "disable completion" bash "${ROOT_DIR}/scripts/install.sh" --binary "${DM_BIN}" --prefix "${prefix}" --config-dir "${config_dir}" --data-dir "${data_dir}" --no-completion --no-profile
+  run_case "no completion state" verify_completion_state "${manifest}" "${completion_dir}" 0 0 0 0 0
+  run_case "restore completion all" bash "${ROOT_DIR}/scripts/install.sh" --binary "${DM_BIN}" --prefix "${prefix}" --config-dir "${config_dir}" --data-dir "${data_dir}" --completion all --no-profile
+  run_case "restored completion all state" verify_completion_state "${manifest}" "${completion_dir}" 4 1 1 1 1
+
+  run_bind_mount_ancestor_case
+
+  cp -p -- "${manifest}" "${saved_manifest}"
+  cp -p -- "${config_marker}" "${saved_config_marker}"
+  cp -p -- "${data_marker}" "${saved_data_marker}"
+  cp -p -- "${bin_dir}/dm" "${saved_wrapper}"
+  cp -p -- "${libexec_dir}/dm-bin" "${saved_installed_binary}"
+
+  token=$(sed -n "s/^DM_INSTALL_TOKEN='\([0-9a-f][0-9a-f]*\)'$/\1/p" "${manifest}")
+  [[ "${token}" =~ ^[0-9a-f]{32}$ ]]
+  sed -i "s/^DM_INSTALL_TOKEN='${token}'$/DM_INSTALL_TOKEN=\"${token}\"/" "${manifest}"
+  run_case "reinstall accepts double-quoted ownership token" bash "${ROOT_DIR}/scripts/install.sh" --binary "${DM_BIN}" --prefix "${prefix}" --config-dir "${config_dir}" --data-dir "${data_dir}" --completion all --no-profile
+  run_case "double-quoted token preserves manifest contract" verify_install_manifest_contract "${manifest}" "${completion_dir}" "${data_dir}"
+
+  run_expect_fail "reinstall rolls back completion failure" bash "${ROOT_DIR}/scripts/install.sh" --binary "${failing_binary}" --prefix "${prefix}" --config-dir "${config_dir}" --data-dir "${data_dir}" --completion all --no-profile
+  run_case "failed reinstall preserves previous files" verify_failed_reinstall_rollback \
+    "${manifest}" "${saved_manifest}" \
+    "${config_marker}" "${saved_config_marker}" \
+    "${data_marker}" "${saved_data_marker}" \
+    "${bin_dir}/dm" "${saved_wrapper}" \
+    "${libexec_dir}/dm-bin" "${saved_installed_binary}"
+  run_case "failed reinstall preserves wrapper entry" "${bin_dir}/dm" version
+  run_case "failed reinstall preserves manifest contract" verify_install_manifest_contract "${manifest}" "${completion_dir}" "${data_dir}"
+
+  {
+    printf 'DM_INSTALL_PREFIX=%q\n' "${prefix}"
+    printf 'touch %q\n' "${injection_marker}"
+  } >"${manifest}"
+  chmod 0600 "${manifest}"
+  run_expect_fail "uninstall rejects executable manifest" bash "${ROOT_DIR}/scripts/uninstall.sh" --prefix "${prefix}" --config-dir "${config_dir}" --data-dir "${data_dir}" --purge
+  run_case "manifest rejection is non-mutating" verify_install_rejection_preserved_state "${bin_dir}/dm" "${libexec_dir}/dm-bin" "${config_dir}" "${data_dir}" "${injection_marker}"
+  cp -p -- "${saved_manifest}" "${manifest}"
+
+  chmod 0644 "${manifest}"
+  run_expect_fail "uninstall rejects public v2 manifest" bash "${ROOT_DIR}/scripts/uninstall.sh" --prefix "${prefix}" --config-dir "${config_dir}" --data-dir "${data_dir}" --purge
+  run_case "manifest mode rejection is non-mutating" verify_install_rejection_preserved_state "${bin_dir}/dm" "${libexec_dir}/dm-bin" "${config_dir}" "${data_dir}" "${injection_marker}"
+  chmod 0600 "${manifest}"
+
+  printf 'modified marker\n' >>"${data_marker}"
+  run_expect_fail "uninstall rejects modified data marker" bash "${ROOT_DIR}/scripts/uninstall.sh" --prefix "${prefix}" --config-dir "${config_dir}" --data-dir "${data_dir}" --purge
+  run_case "marker rejection is non-mutating" verify_install_rejection_preserved_state "${bin_dir}/dm" "${libexec_dir}/dm-bin" "${config_dir}" "${data_dir}" "${injection_marker}"
+  cp -p -- "${saved_data_marker}" "${data_marker}"
+
+  printf 'external sentinel\n' >"${external_sentinel}"
+  ln -s -- "${external_sentinel}" "${purge_symlink}"
+  run_expect_fail "uninstall rejects purge symlink" bash "${ROOT_DIR}/scripts/uninstall.sh" --prefix "${prefix}" --config-dir "${config_dir}" --data-dir "${data_dir}" --purge
+  run_case "purge symlink rejection is non-mutating" verify_install_rejection_preserved_state "${bin_dir}/dm" "${libexec_dir}/dm-bin" "${config_dir}" "${data_dir}" "${injection_marker}"
+  test -f "${external_sentinel}"
+  rm -f -- "${purge_symlink}"
+
   run_case "uninstall script" bash "${ROOT_DIR}/scripts/uninstall.sh" --prefix "${prefix}" --config-dir "${config_dir}" --data-dir "${data_dir}" --purge
   if [ -e "${bin_dir}/dm" ] || [ -e "${config_dir}" ] || [ -e "${data_dir}" ]; then
     echo "install 模式清理失败" >&2
@@ -717,7 +1215,12 @@ ensure_image "${SOURCE_IMAGE}"
 verify_docker_runtime
 
 log "启动临时 registry ${REGISTRY_NAME}"
-docker run -d --name "${REGISTRY_NAME}" --label "${LABEL}" -p "127.0.0.1::5000" "${REGISTRY_IMAGE}" >/dev/null
+docker volume create --label "${LABEL}" "${REGISTRY_VOLUME_NAME}" >/dev/null
+if [ "$(docker volume inspect --format "{{ index .Labels \"${LABEL_KEY}\" }}" "${REGISTRY_VOLUME_NAME}" 2>/dev/null || true)" != "${LABEL_VALUE}" ]; then
+  echo "Failed to claim registry volume ownership: ${REGISTRY_VOLUME_NAME}" >&2
+  exit 1
+fi
+docker run -d --name "${REGISTRY_NAME}" --label "${LABEL}" -p "127.0.0.1::5000" -v "${REGISTRY_VOLUME_NAME}:/var/lib/registry" "${REGISTRY_IMAGE}" >/dev/null
 REGISTRY="127.0.0.1:$(registry_port)"
 TARGET_PREFIX="${REGISTRY}/${TARGET_NAMESPACE}"
 SOURCE_REGISTRY_IMAGE="${REGISTRY}/${SOURCE_LOCAL_TAG}"
@@ -748,9 +1251,9 @@ fi
 docker pull "${TARGET_IMAGE}" >/dev/null
 
 printf '%s\n' "${SOURCE_REGISTRY_IMAGE}" >"${WORK_DIR}/images.txt"
-run_case "image pull batch to registry" "${DM_BIN}" image pull --file "${WORK_DIR}/images.txt" --to "${REGISTRY}/dm-e2e-mirror-${SUFFIX}" --plain-http --concurrency 1 --retries 1 --resume --report "${WORK_DIR}/pull-report.json" --format markdown
+run_case "image pull batch to registry" "${DM_BIN}" image pull --file "${WORK_DIR}/images.txt" --to "${REGISTRY}/dm-e2e-mirror-${SUFFIX}" --plain-http --concurrency 1 --retries 1 --resume --output-dir "${WORK_DIR}/pulled-batch" --state-file "${WORK_DIR}/pull-state.json" --report "${WORK_DIR}/pull-report.json" --format markdown
 test -f "${WORK_DIR}/pull-report.json"
-run_case "image pull batch skip-existing" "${DM_BIN}" image pull --file "${WORK_DIR}/images.txt" --to "${REGISTRY}/dm-e2e-mirror-${SUFFIX}" --plain-http --concurrency 1 --skip-existing --format json
+run_case "image pull batch skip-existing" "${DM_BIN}" image pull --file "${WORK_DIR}/images.txt" --to "${REGISTRY}/dm-e2e-mirror-${SUFFIX}" --plain-http --concurrency 1 --skip-existing --output-dir "${WORK_DIR}/pulled-skip-existing" --state-file "${WORK_DIR}/pull-skip-state.json" --format json
 
 run_case "image save dry-run" "${DM_BIN}" image save "${WORK_DIR}/saved" --filter "repo:busybox" --dry-run
 run_case "image save filter" "${DM_BIN}" image save "${WORK_DIR}/saved" --filter "repo:busybox"

@@ -678,6 +678,18 @@ func initializeAuditSession(cmd *cobra.Command, cfg *appConfig, profile string, 
 	if cfg == nil {
 		cfg = &appConfig{}
 	}
+	maxBytes := cfg.AuditMaxBytes
+	if flags.MaxBytesChanged {
+		maxBytes = flags.MaxBytes
+	}
+	maxFiles := cfg.AuditMaxFiles
+	if flags.MaxFilesChanged {
+		maxFiles = flags.MaxFiles
+	}
+	if err := appconfig.ValidateAuditRotation(maxBytes, maxFiles); err != nil {
+		lifecycle.auditAttempted = true
+		return err
+	}
 	file := cfg.AuditFile
 	if flags.FileChanged {
 		file = flags.File
@@ -721,14 +733,6 @@ func initializeAuditSession(cmd *cobra.Command, cfg *appConfig, profile string, 
 	actor := cfg.AuditActor
 	if flags.ActorChanged {
 		actor = flags.Actor
-	}
-	maxBytes := cfg.AuditMaxBytes
-	if flags.MaxBytesChanged {
-		maxBytes = flags.MaxBytes
-	}
-	maxFiles := cfg.AuditMaxFiles
-	if flags.MaxFilesChanged {
-		maxFiles = flags.MaxFiles
 	}
 	fileSink, openErr := audit.OpenFileSink(audit.FileOptions{
 		Path: file, KeyPath: keyFile, MaxBytes: maxBytes, MaxFiles: maxFiles,

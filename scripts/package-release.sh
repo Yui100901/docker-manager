@@ -135,6 +135,9 @@ update_checksum_file() {
 copy_release_scripts() {
   local goos="$1"
   local package_dir="$2"
+  if [ "${goos}" = "darwin" ]; then
+    return
+  fi
   mkdir -p "${package_dir}/scripts"
   if [ "${goos}" = "windows" ]; then
     cp "${ROOT_DIR}/scripts/install.ps1" "${ROOT_DIR}/scripts/uninstall.ps1" "${package_dir}/scripts/"
@@ -184,6 +187,40 @@ Verify after installation:
 \`\`\`powershell
 dm version
 dm doctor --check-e2e=false
+\`\`\`
+EOF
+    return
+  fi
+
+  if [ "${goos}" = "darwin" ]; then
+    cat >"${package_dir}/INSTALL.md" <<EOF
+# docker-manager ${VERSION} ${platform}
+
+## Files
+
+- \`${binary}\`: dm executable for ${platform}
+- \`dm.yaml.example\`: sample configuration
+
+## Install
+
+The shell installer is Linux-only. Install the Darwin binary directly:
+
+\`\`\`bash
+sudo mkdir -p /usr/local/bin
+sudo install -m 0755 ./${binary} /usr/local/bin/dm
+\`\`\`
+
+Verify after installation:
+
+\`\`\`bash
+dm version
+dm doctor --check-e2e=false
+\`\`\`
+
+Uninstall the binary:
+
+\`\`\`bash
+sudo rm -f /usr/local/bin/dm
 \`\`\`
 EOF
     return

@@ -133,6 +133,44 @@ func TestConfigValidationRejectsUnsafeOrAmbiguousValues(t *testing.T) {
 	}
 }
 
+func TestConfigValidatesTopLevelProxyForBaseAndProfiles(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+		want string
+	}{
+		{name: "valid base", data: "proxy: http://user:pass@proxy.example:8080\n"},
+		{name: "valid IPv6 base", data: "proxy: http://[::1]:8080\n"},
+		{name: "valid profile", data: "profiles:\n  dev:\n    proxy: socks5://proxy.example:1080\n"},
+		{name: "missing scheme", data: "proxy: proxy.example:8080\n", want: "scheme and host"},
+		{name: "base empty hostname", data: "proxy: http://:8080\n", want: "scheme and host"},
+		{name: "unsupported scheme", data: "proxy: ftp://proxy.example\n", want: "unsupported scheme"},
+		{name: "fragment", data: "proxy: https://proxy.example/#credentials\n", want: "must not contain a fragment"},
+		{name: "base surrounding whitespace", data: "proxy: ' http://proxy.example:8080 '\n", want: "leading or trailing whitespace"},
+		{name: "base whitespace only", data: "proxy: '   '\n", want: "leading or trailing whitespace"},
+		{name: "invalid profile", data: "profiles:\n  dev:\n    proxy: ://bad\n", want: `profile "dev"`},
+		{name: "profile empty hostname", data: "profiles:\n  dev:\n    proxy: socks5://:1080\n", want: "scheme and host"},
+		{name: "profile surrounding whitespace", data: "profiles:\n  dev:\n    proxy: ' socks5://proxy.example:1080 '\n", want: `profile "dev"`},
+		{name: "profile whitespace only", data: "profiles:\n  dev:\n    proxy: '   '\n", want: "leading or trailing whitespace"},
+		{name: "registry whitespace only", data: "registries:\n  registry.example:\n    proxy: '   '\n", want: "leading or trailing whitespace"},
+		{name: "registry empty hostname", data: "registries:\n  registry.example:\n    proxy: 'https://user:pass@:8443'\n", want: "scheme and host"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := LoadWithOptions(writeConfig(t, tt.data), LoadOptions{Required: true})
+			if tt.want == "" {
+				if err != nil {
+					t.Fatalf("LoadWithOptions() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("LoadWithOptions() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestConfigEffectiveRedactProfileDefaultsToVisibleOutput(t *testing.T) {
 	if got := (Config{}).EffectiveRedactProfile(); got != "none" {
 		t.Fatalf("EffectiveRedactProfile() = %q, want none", got)

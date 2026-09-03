@@ -54,7 +54,22 @@ fi
 cd "${ROOT_DIR}"
 
 echo "==> gofmt check"
-gofmt_files=$(find . -path ./vendor -prune -o -name '*.go' -exec gofmt -l {} +)
+go_file_list=$(mktemp "${TMPDIR:-/tmp}/dm-check-go-files.XXXXXX")
+cleanup_go_file_list() {
+  rm -f -- "${go_file_list}"
+}
+trap cleanup_go_file_list EXIT HUP INT TERM
+git -c core.quotepath=false ls-files -z --cached --others --exclude-standard -- '*.go' >"${go_file_list}"
+gofmt_files=$(
+  while IFS= read -r -d '' go_file; do
+    if ! gofmt -l "${go_file}"; then
+      echo "gofmt failed for ${go_file}" >&2
+      exit 1
+    fi
+  done <"${go_file_list}"
+)
+cleanup_go_file_list
+trap - EXIT HUP INT TERM
 if [ -n "${gofmt_files}" ]; then
   echo "${gofmt_files}" >&2
   echo "Run gofmt on the files above." >&2

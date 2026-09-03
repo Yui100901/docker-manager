@@ -11,8 +11,6 @@ import (
 
 	"docker-manager/internal/docker"
 	"docker-manager/internal/parallel"
-	"docker-manager/internal/runcontrol"
-
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/container"
 )
@@ -61,14 +59,40 @@ func buildRestorePlanReportFromDir(ctx context.Context, svc backupDockerService,
 	if err := validateRestoreJSONBudgetWithLimit(backupDir, manifest, limits.jsonBytes); err != nil {
 		return RestorePlanReport{}, err
 	}
+	return buildRestorePlanReportFromManifest(ctx, svc, backupDir, source, checksumText, signatureText, manifest, opts, true)
+}
+
+func buildRestorePlanReportFromPrepared(ctx context.Context, prepared *preparedRestoreBackup, checksumText string, opts RestoreOptions) (RestorePlanReport, error) {
+	if prepared == nil {
+		return RestorePlanReport{}, fmt.Errorf("prepared restore backup is required")
+	}
+	if !prepared.itemBudgetReserved {
+		return RestorePlanReport{}, fmt.Errorf("prepared restore item budget has not been reserved")
+	}
+	return buildRestorePlanReportFromManifest(
+		ctx,
+		prepared.svc,
+		prepared.dir,
+		prepared.source,
+		checksumText,
+		prepared.signatureStatus,
+		prepared.manifest,
+		opts,
+		false,
+	)
+}
+
+func buildRestorePlanReportFromManifest(ctx context.Context, svc backupDockerService, backupDir, source string, checksumText, signatureText string, manifest BackupManifest, opts RestoreOptions, reserveItemBudget bool) (RestorePlanReport, error) {
 	if len(manifest.Containers) == 0 {
 		return RestorePlanReport{}, fmt.Errorf("manifest does not contain any containers")
 	}
 	if opts.Name != "" && len(manifest.Containers) != 1 {
 		return RestorePlanReport{}, fmt.Errorf("--name 只支持恢复单个备份")
 	}
-	if err := runcontrol.CheckItems(ctx, "restore-container", len(manifest.Containers)); err != nil {
-		return RestorePlanReport{}, err
+	if reserveItemBudget {
+		if err := reserveRestoreManifestItems(ctx, manifest, opts.itemBudget); err != nil {
+			return RestorePlanReport{}, err
+		}
 	}
 	if err := validateRestoreManifestArtifacts(backupDir, manifest, opts); err != nil {
 		return RestorePlanReport{}, err

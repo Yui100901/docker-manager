@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -77,6 +78,8 @@ func NewRestoreCommandWithDefaults(defaults func() RestoreCommandDefaults) *cobr
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			runOpts := opts
+			runOpts.itemBudget = newRestoreItemBudget()
+			showDefaultPlanNotice := false
 			var err error
 			if runOpts.MaxArchiveBytes, err = parseBackupByteSize("--max-archive-size", maxArchiveSize); err != nil {
 				return err
@@ -110,21 +113,52 @@ func NewRestoreCommandWithDefaults(defaults func() RestoreCommandDefaults) *cobr
 			}
 			if !runOpts.Confirm {
 				if !runOpts.DryRun && runOpts.Format == rpt.FormatText {
-					fmt.Fprintln(cmd.OutOrStdout(), "未提供 --confirm；默认只生成恢复计划，不会修改 Docker。")
+					showDefaultPlanNotice = true
 				}
 				runOpts.DryRun = true
 			}
-			if runOpts.DryRun && runOpts.Format != rpt.FormatText {
-				for _, arg := range args {
-					report, err := buildRestorePlanReport(cmd.Context(), arg, runOpts)
-					if err != nil {
+			if runOpts.DryRun {
+				preparedBackups, err := prepareRestoreCommandInputs(cmd.Context(), args, runOpts)
+				if err != nil {
+					if runOpts.Format != rpt.FormatText {
 						return fmt.Errorf("生成恢复计划失败: %w", err)
 					}
-					if err := rpt.Print(cmd.OutOrStdout(), runOpts.Format, report, func(w io.Writer) {
-						printRestorePlanReport(w, report)
-					}); err != nil {
-						return err
+					return fmt.Errorf("恢复失败: %w", err)
+				}
+				defer closePreparedRestoreBackups(preparedBackups)
+
+				if runOpts.Format != rpt.FormatText {
+					reports := make([]RestorePlanReport, 0, len(preparedBackups))
+					for _, prepared := range preparedBackups {
+						report, err := buildRestorePlanReportFromPrepared(
+							cmd.Context(),
+							prepared,
+							checksumPlanText(runOpts.SkipChecksum, filepath.Join(prepared.dir, backupChecksumName)),
+							runOpts,
+						)
+						if err != nil {
+							return fmt.Errorf("生成恢复计划失败: %w", err)
+						}
+						reports = append(reports, report)
 					}
+					for _, report := range reports {
+						if err := rpt.Print(cmd.OutOrStdout(), runOpts.Format, report, func(w io.Writer) {
+							printRestorePlanReport(w, report)
+						}); err != nil {
+							return err
+						}
+					}
+					return nil
+				}
+
+				if showDefaultPlanNotice {
+					fmt.Fprintln(cmd.OutOrStdout(), "未提供 --confirm；默认只生成恢复计划，不会修改 Docker。")
+				}
+				for _, prepared := range preparedBackups {
+					if err := executePreparedRestore(cmd.Context(), prepared, runOpts); err != nil {
+						return fmt.Errorf("恢复失败: %w", err)
+					}
+					fmt.Fprintf(cmd.OutOrStdout(), "恢复 dry-run 完成: %s\n", prepared.source)
 				}
 				return nil
 			}
@@ -174,12 +208,6 @@ func NewRestoreCommandWithDefaults(defaults func() RestoreCommandDefaults) *cobr
 				}
 				return nil
 			}
-			for _, arg := range args {
-				if err := restoreBackup(cmd.Context(), arg, runOpts); err != nil {
-					return fmt.Errorf("恢复失败: %w", err)
-				}
-				fmt.Fprintf(cmd.OutOrStdout(), "恢复 dry-run 完成: %s\n", arg)
-			}
 			return nil
 		},
 	}
@@ -201,6 +229,25 @@ func NewRestoreCommandWithDefaults(defaults func() RestoreCommandDefaults) *cobr
 	cmd.Flags().IntVar(&opts.MaxParts, "max-parts", 0, "分卷恢复允许的最大连续分卷数；默认 999，只允许下调")
 	commandflags.AddReportFormatFlag(cmd, &opts.Format)
 	return cmd
+}
+
+func prepareRestoreCommandInputs(ctx context.Context, sources []string, opts RestoreOptions) ([]*preparedRestoreBackup, error) {
+	preparedBackups := make([]*preparedRestoreBackup, 0, len(sources))
+	for _, source := range sources {
+		prepared, err := prepareRestoreBackup(ctx, source, opts)
+		if err != nil {
+			closePreparedRestoreBackups(preparedBackups)
+			return nil, err
+		}
+		preparedBackups = append(preparedBackups, prepared)
+	}
+	return preparedBackups, nil
+}
+
+func closePreparedRestoreBackups(preparedBackups []*preparedRestoreBackup) {
+	for _, prepared := range preparedBackups {
+		prepared.Close()
+	}
 }
 
 func restoreMutationCandidates(preparedBackups []*preparedRestoreBackup) ([]audit.CandidateInput, error) {

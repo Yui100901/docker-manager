@@ -564,7 +564,7 @@ func TestRegistryPolicyBatchOptionsPreservePoliciesPerItem(t *testing.T) {
 			return err
 		}
 		seen <- info.Registry + ":" + strings.Join(effective.AuthRealmAllowlist, ",") + ":" + boolText(effective.PlainHTTP)
-		return nil
+		return writePullBatchTestArtifact(opts, image)
 	}, func(context.Context, string, string, PullOptions) (bool, error) {
 		return false, nil
 	})

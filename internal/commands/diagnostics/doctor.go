@@ -32,6 +32,7 @@ func NewDoctorCommandWithDefaults(defaults func() DoctorDefaults) *cobra.Command
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "检查 Docker、registry、代理、磁盘和测试前置条件",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if opts.MinDiskFreeMB < 0 {
 				return fmt.Errorf("--min-disk-free-mb 不能为负数")

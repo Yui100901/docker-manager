@@ -66,6 +66,9 @@ type BackupOptions struct {
 	Merge          bool
 	SigningKey     string
 	Output         io.Writer
+
+	itemBudgetReserved bool
+	preparedInspects   map[string]container.InspectResponse
 }
 
 type RestoreOptions struct {
@@ -85,6 +88,8 @@ type RestoreOptions struct {
 	MaxJSONBytes          int64
 	MaxParts              int
 	Output                io.Writer
+
+	itemBudget *restoreItemBudget
 }
 
 // BackupManifest keeps the current batch-friendly containers list while still

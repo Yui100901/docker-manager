@@ -232,7 +232,7 @@ func validateBearerService(service string) error {
 
 func validateBearerRealm(rawRealm string, info *ImageInfo, opts PullOptions) (*url.URL, error) {
 	realmURL, err := url.ParseRequestURI(strings.TrimSpace(rawRealm))
-	if err != nil || realmURL.Scheme == "" || realmURL.Host == "" {
+	if err != nil || realmURL.Scheme == "" || realmURL.Host == "" || realmURL.Hostname() == "" {
 		return nil, fmt.Errorf("bearer realm 必须是绝对 HTTPS URL")
 	}
 	if !strings.EqualFold(realmURL.Scheme, "https") {
@@ -280,7 +280,7 @@ func normalizeAuthRealmOrigin(value string) (string, error) {
 		rawURL = "https://" + rawURL
 	}
 	parsed, err := url.ParseRequestURI(rawURL)
-	if err != nil || parsed.Host == "" {
+	if err != nil || parsed.Host == "" || parsed.Hostname() == "" {
 		return "", fmt.Errorf("无效 --auth-realm %q: 应为 HTTPS origin 或 host[:port]", value)
 	}
 	if !strings.EqualFold(parsed.Scheme, "https") || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || strings.Contains(parsed.Hostname(), "*") || (parsed.Path != "" && parsed.Path != "/") {

@@ -78,6 +78,41 @@ dm doctor --check-e2e=false
         return
     }
 
+    if ($TargetOS -eq "darwin") {
+        $content = @"
+# docker-manager $Version $TargetPlatform
+
+## Files
+
+- ``$Binary``: dm executable for $TargetPlatform
+- ``dm.yaml.example``: sample configuration
+
+## Install
+
+The shell installer is Linux-only. Install the Darwin binary directly:
+
+~~~bash
+sudo mkdir -p /usr/local/bin
+sudo install -m 0755 ./$Binary /usr/local/bin/dm
+~~~
+
+Verify after installation:
+
+~~~bash
+dm version
+dm doctor --check-e2e=false
+~~~
+
+Uninstall the binary:
+
+~~~bash
+sudo rm -f /usr/local/bin/dm
+~~~
+"@
+        Set-Content -LiteralPath $Path -Value $content -Encoding UTF8
+        return
+    }
+
     $content = @"
 # docker-manager $Version $TargetPlatform
 
@@ -112,6 +147,9 @@ function Copy-ReleaseScripts {
         [string]$TargetOS,
         [string]$ScriptDir
     )
+    if ($TargetOS -eq "darwin") {
+        return
+    }
     New-Item -ItemType Directory -Force -Path $ScriptDir | Out-Null
     if ($TargetOS -eq "windows") {
         Copy-Item -LiteralPath (Join-Path $RootDir "scripts/install.ps1") -Destination $ScriptDir -Force

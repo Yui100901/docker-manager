@@ -11,8 +11,6 @@ import (
 	"strconv"
 	"strings"
 
-	"docker-manager/internal/runcontrol"
-
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
@@ -267,14 +265,15 @@ func restoreContainerIdentity(inspect container.InspectResponse, fallback string
 }
 
 type preparedRestoreBackup struct {
-	source          string
-	dir             string
-	cleanup         func()
-	signatureStatus string
-	manifest        BackupManifest
-	svc             backupDockerService
-	targets         []string
-	existingTargets map[string]string
+	source             string
+	dir                string
+	cleanup            func()
+	signatureStatus    string
+	manifest           BackupManifest
+	svc                backupDockerService
+	targets            []string
+	existingTargets    map[string]string
+	itemBudgetReserved bool
 }
 
 func (prepared *preparedRestoreBackup) Close() {
@@ -294,11 +293,11 @@ func prepareRestoreBackup(ctx context.Context, source string, opts RestoreOption
 		return nil, err
 	}
 	prepared = &preparedRestoreBackup{source: source, dir: resolvedDir, cleanup: cleanup}
-	defer func() {
+	defer func(owned *preparedRestoreBackup) {
 		if resultErr != nil {
-			prepared.Close()
+			owned.Close()
 		}
-	}()
+	}(prepared)
 	prepared.signatureStatus, err = verifyBackupSignatureWithContext(ctx, resolvedDir, opts.TrustedPublicKey)
 	if err != nil {
 		return nil, fmt.Errorf("verify backup signature: %w", err)
@@ -330,9 +329,10 @@ func prepareRestoreBackup(ctx context.Context, source string, opts RestoreOption
 	if opts.Name != "" && len(prepared.manifest.Containers) != 1 {
 		return nil, fmt.Errorf("--name 只支持恢复单个备份")
 	}
-	if err := runcontrol.CheckItems(ctx, "restore-container", len(prepared.manifest.Containers)); err != nil {
+	if err := reserveRestoreManifestItems(ctx, prepared.manifest, opts.itemBudget); err != nil {
 		return nil, err
 	}
+	prepared.itemBudgetReserved = true
 	if err := validateRestoreManifestArtifacts(resolvedDir, prepared.manifest, opts); err != nil {
 		return nil, err
 	}

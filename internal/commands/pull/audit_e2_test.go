@@ -228,8 +228,8 @@ func TestPullBatchAuditsStateAndReportPathsOnce(t *testing.T) {
 		StateFile:   statePath,
 		ReportFile:  reportPath,
 		Concurrency: 1,
-	}, func(string, PullOptions) error {
-		return nil
+	}, func(image string, opts PullOptions) error {
+		return writePullBatchTestArtifact(opts, image)
 	}, func(context.Context, string, string, PullOptions) (bool, error) {
 		return false, nil
 	})

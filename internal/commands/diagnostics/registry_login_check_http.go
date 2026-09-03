@@ -125,7 +125,7 @@ func newRegistryCheckHTTPClient(opts RegistryLoginCheckOptions) (httpDoer, func(
 		}
 		transport.Proxy = http.ProxyURL(proxyURL)
 	default:
-		transport.Proxy = http.ProxyFromEnvironment
+		transport.Proxy = validatedRegistryProxyFunc(http.ProxyFromEnvironment)
 	}
 
 	if strings.TrimSpace(opts.RegistryCAFile) != "" || strings.TrimSpace(opts.RegistryCAPath) != "" {
@@ -148,10 +148,23 @@ func newRegistryCheckHTTPClient(opts RegistryLoginCheckOptions) (httpDoer, func(
 	return client, transport.CloseIdleConnections, nil
 }
 
+func validatedRegistryProxyFunc(next func(*http.Request) (*url.URL, error)) func(*http.Request) (*url.URL, error) {
+	return func(req *http.Request) (*url.URL, error) {
+		proxyURL, err := next(req)
+		if err != nil || proxyURL == nil {
+			return proxyURL, err
+		}
+		if proxyURL.Scheme == "" || proxyURL.Host == "" || proxyURL.Hostname() == "" {
+			return nil, fmt.Errorf("无效环境 registry proxy: 必须包含 scheme 和 host")
+		}
+		return proxyURL, nil
+	}
+}
+
 func parseRegistryProxyURL(raw string) (*url.URL, error) {
 	value := strings.TrimSpace(raw)
 	parsed, err := url.Parse(value)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.Hostname() == "" {
 		return nil, fmt.Errorf("无效 registry proxy %q: 必须包含 scheme 和 host", raw)
 	}
 	switch strings.ToLower(parsed.Scheme) {

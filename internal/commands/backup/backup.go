@@ -8,11 +8,13 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"docker-manager/internal/audit"
-	"docker-manager/internal/runcontrol"
 	"docker-manager/internal/version"
+
+	"github.com/moby/moby/api/types/container"
 )
 
 func backupContainers(ctx context.Context, patterns []string, opts BackupOptions) (BackupContainersResult, error) {
@@ -40,15 +42,33 @@ func backupContainers(ctx context.Context, patterns []string, opts BackupOptions
 	if len(targets) == 0 {
 		return BackupContainersResult{}, fmt.Errorf("未匹配任何容器")
 	}
-	if err := runcontrol.CheckItems(ctx, "container", len(targets)); err != nil {
+	if err := reserveBackupContainerItems(ctx, len(targets)); err != nil {
 		return BackupContainersResult{}, err
 	}
+	if hasBackupItemController(ctx) {
+		preparedInspects, relatedItems, err := inspectBackupItemsForBudget(ctx, targets)
+		if err != nil {
+			return BackupContainersResult{}, err
+		}
+		if err := reserveBackupRelatedItems(ctx, relatedItems); err != nil {
+			return BackupContainersResult{}, err
+		}
+		opts.preparedInspects = preparedInspects
+	}
+	opts.itemBudgetReserved = true
 	opts, err = resolveBackupOutputOptions(targets, opts, time.Now())
 	if err != nil {
 		return BackupContainersResult{}, err
 	}
 	if err := authorizeBackupMutation(ctx, targets, opts); err != nil {
 		return BackupContainersResult{}, fmt.Errorf("审计授权失败，未执行备份: %w", err)
+	}
+	if len(opts.preparedInspects) > 0 {
+		refreshed, err := refreshPreparedBackupInspects(ctx, targets, opts.preparedInspects)
+		if err != nil {
+			return BackupContainersResult{}, err
+		}
+		opts.preparedInspects = refreshed
 	}
 	if len(targets) == 1 && !opts.Merge {
 		singleOpts := opts
@@ -62,6 +82,78 @@ func backupContainers(ctx context.Context, patterns []string, opts BackupOptions
 		return backupContainersMerged(ctx, targets, opts)
 	}
 	return backupContainersSeparate(ctx, targets, opts)
+}
+
+func inspectBackupItemsForBudget(ctx context.Context, targets []string) (map[string]container.InspectResponse, backupRelatedItems, error) {
+	svc, err := newBackupDockerService()
+	if err != nil {
+		return nil, backupRelatedItems{}, err
+	}
+	inspects := make(map[string]container.InspectResponse, len(targets))
+	items := newBackupRelatedItems()
+	for _, target := range targets {
+		if err := checkBackupContext(ctx); err != nil {
+			return nil, backupRelatedItems{}, err
+		}
+		inspect, err := svc.InspectContainer(ctx, target)
+		if err != nil {
+			return nil, backupRelatedItems{}, fmt.Errorf("inspect container %s for backup item budget: %w", target, err)
+		}
+		inspects[target] = inspect
+		items.addContainerInspect(inspect)
+	}
+	return inspects, items, nil
+}
+
+func refreshPreparedBackupInspects(ctx context.Context, targets []string, prepared map[string]container.InspectResponse) (map[string]container.InspectResponse, error) {
+	svc, err := newBackupDockerService()
+	if err != nil {
+		return nil, err
+	}
+	refreshed := make(map[string]container.InspectResponse, len(targets))
+	for _, target := range targets {
+		if err := checkBackupContext(ctx); err != nil {
+			return nil, err
+		}
+		initial, exists := prepared[target]
+		if !exists {
+			return nil, fmt.Errorf("container %s is missing its reserved backup snapshot", target)
+		}
+		current, err := svc.InspectContainer(ctx, target)
+		if err != nil {
+			return nil, fmt.Errorf("re-inspect container %s before backup output: %w", target, err)
+		}
+		if err := validatePreparedBackupInspect(target, initial, current); err != nil {
+			return nil, err
+		}
+		refreshed[target] = current
+	}
+	return refreshed, nil
+}
+
+func validatePreparedBackupInspect(target string, initial, current container.InspectResponse) error {
+	if initial.ID != "" || current.ID != "" {
+		if initial.ID == "" || current.ID == "" || initial.ID != current.ID {
+			return fmt.Errorf("container %s identity changed after backup item reservation; retry the backup", target)
+		}
+	} else {
+		initialName := normalizeContainerName(initial.Name)
+		currentName := normalizeContainerName(current.Name)
+		if initialName == "" {
+			initialName = normalizeContainerName(target)
+		}
+		if currentName == "" {
+			currentName = normalizeContainerName(target)
+		}
+		if initialName != currentName {
+			return fmt.Errorf("container %s identity changed after backup item reservation; retry the backup", target)
+		}
+	}
+	if !slices.Equal(backupNetworkNames(initial), backupNetworkNames(current)) ||
+		!slices.Equal(namedVolumes(initial), namedVolumes(current)) {
+		return fmt.Errorf("container %s network or volume set changed after backup item reservation; retry the backup", target)
+	}
+	return nil
 }
 
 // authorizeBackupMutation runs after target resolution but before any backup
@@ -289,6 +381,11 @@ func backupContainer(ctx context.Context, name string, opts BackupOptions) (resu
 	if err := checkBackupContext(ctx); err != nil {
 		return "", err
 	}
+	if !opts.itemBudgetReserved {
+		if err := reserveBackupContainerItems(ctx, 1); err != nil {
+			return "", err
+		}
+	}
 	if opts.Output == nil {
 		opts.Output = io.Discard
 	}
@@ -296,9 +393,19 @@ func backupContainer(ctx context.Context, name string, opts BackupOptions) (resu
 	if err != nil {
 		return "", err
 	}
-	inspect, err := svc.InspectContainer(ctx, name)
-	if err != nil {
-		return "", err
+	inspect, prepared := opts.preparedInspects[name]
+	if !prepared {
+		inspect, err = svc.InspectContainer(ctx, name)
+		if err != nil {
+			return "", err
+		}
+	}
+	if !opts.itemBudgetReserved {
+		items := newBackupRelatedItems()
+		items.addContainerInspect(inspect)
+		if err := reserveBackupRelatedItems(ctx, items); err != nil {
+			return "", err
+		}
 	}
 	if err := checkBackupContext(ctx); err != nil {
 		return "", err

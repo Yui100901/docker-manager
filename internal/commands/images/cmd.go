@@ -55,6 +55,7 @@ func NewLoadCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "load [path]",
 		Short: "导入 Docker 镜像，默认递归扫描 images 目录",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := "images"
 			if len(args) > 0 {
@@ -77,6 +78,7 @@ func NewSaveCommandWithDefaults(defaultOutputDir func() string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "save [path] [options]",
 		Short: "导出 Docker 镜像，默认输出到 images 目录",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := defaultSavePath(defaultOutputDir)
 			if len(args) > 0 {

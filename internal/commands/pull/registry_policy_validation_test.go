@@ -11,3 +11,10 @@ func TestPullProxyRejectsUnsupportedSchemeBeforeRequest(t *testing.T) {
 		t.Fatalf("proxyFuncFromSetting() error = %v, want unsupported scheme", err)
 	}
 }
+
+func TestStripPushTargetSchemeRejectsEmptyHostname(t *testing.T) {
+	_, err := stripPushTargetScheme("https://:443/team")
+	if err == nil || !strings.Contains(err.Error(), "missing registry host") {
+		t.Fatalf("stripPushTargetScheme() error = %v, want empty-hostname rejection", err)
+	}
+}

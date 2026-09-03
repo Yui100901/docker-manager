@@ -55,6 +55,13 @@ func (r *PullRunner) getImage(imageName string, opts PullOptions) error {
 	if err != nil {
 		return fmt.Errorf("镜像名称解析失败: %w", err)
 	}
+	outputFile, err := resolveOutputFile(imageInfo, opts)
+	if err != nil {
+		return fmt.Errorf("解析输出路径失败: %w", err)
+	}
+	if err := rejectPullInternalOutputName(outputFile); err != nil {
+		return fmt.Errorf("输出路径无效: %w", err)
+	}
 	baseOpts := opts
 	sourceRunner, sourceOpts, err := r.bindRegistryPolicy(imageInfo.Registry, registryCredentialPull, opts)
 	if err != nil {
@@ -115,10 +122,6 @@ func (r *PullRunner) getImage(imageName string, opts PullOptions) error {
 		return err
 	}
 
-	outputFile, err := resolveOutputFile(imageInfo, sourceOpts)
-	if err != nil {
-		return fmt.Errorf("解析输出路径失败: %w", err)
-	}
 	if err := validatePackageTemporaryBudget(ctx, tempDir, sourceOpts.Limits.TemporaryBytes); err != nil {
 		return err
 	}

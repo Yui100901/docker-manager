@@ -108,6 +108,32 @@ func TestConfirmedRestoreRejectsMissingChecksumUnlessExplicitlySkipped(t *testin
 	assertRestoreCandidateCommitted(t, fake.calls, "demo")
 }
 
+func TestPrepareRestoreBackupCleansSnapshotAfterPreflightFailure(t *testing.T) {
+	source := t.TempDir()
+	tempRoot := t.TempDir()
+	t.Setenv("TMPDIR", tempRoot)
+	t.Setenv("TMP", tempRoot)
+	t.Setenv("TEMP", tempRoot)
+	if got := filepath.Clean(os.TempDir()); got != filepath.Clean(tempRoot) {
+		t.Fatalf("os.TempDir() = %q, want isolated test directory %q", got, tempRoot)
+	}
+
+	prepared, err := prepareRestoreBackup(context.Background(), source, RestoreOptions{Confirm: true})
+	if err == nil || !strings.Contains(err.Error(), "checksums.txt is required") {
+		t.Fatalf("prepareRestoreBackup() error = %v, want missing checksum rejection", err)
+	}
+	if prepared != nil {
+		t.Fatalf("prepareRestoreBackup() prepared = %#v, want nil after preflight failure", prepared)
+	}
+	entries, err := os.ReadDir(tempRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("temporary restore entries after preflight failure = %v, want none", entries)
+	}
+}
+
 func TestRestoreCommandRejectsConfirmWithDryRun(t *testing.T) {
 	cmd := NewRestoreCommand()
 	cmd.SetOut(io.Discard)
