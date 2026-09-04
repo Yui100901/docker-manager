@@ -146,9 +146,9 @@ func writeBackupReadme(path string, manifest BackupManifest) error {
 	sb.WriteString("- Review container names, ports, bind mounts, named volumes and custom networks before using `--replace`.\n")
 	sb.WriteString("- If this backup contains bind mounts, the target host must already have compatible host paths and permissions.\n\n")
 	sb.WriteString("## Checksum verification\n\n")
-	sb.WriteString("`dm restore` verifies `checksums.txt` by default before it touches Docker. If verification fails, restore stops before loading images or creating resources. A checksum alone does not authenticate the backup source. Use `--skip-checksum` only after manually confirming the package integrity.\n\n")
+	sb.WriteString("`dm restore` verifies `checksums.txt` when it is present before it touches Docker. A dry-run may still produce a plan when the file is absent; a confirmed restore requires it unless `--skip-checksum` is explicitly supplied. If verification fails, restore stops before loading images or creating resources. A checksum alone does not authenticate the backup source. Use `--skip-checksum` only after independently verifying the backup package content integrity.\n\n")
 	sb.WriteString("## Signature verification\n\n")
-	sb.WriteString("For a signed bundle, keep the trusted public key outside the backup and use `--trusted-public-key <public.pem>`. The Ed25519 signature authenticates the exact checksum file, and the checksums authenticate the bundle files.\n\n")
+	sb.WriteString("For a signed bundle, keep the trusted public key outside the backup and use `--trusted-public-key <public.pem>`. The Ed25519 signature over the exact checksum file authenticates the signer; the checksum entries then verify the bundle files.\n\n")
 	sb.WriteString("## Restore\n\n")
 	sb.WriteString("```bash\n")
 	sb.WriteString("dm restore . # plan only; does not modify Docker\n")
@@ -189,7 +189,7 @@ echo "Backup directory: $DIR"
 echo "Prerequisite: Docker daemon must be reachable and the current user must be allowed to manage Docker resources."
 echo "Safety: without --confirm this helper only prints a restore plan."
 	if [ -f "$DIR/checksums.txt" ]; then
-	  echo "Checksum: dm restore will verify checksums.txt by default. Use --skip-checksum only after manual verification."
+	  echo "Checksum: dm restore verifies checksums.txt when present. Confirmed restore requires it unless --skip-checksum is explicitly supplied; use that option only after independently verifying backup package content integrity."
 	else
 	  echo "Checksum: checksums.txt not found; planning is allowed, but --confirm will fail unless --skip-checksum is explicitly supplied."
 fi

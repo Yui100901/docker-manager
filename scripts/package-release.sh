@@ -151,6 +151,7 @@ copy_release_documentation() {
   cp "${ROOT_DIR}/README.md" "${ROOT_DIR}/CHANGELOG.md" "${ROOT_DIR}/LICENSE" "${package_dir}/"
   mkdir -p "${package_dir}/docs"
   cp \
+    "${ROOT_DIR}/docs/USER_GUIDE.md" \
     "${ROOT_DIR}/docs/TESTING.md" \
     "${ROOT_DIR}/docs/RELEASE_CHECKLIST.md" \
     "${ROOT_DIR}/docs/DOCKER_API_MIGRATION.md" \

@@ -45,8 +45,8 @@ Windows:
 - [ ] 开发构建通过: `scripts/dev-build.sh --vet` 或 `scripts/dev-build.ps1 -Vet`。
 - [ ] 发布打包通过: `scripts/package-release.sh --version vX.Y.Z` 或 `scripts/package-release.ps1 -Version vX.Y.Z`。
 - [ ] `dist/<version>-<commit>/checksums.txt`、`release-manifest.json`、`release-summary.md` 已生成并通过结构化 manifest/digest 校验。
-- [ ] 每个发布归档包含二进制、`README.md`、`CHANGELOG.md`、`docs/TESTING.md`、`docs/RELEASE_CHECKLIST.md`、`docs/DOCKER_API_MIGRATION.md`、`LICENSE`、`dm.yaml.example`、`INSTALL.md` 和目标平台对应的安装/卸载脚本。
-- [ ] Windows 包只包含 PowerShell 安装/卸载脚本；Linux/macOS 包只包含 shell 安装/卸载脚本。
+- [ ] 每个发布归档包含二进制、`README.md`、`CHANGELOG.md`、`docs/USER_GUIDE.md`、`docs/TESTING.md`、`docs/RELEASE_CHECKLIST.md`、`docs/DOCKER_API_MIGRATION.md`、`LICENSE`、`dm.yaml.example` 和 `INSTALL.md`；Linux/Windows 归档另含对应的安装/卸载脚本。
+- [ ] Windows 包只包含 PowerShell 安装/卸载脚本；Linux 包只包含 shell 安装/卸载脚本；Darwin/macOS 包不包含安装/卸载脚本，并在 `INSTALL.md` 中提供手动二进制步骤。
 - [ ] Darwin 发布说明标明 Go 1.27 构建产物最低支持 macOS 13。
 
 ## 4. 安装和卸载

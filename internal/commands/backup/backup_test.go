@@ -519,7 +519,7 @@ func TestBackupContainerWritesOfflineBundleArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Backup metadata", "Source platform", "Prerequisites", "Checksum verification", "Signature verification", "`dm restore` verifies `checksums.txt` by default", "--confirm"} {
+	for _, want := range []string{"Backup metadata", "Source platform", "Prerequisites", "Checksum verification", "Signature verification", "A dry-run may still produce a plan", "independently verifying the backup package content integrity", "--confirm"} {
 		if !strings.Contains(string(readme), want) {
 			t.Fatalf("README = %q, want %q", string(readme), want)
 		}
@@ -528,7 +528,7 @@ func TestBackupContainerWritesOfflineBundleArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"dm version", "Docker daemon must be reachable", "checksums.txt", "without --confirm"} {
+	for _, want := range []string{"dm version", "Docker daemon must be reachable", "checksums.txt", "independently verifying backup package content integrity", "without --confirm"} {
 		if !strings.Contains(string(restoreScript), want) {
 			t.Fatalf("restore.sh = %q, want %q", string(restoreScript), want)
 		}

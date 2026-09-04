@@ -51,6 +51,7 @@
 
 ### 维护与依赖
 
+- 新增 `docs/USER_GUIDE.md` 试用版用户指南，补充快速开始、命令选择、批量 pull/resume、backup/restore、report/prune 安全流程、环境变量、退出码、安装升级回滚和常见故障处理；发布归档同步携带该文档。
 - 将项目构建基线升级到 Go 1.27.0。
 - 将 Moby client 更新到 v0.5.1、Docker connections 更新到 v0.8.1、compress 更新到 v1.19.2。
 - 将项目 YAML v3 import 从停止维护的 `gopkg.in/yaml.v3` 迁移到 `go.yaml.in/yaml/v3` v3.0.5。
@@ -328,7 +329,7 @@ GitHub Release:
   - Linux 包只包含 shell 安装/卸载脚本。
   - Windows 包只包含 PowerShell 安装/卸载脚本。
   - Darwin 包不包含平台不兼容的安装/卸载脚本，按包内 `INSTALL.md` 手动安装二进制。
-- 发布包包含二进制、`README.md`、`LICENSE`、`dm.yaml.example` 和 `INSTALL.md`；Linux/Windows 包另外包含对应平台的安装及卸载脚本。
+- 发布包包含二进制、`README.md`、`CHANGELOG.md`、`docs/USER_GUIDE.md`、`docs/TESTING.md`、`docs/RELEASE_CHECKLIST.md`、`docs/DOCKER_API_MIGRATION.md`、`LICENSE`、`dm.yaml.example` 和 `INSTALL.md`；Linux/Windows 包另外包含对应平台的安装及卸载脚本。
 - `scripts/package-release.*` 生成按平台命名的归档、`checksums.txt`、`release-manifest.json`、`release-summary.md` 和包内 `INSTALL.md`。
 - `checksums.txt` 会保留仍存在于发布目录中的历史归档校验行，重新生成同名归档时自动替换该行，便于回滚核验。
 - 新增轻量静态检查脚本 `scripts/check.sh` 和 `scripts/check.ps1`。

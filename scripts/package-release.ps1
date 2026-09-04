@@ -167,7 +167,7 @@ function Copy-ReleaseDocumentation {
     Copy-Item -LiteralPath (Join-Path $RootDir "LICENSE") -Destination $PackageDir -Force
     $docsDir = Join-Path $PackageDir "docs"
     New-Item -ItemType Directory -Path $docsDir | Out-Null
-    foreach ($name in @("TESTING.md", "RELEASE_CHECKLIST.md", "DOCKER_API_MIGRATION.md")) {
+    foreach ($name in @("USER_GUIDE.md", "TESTING.md", "RELEASE_CHECKLIST.md", "DOCKER_API_MIGRATION.md")) {
         Copy-Item -LiteralPath (Join-Path $RootDir "docs/$name") -Destination $docsDir -Force
     }
 }

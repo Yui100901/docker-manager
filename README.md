@@ -4,6 +4,8 @@
 
 它补充 Docker 原生命令在批量镜像迁移、离线迁移包、容器配置逆向、资源关联报告和企业 registry 检查上的使用体验。工具包含会修改 Docker 状态的命令，例如 `restore`、`rerun --confirm`、`prune --apply --confirm`、`pull --to`；生产环境执行前建议先使用 `--dry-run` 或在非生产环境确认目标范围。prune 报告包含 image/volume 候选时还必须显式传入 `--allow-non-atomic-delete`。
 
+第一次试用建议从 [docs/USER_GUIDE.md](docs/USER_GUIDE.md) 的五分钟流程开始；该指南集中说明前置条件、环境变量、命令选择、升级回滚和常见故障。完整参数仍以 `dm <command> --help` 为准。
+
 ## 主要功能
 
 - 镜像拉取、归档、导入和重新推送: `dm pull`、`dm save`、`dm load`、`dm tree`。
@@ -347,7 +349,7 @@ Docker API endpoint 优先级为: 全局命令行参数 > 选中 profile > 顶�
 
 `registries` 的 key 以及 `dm registry`/`dm doctor --registry` 的参数必须是精确规范化的 `host[:port]`，不接受 scheme、路径、userinfo、查询、fragment 或通配符。策略支持 `ca_file`/`ca_path`、`proxy`、`no_proxy`、正 duration `timeout`、`credential_scope`、`auth_realms` 和 `plain_http`；顶层、profile 和 per-registry proxy 共用校验，只有原始空字符串表示未配置，空白值或带首尾空白的值会被早期拒绝；非空值只允许带 scheme 和非空 hostname、无 fragment 的 `http`、`https`、`socks5` URL，合法 userinfo 会保留。显式或环境 registry proxy 在交给 HTTP transport 前也会拒绝空 hostname。`auth_realms` 和 `--auth-realm` 只接受带非空 hostname 的 HTTPS origin。`credential_scope` 可包含 `pull`、`push`、`login`；省略时允许这三种既有操作，显式 `[]` 禁止使用凭据。该设置只收窄凭据使用，Bearer token 请求仍固定为当前 repository 的 pull scope。`plain_http` 默认为 `false`，只能对精确匹配项显式开启，且不能与 CA 同时配置。命令行显式 `--proxy`、`--timeout`、`--auth-realm` 和 `--plain-http[=false]` 继续覆盖策略。
 
-Per-registry CA、代理和 timeout 应用于 `dm` 自己的 registry `/v2/`、manifest、blob、token 请求，以及 push 前预检。`dm pull --to` 最终调用 Docker daemon 执行 push；daemon 的 registry CA、insecure registry 和代理仍需单独配置。`dm registry` 报告会区分 `dm` 直连检查和 daemon `RegistryLogin`，前者使用 policy，后者使用 daemon 网络配置。
+Per-registry CA、代理和 timeout 应用于 `dm` 自己的 registry `/v2/`、manifest、blob、token 请求，以及 push 前预检。`dm pull --to` 最终调用 Docker daemon 执行 push；daemon 的 registry CA、insecure registry 和代理仍需单独配置。`dm pull --to` 中的 `http://` 只控制 `dm` 目标 registry 的预检协议，最终 push 仍由 daemon 执行。`dm registry` 报告会区分 `dm` 直连检查和 daemon `RegistryLogin`，前者使用 policy，后者使用 daemon 网络配置。
 
 Per-registry `ca_file` 只接受不超过 16 MiB 的非 symlink、非 reparse 普通文件；`ca_path` 必须是非 symlink、非 reparse 目录，最多包含 256 个非链接普通文件且累计不超过 32 MiB。每个文件必须完全由可解析的 `CERTIFICATE` PEM block 构成，空目录、混入 README/私钥/垃圾内容、链接或特殊文件都会失败关闭。系统证书目录通常含 symlink，不应直接作为该 `ca_path`；请使用专用 CA 目录或单独的 `ca_file`。
 
@@ -409,7 +411,7 @@ Linux 安装脚本默认安装对应 shell completion；Linux 默认生成 bash 
 ```bash
 dm pull busybox:latest --output-dir images
 dm pull busybox:latest --load
-dm pull --file images.txt --to http://registry.local:5000/team --plain-http --concurrency 2
+dm pull --file images.txt --to http://registry.local:5000/team --concurrency 2
 dm pull busybox:latest --max-layers 256 --max-layer-bytes 10737418240 --max-expanded-layer-bytes 21474836480 --max-total-layer-bytes 21474836480 --max-total-expanded-bytes 42949672960 --max-temporary-bytes 85899345920 --total-timeout 20m
 ```
 
@@ -475,7 +477,7 @@ dm restore web-backup.tar.gz --trusted-public-key ./backup-signing-public.pem --
 dm restore web-backup.tar.gz --confirm --allow-dangerous-config
 ```
 
-实际恢复默认要求完整有效的 `checksums.txt`；只有在已经独立验证来源时才应显式使用 `--skip-checksum`。Checksum 只能检测内容变化，不能认证来源；需要来源认证时使用 Ed25519 `--signing-key` 和位于备份根外的 `--trusted-public-key`。签名私钥、加密口令文件和 `--bundle-output` 都必须位于备份输出目录外。restore 对归档输入、展开总量、JSON 累计大小和分卷数设置硬上限，并允许用 `--max-archive-size`、`--max-expanded-size`、`--max-json-size`、`--max-parts` 进一步下调，不能上调硬上限。当前 volume 备份仅保存 Docker volume 元数据，不包含 volume 内的数据。
+实际恢复默认要求完整有效的 `checksums.txt`；dry-run 会在该文件存在时校验，但缺少它仍可生成计划。只有在已经独立验证备份包内容完整性时才应显式使用 `--skip-checksum`。Checksum 只能检测内容变化，不能认证来源；创建签名包时使用 Ed25519 `--signing-key`，恢复时提供位于备份根外的 `--trusted-public-key` 验证其对 `checksums.txt` 的签名，才可认证签名者；`--trusted-public-key` 不能与 `--skip-checksum` 同时使用。签名私钥、加密口令文件和 `--bundle-output` 都必须位于备份输出目录外。restore 对归档输入、展开总量、JSON 累计大小和分卷数设置硬上限，并允许用 `--max-archive-size`、`--max-expanded-size`、`--max-json-size`、`--max-parts` 进一步下调，不能上调硬上限。当前 volume 备份仅保存 Docker volume 元数据，不包含 volume 内的数据。
 
 分卷备份先写入同目录私有 staging，并在 `<bundle>.parts.pending.json` 持有文件锁和事务所有权；所有 `.part-NNN` 发布后，最后发布带逐卷大小/digest、整体 SHA-256 和 `commit: complete` 的 `<bundle>.parts.json`。进程中断后，下次写入同一目标会恢复并只清理由该 pending marker 与 staging 共同证明属于旧事务的文件；已替换文件、外来同名 part 或活跃事务一律保留并报错。成功提交后 pending marker 会被移除。
 
@@ -531,6 +533,7 @@ docs/                           # 测试、发布检查和维护文档
 
 | 文档 | 用途 |
 | --- | --- |
+| [docs/USER_GUIDE.md](docs/USER_GUIDE.md) | 试用版快速开始、命令选择、环境变量、故障排查和升级回滚 |
 | [CHANGELOG.md](CHANGELOG.md) | 版本变化、已完成优化和已知非阻断项 |
 | [docs/TESTING.md](docs/TESTING.md) | 本地、远程、企业 registry 和发布前验收说明 |
 | [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) | 发布操作核对清单 |

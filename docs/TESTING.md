@@ -1,6 +1,6 @@
 # 测试和验收
 
-本文档集中记录 `docker-manager` 的本地检查、远程 Docker 验收、企业 registry 验收和已完成测试结论。README 不再展开测试细节，发布操作清单见 [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)。
+本文档集中记录 `docker-manager` 的本地检查、远程 Docker 验收、企业 registry 验收和已完成测试结论。用户上手流程见 [USER_GUIDE.md](USER_GUIDE.md)，README 不再展开测试细节，发布操作清单见 [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)。
 
 ## 本地检查
 
@@ -317,10 +317,12 @@ export DM_REGISTRY_PORT="$(docker port dm_registry_test 5000/tcp | sed 's/.*://'
 export DM_REGISTRY="127.0.0.1:${DM_REGISTRY_PORT}"
 
 dm registry "$DM_REGISTRY" --plain-http
-dm pull busybox:latest --to "$DM_REGISTRY/dm-mirror" --plain-http
+dm pull busybox:latest --to "http://$DM_REGISTRY/dm-mirror"
 printf '%s\n' busybox:latest > "$DM_TEST_ROOT/images.txt"
-dm pull --file "$DM_TEST_ROOT/images.txt" --to "$DM_REGISTRY/dm-batch" --plain-http --concurrency 1 --retries 1 --resume --output-dir "$DM_TEST_ROOT/pulled-batch" --state-file "$DM_TEST_ROOT/pull-state.json" --report "$DM_TEST_ROOT/pull-report.json"
+dm pull --file "$DM_TEST_ROOT/images.txt" --to "http://$DM_REGISTRY/dm-batch" --concurrency 1 --retries 1 --resume --output-dir "$DM_TEST_ROOT/pulled-batch" --state-file "$DM_TEST_ROOT/pull-state.json" --report "$DM_TEST_ROOT/pull-report.json"
 ```
+
+这里的 `busybox:latest` 从默认的 HTTPS registry 拉取；目标使用 `http://` 前缀时只会让 `dm` 的目标 registry 预检使用明文，最终 Docker push 仍由 daemon 执行，因此还需配置 daemon 的 insecure registry/CA/代理。仅当源 registry 本身也是明文 HTTP 时，才在 pull 命令上加 `--plain-http`。
 
 容器和备份:
 
