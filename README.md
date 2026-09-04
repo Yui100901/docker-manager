@@ -436,9 +436,7 @@ dm pull busybox:latest --max-layers 256 --max-layer-bytes 10737418240 --max-expa
 
 State 提交协议当前为 v2。写 state 前先持久化固定 `.dm-pull-state-untrusted.marker`，其 payload 包含版本、state basename 原始字节的 hex 和 128-bit transaction；state rename 与目录同步成功后，只有 marker 文件身份、transaction 和 owner 均匹配才会清理。残留 marker 或 commit protocol 0/1 的 success 会保守重拉；属于其他 state、畸形、超限或被替换的 marker 会在 pull/exists callback 前失败关闭。Marker 创建持久化失败时不写 state，清理失败时保持 untrusted，删除后的目录同步失败最多导致下次保守重拉。
 
-2026-09-01 的 P0-P2 回查已完成最终受影响面的 Windows normal、MinGW race、20/50 次高风险重复、vet、staticcheck、gosec 和格式检查；随后本机可执行的全仓 test/race/vet/build、依赖校验、govulncheck、覆盖率、安装/卸载 smoke 和 PowerShell 7/5.1 completion 也全部通过。2026-09-02 11:00 已将包含最新修复的 linux/amd64 主程序及 backup、appconfig、pull、diagnostics 定向 test binary 部署到 `192.168.31.40`；当前服务器执行副本的主程序、backup、pull、appconfig、diagnostics SHA-256 分别为 `fe8b3480b1aaee52fd0c2e2251385d150b0fd5809e63d9e9949c4599c611b8b6`、`8af8936772c537417613de12c4ccdce3bc95ea510af02ccb9f7f63ace999b3e0`、`81b95bb82a558d554409b3a1f354cf8de06106344f311ba8c1c149a0a9f76fd7`、`06a867e4366b6e1ef79fbc8a88da0cc0009bad56e9f352fd4ac2050b0a728d65`、`3d4e7b94894ca525e6b5170c471c0a6df5b654109313288a6c1055e82511d657`。服务器定向回归、真实 registry standalone/batch、backup/restore 预算、prune 安全边界和只读报告验收通过，测试资源集合前后无变化。本机无 Docker CLI、无可用 WSL 发行版和 ShellCheck，因此未在本机运行 Docker 或 ShellCheck；本轮也未运行 full/destructive E2E，Docker 24/27/29、真实 TLS 2376、企业 registry/OIDC 仍属于发布前外部矩阵；完整证据见 [docs/TESTING.md](docs/TESTING.md)。
-
-Linux installer 另在服务器 run `/root/dm-installer-final-20260902-140133` 完成 17 PASS 的安全定向矩阵，以及 `e2e.sh --mode install` 的 19 PASS / 10 XFAIL / 0 FAIL；用经固定大小和 SHA-256 校验的 Bash 3.2.57 实际执行 manifest v3、空 completion 数组、全 completion 和只读 profile 安装/清理用例均通过。该 installer-only run 不作为 Docker 资源前后集合比较或清理证据。
+测试和发布门禁的执行方法、已验证范围与仍需外部环境确认的项目统一记录在 [docs/TESTING.md](docs/TESTING.md)；公开归档不包含内部服务器地址、运行路径或临时验收产物。
 
 镜像导入导出:
 

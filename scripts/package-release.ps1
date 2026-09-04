@@ -308,12 +308,19 @@ try {
         if ($goos -eq "windows") {
             $archive = Join-Path $DistDir "$name.zip"
             if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive -Force }
-            Compress-Archive -LiteralPath $packageDir -DestinationPath $archive
+            & go run (Join-Path $RootDir "scripts/create-release-archive.go") `
+                --source-dir $packageDir `
+                --archive $archive `
+                --format zip
+            if ($LASTEXITCODE -ne 0) { throw "Release archive creation failed: $archive" }
         } else {
-            Assert-Command tar
             $archive = Join-Path $DistDir "$name.tar.gz"
             if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive -Force }
-            tar -C $WorkDir -czf $archive $name
+            & go run (Join-Path $RootDir "scripts/create-release-archive.go") `
+                --source-dir $packageDir `
+                --archive $archive `
+                --format tar.gz
+            if ($LASTEXITCODE -ne 0) { throw "Release archive creation failed: $archive" }
         }
 
         $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()

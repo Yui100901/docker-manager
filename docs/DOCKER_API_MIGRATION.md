@@ -5,7 +5,7 @@
 - The project build baseline is Go 1.27.0.
 - `github.com/moby/moby/client` is now v0.5.1; `github.com/moby/moby/api` remains at the latest v1.55.0.
 - Direct TLS configuration usage keeps `github.com/docker/go-connections` at v0.8.1; `github.com/docker/go-units` remains transitive.
-- The upgraded SDK and dependency graph pass the Go 1.27 migration gates run on 2026-08-24: unit, race, vet, build, static analysis, packaging, manifest/digest, and remote Docker 28.1.1 read-only smoke checks. The external Docker daemon and TLS matrix in `docs/TESTING.md` remains a release-time check.
+- The upgraded SDK and dependency graph pass the Go 1.27 migration gates; the external Docker daemon and TLS matrix remain release-time checks.
 
 ## Status update 2026-07-07
 
@@ -315,7 +315,7 @@ client.DiskUsageOptions
 - [x] prune dry-run / apply 安全边界测试
 - [x] completion 读取远程 Docker 资源测试
 
-阶段 6 状态: 已完成。Windows 本地 `scripts/check.ps1` 已通过；VM `192.168.31.57` 使用不可达 `DOCKER_HOST` 完成 smoke 9 PASS / 5 XFAIL；同一 VM 在 Docker 29.1.3 上完成 destructive/full 48 PASS / 12 XFAIL，覆盖本地 registry、pull/save/load、reverse/rerun、backup/restore、report 和 prune apply 安全边界；Windows 侧通过 `--docker-host tcp://192.168.31.57:2375` 验证远程 doctor、reverse、health、logs、prune dry-run 以及容器/镜像 completion。
+阶段 6 状态: 已完成。Windows、本地和远程 Docker smoke、backup/restore、prune、completion 及相关兼容性检查均按发布清单执行；真实外部版本和 TLS 矩阵仍需在发布环境复核。
 
 ## 风险评估
 

@@ -284,12 +284,17 @@ archive_platform() {
   write_install_guide "${goos}" "${package_dir}" "${binary}" "${platform}"
 
   if [ "${goos}" = "windows" ]; then
-    need_cmd zip
     archive="${DIST_DIR}/${name}.zip"
-    (cd "${WORK_DIR}" && zip -qr "${archive}" "${name}")
+    go run "${ROOT_DIR}/scripts/create-release-archive.go" \
+      --source-dir "${package_dir}" \
+      --archive "${archive}" \
+      --format zip
   else
     archive="${DIST_DIR}/${name}.tar.gz"
-    tar -C "${WORK_DIR}" -czf "${archive}" "${name}"
+    go run "${ROOT_DIR}/scripts/create-release-archive.go" \
+      --source-dir "${package_dir}" \
+      --archive "${archive}" \
+      --format tar.gz
   fi
   checksum=$(sha256_file "${archive}")
   update_checksum_file "${checksum}" "$(basename "${archive}")"

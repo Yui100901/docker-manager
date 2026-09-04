@@ -63,7 +63,7 @@
 # and key.pem. TLS verification requires this directory; false keeps TLS/mTLS
 # when the directory is set but does not verify the daemon certificate.
 # docker_tls_verify: true
-# docker_cert_path: /root/.docker/certs
+# docker_cert_path: /etc/docker-manager/certs
 # docker_api_version: "1.46"
 # Docker connect, TLS handshake, and response-header timeout.
 # docker_timeout: 30s
