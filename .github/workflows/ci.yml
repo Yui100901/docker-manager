@@ -66,6 +66,11 @@ jobs:
   security-static:
     name: Race and security/static analysis
     runs-on: ubuntu-latest
+    env:
+      # Keep analysis binaries in an explicit, runner-local directory.  The
+      # default GOPATH/bin is not guaranteed to be on PATH on GitHub-hosted
+      # runners (which previously made govulncheck fail with exit 127).
+      ANALYSIS_BIN: ${{ runner.temp }}/go-bin
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -75,14 +80,28 @@ jobs:
           cache-dependency-path: go.sum
       - name: Race detector
         run: CGO_ENABLED=1 go test -race -count=1 ./...
+      - name: Initialize analysis reports
+        if: always()
+        run: |
+          : > staticcheck-report.txt
+          : > gosec-report.txt
       - name: Install analysis tools
+        if: always()
         run: |
-          go install honnef.co/go/tools/cmd/staticcheck@${STATICCHECK_VERSION}
-          go install golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}
-          go install github.com/securego/gosec/v2/cmd/gosec@${GOSEC_VERSION}
+          set -euo pipefail
+          mkdir -p "$ANALYSIS_BIN"
+          GOBIN="$ANALYSIS_BIN" go install honnef.co/go/tools/cmd/staticcheck@${STATICCHECK_VERSION}
+          GOBIN="$ANALYSIS_BIN" go install golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}
+          GOBIN="$ANALYSIS_BIN" go install github.com/securego/gosec/v2/cmd/gosec@${GOSEC_VERSION}
+          export PATH="$ANALYSIS_BIN:$PATH"
+          command -v staticcheck
+          command -v govulncheck
+          command -v gosec
+          echo "$ANALYSIS_BIN" >> "$GITHUB_PATH"
       - name: Staticcheck gate
+        if: always()
         run: |
-          set -o pipefail
+          set -euo pipefail
           staticcheck ./... 2>&1 | tee staticcheck-report.txt
       - name: Vulnerability gate
         if: always()
@@ -93,12 +112,15 @@ jobs:
         with:
           name: staticcheck-report
           path: staticcheck-report.txt
-          if-no-files-found: error
+          if-no-files-found: warn
       - name: gosec triage report
         if: always()
-        run: gosec -no-fail -fmt text ./... | tee gosec-report.txt
+        run: |
+          set -euo pipefail
+          gosec -no-fail -fmt text ./... 2>&1 | tee gosec-report.txt
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: gosec-report
           path: gosec-report.txt
+          if-no-files-found: warn

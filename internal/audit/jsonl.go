@@ -135,7 +135,14 @@ func OpenFileSink(opts FileOptions) (*FileSink, error) {
 	}
 	lockErr := acquireAuditFileLock(ctx, sink.lockFile)
 	if lockErr == nil {
-		sink.key, err = loadOrCreateAuditKey(keyPath)
+		// Harden an existing audit data file while holding the lock. New files
+		// are created with mode 0600 by appendLocked; existing files must be
+		// corrected as soon as the sink opens so sensitive history is not left
+		// world-readable between OpenFileSink and the first append.
+		err = hardenExistingAuditFile(path)
+		if err == nil {
+			sink.key, err = loadOrCreateAuditKey(keyPath)
+		}
 		unlockErr := unlockAuditFile(sink.lockFile)
 		err = errors.Join(err, unlockErr)
 	} else {
@@ -148,6 +155,28 @@ func OpenFileSink(opts FileOptions) (*FileSink, error) {
 		return nil, err
 	}
 	return sink, nil
+}
+
+// hardenExistingAuditFile applies the private audit-file mode to an existing
+// data file. A missing file is left for appendLocked to create securely.
+func hardenExistingAuditFile(path string) error {
+	if err := validateAuditRegularPath(path, true); err != nil {
+		return err
+	}
+	if _, err := os.Lstat(path); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("inspect existing audit file: %w", err)
+	}
+	// Open without following a changed path, then secureOpenedAuditFile checks
+	// descriptor identity against the path before applying chmod(0600).
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open existing audit file: %w", err)
+	}
+	secureErr := secureOpenedAuditFile(path, file)
+	closeErr := file.Close()
+	return errors.Join(secureErr, closeErr)
 }
 
 func (sink *FileSink) Append(ctx context.Context, event Event) error {
