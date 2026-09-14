@@ -51,6 +51,8 @@ Windows PowerShell:
 .\scripts\check.ps1 -Race
 ```
 
+GitHub Actions CI 只运行 Go 单元/覆盖率、vet、race、静态与漏洞分析及文本/shell 静态检查，不启动 Docker-in-Docker 或下载测试镜像。安装器、completion 深测、registry 和 full/destructive E2E 按 [docs/TESTING.md](docs/TESTING.md) 在具备相应环境时单独执行。
+
 生成发布归档、checksum 和版本清单:
 
 ```bash

@@ -35,6 +35,8 @@
 
 ### P0-P2 回查修复
 
+- 收敛 GitHub Actions CI 范围：保留 Go 单元测试、覆盖率、vet、race、静态/漏洞分析和文本/shell 静态检查；移除会启动 Docker-in-Docker、下载镜像或执行破坏性 E2E 的默认 job，复杂 Docker、completion 和安装器验收改由按需流程执行。
+
 - 单次 pull 与 batch 现在共用归档输出目录生命周期 scope，batch 内部并发归档复用已持有的锁；不同 metadata 文件但共享输出目录的 batch，以及 standalone 与 batch，不能并发覆盖同一归档。锁定期间持续复核目录和 lifecycle lock marker 身份；Unix 锁定已打开的父目录 inode，Windows marker handle 禁止 delete sharing，unlink/替换 marker 不能绕过活跃 scope。
 - Pull batch 在审计授权后、读取 resume state 和任何 registry/Docker 回调前获取 state/report 生命周期锁；安全读取 state 时锚定父目录、拒绝链接/reparse/非普通文件并限制为 `64 MiB`。state/report 使用随机排他 `0600` staging、发布前身份复核和 Unix 目录同步；路径精确冲突、hardlink、大小写碰撞、祖先/后代拓扑及辅助锁冲突均在回调前失败。`.dm-pull-`/`.docker-manager-pull-` 在原始 basename 和 Windows canonical/实际 8.3 basename 上均为内部保留 namespace；standalone 在首个 HTTP 请求前拒绝，batch 在 callback 前拒绝。Windows 还拒绝设备/扩展 namespace、设备名、尾点/尾空格、unsafe UNC server/share、尚不存在且形似 DOS 8.3 短名的组件和启用 per-directory case sensitivity 的现存父目录；已存在祖先解析成长路径后，仅在检测到实际 short-name alias 冲突时拒绝。
 - Tar 归档在同目录私有 staging 完成 close 和文件 sync 后 rename；rename 前失败保留旧目标。Unix rename 后父目录 sync 失败会返回错误且 batch 不记录 success，但新归档可能已经发布；Windows 的 `0600` 不等价于私有 ACL，rename 也不声明具有与 Unix 相同的文件系统语义。

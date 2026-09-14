@@ -2,6 +2,10 @@
 
 本文档集中记录 `docker-manager` 的本地检查、远程 Docker 验收、企业 registry 验收和已完成测试结论。用户上手流程见 [USER_GUIDE.md](USER_GUIDE.md)，README 不再展开测试细节，发布操作清单见 [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)。
 
+## GitHub Actions CI 范围
+
+仓库 CI 只执行不依赖 Docker daemon、临时 registry 或外部镜像下载的必要门禁：Linux/Windows Go 单元测试、覆盖率和 coverage gate、`go mod verify`、`go vet`、文本与 shell 静态检查，以及 Linux race、staticcheck、govulncheck 和 gosec 分析。CI 不运行 `scripts/e2e.sh` 的 install/full/destructive 模式、Docker 版本矩阵、需要真实 shell 环境的 completion 深测或安装器跨平台 smoke；这些流程依赖 Docker、特定宿主机权限或平台环境，按本文件后续章节和发布清单按需执行。
+
 ## 本地检查
 
 基础检查:
